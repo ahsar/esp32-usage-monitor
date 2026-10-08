@@ -3,18 +3,77 @@
 Firmware for the Waveshare ESP32-S3-Touch-AMOLED-2.16 board that shows OpenCode
 token usage, weather and a clock.
 
-<img width="307" height="409" alt="1b2b0536bc8ad161e428c0deda3aafb6" src="https://github.com/user-attachments/assets/d59a0a6f-1483-4df2-9ebe-b20832e409ec" />
-<img width="307" height="409" alt="b598914ee3e2701626b0c7eb8ab07a65" src="https://github.com/user-attachments/assets/d649e905-e27e-4900-8f70-dff1deca24a8" />
+## Screens
+
+Three horizontal pages — swipe or tap to switch (Key1 also cycles). The weather
+page has five vertical cards; the right-hand dot column marks the current card and
+the bottom dot row marks the current page (`@` = active).
+
+```
+Weather — Now card
++--------------------------------------------+
+| * Beijing                             14:23|
+|--------------------------------------------|
+|  \o/   24C                               * |
+|  /|\   Partly Cloudy                     o |
+|                                          o |
+|  Feels                               22C o |
+|  Humidity                            48% o |
+|--------------------------------------------|
+|  Wind                            12 km/h NW|
+|  Precip                              0.0 mm|
+|  Updated 14:20                             |
+|                                            |
+|                   @ o o                    |
++--------------------------------------------+
+```
+
+```
+Usage
++--------------------------------------------+
+| * Usage                               14:23|
+|--------------------------------------------|
+|  5-HOUR                                 42%|
+|  ##################........................|
+|                            resets in 3h 12m|
+|  WEEKLY                                 18%|
+|  ########..................................|
+|                             resets in 2d 4h|
+|  MONTHLY                                71%|
+|  ###############################...........|
+|                             resets in 1d 6h|
+|                                            |
+|                   o @ o                    |
++--------------------------------------------+
+```
+
+```
+Clock
++--------------------------------------------+
+| * Synced                              14:23|
+|--------------------------------------------|
+|                                            |
+|                   14:23                    |
+|               2026-10-08 Thu               |
+|                                            |
+|--------------------------------------------|
+|  Battery 86%  charging                     |
+|  #####################################.....|
+|                                            |
+|                  [ 555 ]                   |
+|                   o o @                    |
++--------------------------------------------+
+```
 
 ## Features
 
 - **Three horizontal pages**: Weather ↔ Usage ↔ Clock, swipe or tap to switch
 - **Vertical weather cards**: Now → Sun → Air → Moon → Moonrise/Moonset
 - Usage shows **5-hour** / **week** / **month** progress bars
-- Countdown to the next reset (days, hours, minutes, seconds)
-- Bars turn yellow above 10% and red above 50%
+- Countdown to the next reset (days / hours / minutes)
+- Bars turn yellow above 30% and red above 60%
 - Auto refresh: usage every 60 s, weather every 15 min, moon every 6 h, air quality every 30 min
-- Status bar with WiFi, battery, charging state and time
+- Status bar with a connection dot, page title and time (battery and charging state are on the Clock page)
 - **OAuth device flow**: authorise once with `tools/authorize.py`; the refresh token rotates automatically and is persisted to LittleFS
 - WiFi setup UI (scan + on-screen keyboard / button password entry)
 - Boot tone; shake the device to play the 555 easter egg
