@@ -12,3 +12,11 @@
 #else
   #error "No board defined. Add -DBOARD_WAVESHARE_ESP32S3_TOUCH_AMOLED_1_8, _1_75C, _ESP32C6_TOUCH_AMOLED_2_16, or _ESP32S3_TOUCH_AMOLED_2_16 to build_flags in platformio.ini."
 #endif
+
+// UI supersampling factor: the logical canvas (BOARD_HW_W/H) is rasterised at
+// N× into the physical framebuffer so text/icons are drawn at near-native
+// resolution instead of being block-upscaled. 1 = legacy (canvas == logical).
+// Boards that opt in set BOARD_DISPLAY_UI_SCALE in their board header.
+#ifndef BOARD_DISPLAY_UI_SCALE
+  #define BOARD_DISPLAY_UI_SCALE 1
+#endif

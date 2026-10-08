@@ -1,14 +1,25 @@
 #include "hw/net.h"
 #include "voice/i2s_audio.h"
 #include <Preferences.h>
+#include <esp_wifi.h>
 
 static Preferences _prefs;
 
+// How long a single blocking scan waits per channel. The Arduino default is
+// 300 ms/channel; 13 channels of that is ~4 s before overheads. 150 ms is
+// plenty for nearby APs and roughly halves the sweep.
+static const uint32_t SCAN_MS_PER_CHAN = 150;
+
 int netScan(NetScanResult* out, int max) {
-  // Scan with radio power-cycle. Avoids a race where a stale
-  // WiFi.begin() (saved creds for an AP out of range) leaves the radio
-  // mid-connect when scanNetworks() fires; on Arduino-ESP32 v3 this
-  // commonly yields WIFI_SCAN_FAILED (-1).
+  // Fast scan. The old implementation power-cycled the radio
+  // (WIFI_OFF → WIFI_STA) up to three times, and each cycle re-runs WiFi
+  // bring-up + RF calibration. Combined with modem sleep being enabled at
+  // boot, a single boot scan could take 30 s+.
+  //
+  // Instead: abort any in-flight connect with a raw esp_wifi_disconnect()
+  // (cheap, keeps the station up), power save off for the duration of the
+  // scan, and scan once with a short per-channel dwell. A single retry
+  // covers the rare WIFI_SCAN_FAILED race.
   //
   // Returns:
   //    -1  scan failed (radio busy / scan error)
@@ -16,31 +27,41 @@ int netScan(NetScanResult* out, int max) {
   //    >0  network count, copied into `out`
   audioPauseForScan();
 
-  int result = -1;  // pessimistic default = failed
-  for (int attempt = 0; attempt < 3; ++attempt) {
-    WiFi.disconnect(true);     // true = wipe stale AP config too
-    delay(150);
-    WiFi.mode(WIFI_OFF);
-    delay(50);
-    WiFi.mode(WIFI_STA);
-    delay(100);                // let the radio re-arm
+  const uint32_t t0 = millis();
 
-    int n = WiFi.scanNetworks();
-    if (n > 0) { result = n; break; }
-    if (n == 0) { result = 0; delay(200); continue; }  // retry — APs may still beacon
-    // n < 0 (WIFI_SCAN_FAILED) — try again
-    result = -1;
-    delay(200);
+  // Stop a pending/slow connect from racing the scan. WiFi.disconnect(true)
+  // would tear the radio down (expensive); esp_wifi_disconnect() aborts the
+  // connect but leaves the station up. Auto-reconnect would immediately
+  // restart the connect, so disable it for the scan.
+  WiFi.setAutoReconnect(false);
+  WiFi.mode(WIFI_STA);
+  esp_wifi_disconnect();          // ESP_ERR_WIFI_NOT_CONNECT is harmless
+  delay(30);
+
+  // Power save off: with WIFI_PS_MIN_MODEM the driver wakes on DTIM beacons
+  // between channels and stretches the sweep.
+  WiFi.setSleep(WIFI_PS_NONE);
+
+  int n = -1;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    n = WiFi.scanNetworks(false /*async*/, false /*show_hidden*/,
+                          false /*passive*/, SCAN_MS_PER_CHAN);
+    if (n >= 0) break;            // 0 = ok but empty, >0 = found
+    delay(100);                   // WIFI_SCAN_FAILED — one retry
   }
 
-  if (result <= 0) {
+  WiFi.setSleep(WIFI_PS_MIN_MODEM);
+  WiFi.setAutoReconnect(true);
+
+  if (n <= 0) {
+    Serial.printf("netScan: %s in %ums\n",
+                  n == 0 ? "no networks" : "FAILED", (unsigned)(millis() - t0));
     audioResumeAfterScan();
-    return result;
+    return n == 0 ? 0 : -1;
   }
 
-  int n = result;
-  if (n > max) n = max;
-  for (int i = 0; i < n; i++) {
+  int cnt = (n > max) ? max : n;
+  for (int i = 0; i < cnt; i++) {
     strncpy(out[i].ssid, WiFi.SSID(i).c_str(), 32);
     out[i].ssid[32] = 0;
     out[i].rssi = WiFi.RSSI(i);
@@ -48,8 +69,9 @@ int netScan(NetScanResult* out, int max) {
   }
 
   WiFi.scanDelete();          // free internal scan cache (copies done)
+  Serial.printf("netScan: %d networks in %ums\n", cnt, (unsigned)(millis() - t0));
   audioResumeAfterScan();
-  return n;
+  return cnt;
 }
 
 bool netConnect(const char* ssid, const char* pass) {

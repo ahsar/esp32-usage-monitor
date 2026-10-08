@@ -2,10 +2,11 @@
 #pragma once
 
 // Display: 480×480 rounded-square AMOLED (CO5300). CO5300 panels can't
-// tolerate per-row blits (QSPI state issue), so the LETTERBOX path is
-// reused: PSRAM-backed full-frame buffer + one-shot draw16bitRGBBitmap.
-// 184×224 canvas → DEST 368×448 (exact 2× scale, bilinear == nearest)
-// centred via (LCD-DEST)/2 → (56, 16) on 480×480.
+// tolerate per-row blits (QSPI state issue), so the LETTERBOX path is used:
+// PSRAM-backed 368×448 canvas + one-shot draw16bitRGBBitmap.
+// The UI is authored on a 184×224 logical grid but rasterised at 2×
+// (BOARD_DISPLAY_UI_SCALE) so text/icons stay crisp on the 314-PPI panel;
+// the 368×448 result is centred via (LCD-DEST)/2 → (56, 16) on 480×480.
 #define LCD_W_PHYS  480
 #define LCD_H_PHYS  480
 
@@ -62,8 +63,13 @@
 // after canvas->begin(). 0x60 = MV+MX (90° CW); 0xA0 = MV+MY (90° CCW); 0 = no override.
 #define BOARD_CO5300_MADCTL        0xA0   // MV+MY (90° CCW; opposite rotation of 0x60 / MV+MX)
 #define BOARD_DISPLAY_LETTERBOX    1   // CO5300 needs one-shot blit; S3 has PSRAM for full frame buf
-#define BOARD_DISPLAY_DEST_W       368   // 184 × 2 (exact integer upscale; bilinear == nearest at 2×)
+#define BOARD_DISPLAY_DEST_W       368   // 184 × 2
 #define BOARD_DISPLAY_DEST_H       448   // 224 × 2
+// Supersample the logical canvas 2× and blit 1:1. The UI is authored against a
+// 184×224 logical grid (BOARD_HW_W/H); drawing it at 368×448 with ~2× fonts
+// keeps glyphs/icons at native panel resolution instead of block-upscaling.
+// Canvas framebuffer (368×448×2 = 322 KB) lives in PSRAM.
+#define BOARD_DISPLAY_UI_SCALE     2
 #define BOARD_DISPLAY_SH8601_VENDOR_INIT  0
 #define BOARD_DISPLAY_OFFSET_X     0   // letterbox path uses its own (LCD-DEST)/2 centring math
 #define BOARD_DISPLAY_OFFSET_Y     0

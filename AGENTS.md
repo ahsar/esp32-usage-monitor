@@ -83,16 +83,31 @@ from <https://github.com/jason2866/mklittlefs/releases> (asset
 
 The panel is only pushed when the canvas is dirty (`s_dirty`), so idle frames drop
 from ~60/s to ~1/s instead of re-sending the full 480×480 frame every loop. Idle
-also dims and then sleeps the panel:
+also dims the panel but **never blanks it** (so it stays glanceable):
 
-- 30 s idle (`IDLE_DIM_MS`) → brightness `BRIGHT_LUT[0]` = 50/255.
-- 2 min idle (`IDLE_OFF_MS`) → `hwDisplaySleep(true)` (brightness 0 + displayOff).
+- 30 s idle (`IDLE_DIM_MS`) → brightness `BRIGHT_LUT[0]` = 50/255, and it stays
+  there until activity (no full screen-off stage).
 - Any touch/key (and `state=running` webhooks / shake) wakes it; the waking tap is
   swallowed so it doesn't also page.
+- Pager state changes (`s_uiDirty`) force an immediate redraw, so a swipe/tap never
+  freezes on a mid-transition frame while waiting for the 1 s idle tick.
 - Radio: modem sleep is on (`WIFI_PS_MIN_MODEM`) and TX power is capped at
   `WIFI_POWER_11dBm` — both cut heat a lot. Raise the TX power if WiFi is weak.
 
 Tunables live at the top of `src/main.cpp` (search `IDLE_DIM_MS`).
+
+### WiFi scan
+
+`netScan()` (`src/hw/net.cpp`) scans with the station kept up: it aborts any
+in-flight connect with a raw `esp_wifi_disconnect()`, turns power save **off**
+for the sweep, and uses a 150 ms/channel active scan (~2 s). The old
+`WIFI_OFF → WIFI_STA` power-cycle ×3 re-ran WiFi bring-up + RF calibration each
+time and, with modem sleep on, stretched a boot scan past 30 s.
+
+On boot with saved credentials the setup UI shows a **15 s connect grace**
+(`wifi_setup.cpp`, `CONNECT_GRACE_MS`) before falling back to a scan, so a
+slow-but-good connect is no longer aborted by a scan. Tap or press a key to
+skip straight to the network list.
 
 ### Auth / API notes
 

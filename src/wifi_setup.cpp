@@ -7,6 +7,15 @@
 
 #define spr (*hwCanvas())
 
+// All on-screen copy here is ASCII, so on the supersampled canvas use a 2×
+// Helvetica face instead of the (upscaled) 12 px CJK font that only ever
+// rendered Latin glyphs anyway.
+#if BOARD_DISPLAY_UI_SCALE > 1
+  #define WIFI_FONT u8g2_font_helvB24_tf
+#else
+  #define WIFI_FONT u8g2_font_wqy12_t_gb2312b
+#endif
+
 static const uint16_t COL_BG      = 0x0000;
 static const uint16_t COL_TEXT    = 0xFFFF;
 static const uint16_t COL_DIM     = 0x8410;
@@ -60,11 +69,22 @@ static void fillBtn(const Rect& r, uint16_t color, const char* label) {
   spr.print(label);
 }
 
+// Grace period for the boot-time connect when credentials are saved. Only if
+// this elapses without connecting do we fall back to scanning (the old code
+// scanned after 2 s and aborted a perfectly good — just slow — connect).
+static const uint32_t CONNECT_GRACE_MS = 15000;
+
 // ── Init ────────────────────────────────────────────────────
-void wifiSetupInit(WifiState& state) {
+void wifiSetupInit(WifiState& state, const char* savedSsid) {
   memset(&state, 0, sizeof(state));
   state.open = true;
-  state.step = 0;
+  state.haveCreds = (savedSsid && savedSsid[0]);
+  if (state.haveCreds) {
+    strncpy(state.savedSsid, savedSsid, sizeof(state.savedSsid) - 1);
+  }
+  // With saved creds, wait for the connect instead of scanning immediately.
+  state.step = state.haveCreds ? 4 : 0;
+  state.connStart = millis();
   state.scanStart = millis();
   state.flashIdx = -1;
   state.flashTime = 0;
@@ -75,9 +95,35 @@ void wifiSetupDraw(WifiState& state) {
   spr.fillScreen(COL_BG);
   s_touchUsed = 0;
 
+  if (state.step == 4) {
+    // Booting with saved credentials. Give the connect a real chance before
+    // scanning; the main loop closes this screen once WL_CONNECTED. A tap/key
+    // (or the grace expiring) skips ahead to a scan.
+    spr.setFont(WIFI_FONT);
+    spr.setTextColor(COL_TEXT);
+    spr.setCursor(SAFE_L, 60);
+    spr.print("Connecting...");
+    spr.setTextColor(COL_DIM);
+    spr.setCursor(SAFE_L, 78);
+    spr.print(state.savedSsid);
+    spr.setTextColor(COL_DIM);
+    spr.setCursor(SAFE_L, SAFE_B - 12);
+    spr.print("Tap to choose another network");
+
+    const HwTouch& tp = hwTouch();
+    bool skip = (tp.justPressed && !s_touchUsed)
+                || hwBtnA().wasReleased || hwBtnB().wasPressed;
+    if (skip || millis() - state.connStart >= CONNECT_GRACE_MS) {
+      state.step = 0;
+      state.scanStart = millis();
+      s_touchUsed = 1;
+    }
+    return;
+  }
+
   if (state.step == 0) {
     // Scanning
-    spr.setFont(u8g2_font_wqy12_t_gb2312b);
+    spr.setFont(WIFI_FONT);
     spr.setTextColor(COL_TEXT);
     spr.setCursor(SAFE_L, 60);
     spr.print("Scanning...");
@@ -101,7 +147,7 @@ void wifiSetupDraw(WifiState& state) {
   }
 
   if (state.step == 1) {
-    spr.setFont(u8g2_font_wqy12_t_gb2312b);
+    spr.setFont(WIFI_FONT);
     int y = SAFE_T;
     spr.setTextColor(COL_TEXT);
     spr.setCursor(SAFE_L, y); spr.print("Select WiFi"); y += 14;
@@ -177,7 +223,7 @@ void wifiSetupDraw(WifiState& state) {
 
   if (state.step == 2) {
     // Password input with touch keyboard
-    spr.setFont(u8g2_font_wqy12_t_gb2312b);
+    spr.setFont(WIFI_FONT);
     int y = SAFE_T;
 
     // Back button (top-right)
@@ -326,7 +372,7 @@ void wifiSetupDraw(WifiState& state) {
 
   if (state.step == 3) {
     // Connecting / result
-    spr.setFont(u8g2_font_wqy12_t_gb2312b);
+    spr.setFont(WIFI_FONT);
     int y = 60;
 
     if (!state.connDone) {

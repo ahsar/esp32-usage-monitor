@@ -9,6 +9,20 @@ static Arduino_CO5300*   s_gfx    = nullptr;
 static Arduino_SH8601*   s_gfx    = nullptr;
 #endif
 static Arduino_Canvas*   s_canvas = nullptr;
+static ScaledCanvas*     s_ui     = nullptr;
+
+// Arduino_Canvas always mallocs its framebuffer with aligned_alloc, which on
+// this S3 can land in internal RAM. The supersampled canvas (368×448×2 =
+// 322 KB) must live in PSRAM, so force the allocation there before begin().
+class PsramCanvas : public Arduino_Canvas {
+public:
+  PsramCanvas(int16_t w, int16_t h, Arduino_G* out) : Arduino_Canvas(w, h, out) {}
+  bool allocPsram() {
+    _framebuffer = (uint16_t*)heap_caps_malloc((size_t)_width * _height * 2,
+                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return _framebuffer != nullptr;
+  }
+};
 
 static const uint8_t BRIGHT_LUT[5] = { 50, 100, 150, 200, 255 };
 
@@ -61,13 +75,22 @@ bool hwDisplayInit() {
 #else
   s_gfx = new Arduino_SH8601(s_bus, GFX_NOT_DEFINED, 0, LCD_W_PHYS, LCD_H_PHYS);
 #endif
+#if BOARD_DISPLAY_UI_SCALE > 1
+  // Supersampled canvas: raster at UI_SCALE× so glyphs/icons are drawn at
+  // native resolution. Framebuffer (322 KB) must be in PSRAM.
+  PsramCanvas* pc = new PsramCanvas(HW_CANVAS_W, HW_CANVAS_H, s_gfx);
+  if (!pc->allocPsram()) { Serial.println("hwDisplay: canvas PSRAM alloc failed"); return false; }
+  s_canvas = pc;
+#else
   s_canvas = new Arduino_Canvas(HW_W, HW_H, s_gfx);
+#endif
   // canvas->begin() internally calls gfx->begin() which calls bus init.
   // Calling them separately would double-init the SPI bus → ESP_ERR_INVALID_STATE.
   if (!s_canvas->begin()) { Serial.println("hwDisplay: canvas begin failed"); return false; }
   // UTF-8 decode for u8g2 CJK fonts — without this, print() treats each
   // byte of a multi-byte codepoint as its own glyph lookup → mojibake.
   s_canvas->setUTF8Print(true);
+  s_ui = new ScaledCanvas(s_canvas, BOARD_DISPLAY_UI_SCALE);
 #if BOARD_DISPLAY_CO5300 && (BOARD_CO5300_MADCTL != 0)
   // CO5300 panels where the natural orientation needs row/column swap
   // (MADCTL bit MV=0x20) — Arduino_CO5300's setRotation only does X/Y
@@ -84,13 +107,18 @@ bool hwDisplayInit() {
   s_gfx->fillScreen(0x0000);
 #else
   s_gfx->setBrightness(0);   // black first frame to avoid white flash
+  // Clear the WHOLE panel once. On the supersampled letterbox path only the
+  // 368×448 window is ever written, so without this the 56/16 px outer border
+  // keeps whatever junk the controller had at power-up (a lit, off-colour
+  // frame). Black = pixels off = no power draw.
+  s_gfx->fillScreen(0x0000);
   delay(20);
   s_gfx->setBrightness(150);  // default mid-brightness; main may override later
 #endif
   return true;
 }
 
-Arduino_Canvas* hwCanvas() { return s_canvas; }
+ScaledCanvas* hwCanvas() { return s_ui; }
 
 void hwDisplayBrightness(uint8_t lvl) {
   if (lvl > 4) lvl = 4;
@@ -120,10 +148,22 @@ void hwDisplayPush() {
 #ifdef DEBUG_SAFE_BOX
   // 1-px green outline at the logical safe-area boundary. Used to
   // empirically tune SAFE_INSET against the physical rounded bezel.
-  s_canvas->drawRect(SAFE_L, SAFE_T, SAFE_W, SAFE_H, 0x07E0);
+  s_ui->drawRect(SAFE_L, SAFE_T, SAFE_W, SAFE_H, 0x07E0);
 #endif
   uint16_t* src = (uint16_t*)s_canvas->getFramebuffer();
-#if BOARD_DISPLAY_LETTERBOX
+#if BOARD_DISPLAY_LETTERBOX && (BOARD_DISPLAY_UI_SCALE > 1)
+  // UI was rasterised at native UI_SCALE× into the canvas, so blit it 1:1
+  // into the letterbox window — no resampling, crisp text/icons. One-shot
+  // draw16bitRGBBitmap is required on CO5300 (per-row draws leave it black).
+  {
+    constexpr int DEST_W = BOARD_DISPLAY_DEST_W;
+    constexpr int DEST_H = BOARD_DISPLAY_DEST_H;
+    static_assert(DEST_W == HW_CANVAS_W && DEST_H == HW_CANVAS_H,
+                  "BOARD_DISPLAY_DEST_* must equal the supersampled canvas size");
+    s_gfx->draw16bitRGBBitmap((LCD_W_PHYS - DEST_W) / 2, (LCD_H_PHYS - DEST_H) / 2,
+                              src, DEST_W, DEST_H);
+  }
+#elif BOARD_DISPLAY_LETTERBOX
   // Bilinear scale HW_W×HW_H → DEST_W×DEST_H, centred in physical frame,
   // surround black. One-shot draw16bitRGBBitmap is required on CO5300 — per-row
   // draws leave the screen black (QSPI state issue when chaining many writes).

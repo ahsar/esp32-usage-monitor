@@ -34,9 +34,8 @@ static bool s_thinking = false;
 static uint32_t s_thinkingSince = 0;
 static WifiState s_wifi;
 
-// ---- display power (dirty-frame push + idle dim / screen-off) -------------
+// ---- display power (dirty-frame push + idle dim) --------------------------
 static bool     s_dirty = true;          // canvas changed → panel needs a push
-static bool     s_screenOff = false;
 static bool     s_screenDim = false;
 static int      s_brightLevel = 2;       // BRIGHT_LUT index; 2 = 150/255
 static uint32_t s_lastActivity = 0;
@@ -44,33 +43,25 @@ static uint32_t s_lastShake = 0;
 static bool     s_swallowTouch = false;  // first tap only wakes, doesn't page
 static bool     s_swallowKey   = false;
 static uint32_t s_lastDraw = 0;          // shared with the render loop below
+static bool     s_uiDirty = true;        // pager state changed → redraw now
 
 static const uint32_t IDLE_DIM_MS = 30000;   // 30 s idle → dim
-static const uint32_t IDLE_OFF_MS = 120000;  // 2 min idle → panel off
 static const uint8_t  DIM_LEVEL   = 0;       // BRIGHT_LUT[0] = 50/255
 
 static void screenWake() {
-    if (s_screenOff) {
-        hwDisplaySleep(false);
-        hwDisplayBrightness((uint8_t)s_brightLevel);
-        s_screenOff = false;
-        s_dirty = true;
-    } else if (s_screenDim) {
+    if (s_screenDim) {
         hwDisplayBrightness((uint8_t)s_brightLevel);
         s_screenDim = false;
     }
     s_lastDraw = 0;          // force an immediate re-render on wake
+    s_uiDirty  = true;
     s_lastActivity = millis();
 }
 
 static void screenIdleUpdate() {
-    if (s_screenOff) return;
-    uint32_t idle = millis() - s_lastActivity;
-    if (idle >= IDLE_OFF_MS) {
-        hwDisplaySleep(true);
-        s_screenOff = true;
-        s_screenDim = false;
-    } else if (!s_screenDim && idle >= IDLE_DIM_MS) {
+    // Dim only — never blank the panel. It stays readable at DIM_LEVEL so the
+    // clock/usage is still glanceable without having to touch the screen.
+    if (!s_screenDim && millis() - s_lastActivity >= IDLE_DIM_MS) {
         hwDisplayBrightness(DIM_LEVEL);
         s_screenDim = true;
     }
@@ -212,9 +203,9 @@ static void frameDump() {
     hwDisplayPush();
 
     uint16_t* fb = (uint16_t*)hwCanvas()->getFramebuffer();
-    Serial.printf("FRAME %u %d %d\n", idx, HW_W, HW_H);
+    Serial.printf("FRAME %u %d %d\n", idx, HW_CANVAS_W, HW_CANVAS_H);
     delay(30);
-    Serial.write((uint8_t*)fb, HW_W * HW_H * 2);
+    Serial.write((uint8_t*)fb, HW_CANVAS_W * HW_CANVAS_H * 2);
     Serial.write('\n');
     Serial.flush();
     s_dumpIdx++;
@@ -275,21 +266,28 @@ static void commitAnim() {
     s_off = 0;
     s_animating = false;
     s_animDir = 0;
+    s_uiDirty = true;
 }
 
 static void advance() {
     if (s_page == UI_PAGE_WEATHER) s_wcard = (s_wcard + 1) % UI_WC_COUNT;
     else s_page = (s_page + 1) % UI_PAGE_COUNT;
+    s_uiDirty = true;
 }
 
-static void pagerUpdate() {
+static bool pagerUpdate() {
+    int  pg0   = s_page;
+    int  wc0   = s_wcard;
+    float off0 = s_off;
+    bool anim0 = s_animating;
+
     const HwTouch& tp = hwTouch();
     uint32_t now = millis();
 
     // A tap that woke the screen is consumed here so it doesn't also page.
     if (s_swallowTouch) {
         if (tp.justReleased || !tp.down) s_swallowTouch = false;
-        return;
+        return false;
     }
 
     if (tp.justPressed) {
@@ -359,6 +357,11 @@ static void pagerUpdate() {
             s_off = s_animFrom + (s_animTo - s_animFrom) * t;
         }
     }
+
+    bool changed = (s_page != pg0) || (s_wcard != wc0) ||
+                   (s_off != off0) || (s_animating != anim0);
+    if (changed) s_uiDirty = true;
+    return changed;
 }
 
 // ---- boot / loop ----------------------------------------------------------
@@ -445,7 +448,7 @@ void setup() {
         Serial.println("No saved WiFi; opening scan/setup UI");
     }
 
-    wifiSetupInit(s_wifi);
+    wifiSetupInit(s_wifi, hasCreds ? savedSSID : nullptr);
 }
 
 void loop() {
@@ -460,7 +463,11 @@ void loop() {
     if (pwrLong) {
         Serial.println("PWR long-press: shutting down");
         spr.fillScreen(0x0000);
+#if BOARD_DISPLAY_UI_SCALE > 1
+        spr.setFont(u8g2_font_helvB24_tf);
+#else
         spr.setFont(u8g2_font_helvB12_tf);
+#endif
         spr.setTextColor(0xFFFF);
         spr.setCursor(SAFE_L, SAFE_T + SAFE_H / 2);
         spr.print("Shutting down...");
@@ -498,7 +505,7 @@ void loop() {
                 ;
     bool activity = tp.justPressed || tp.down || keyHit;
     if (activity) {
-        if (s_screenOff || s_screenDim) {
+        if (s_screenDim) {
             screenWake();
             if (tp.justPressed) s_swallowTouch = true;
             if (keyHit)         s_swallowKey   = true;
@@ -600,28 +607,30 @@ void loop() {
             }
         }
 
-        if (!s_screenOff) {
-            if (!animated) {
-                pagerUpdate();
-            }
+        if (!animated) {
+            pagerUpdate();
+        }
 
 #ifdef FRAME_DUMP
-            frameDump();
+        frameDump();
 #else
-            bool fast = animated || s_touchActive || s_animating;
-            if (fast || now - s_lastDraw >= 1000) {
-                s_lastDraw = now;
-                if (s_easterState == 1) {
-                    usageDisplayDrawEaster555(now - s_easterStart);
-                } else if (s_thinking) {
-                    usageDisplayDrawThinking(now - s_thinkingSince);
-                } else {
-                    renderUi();
-                }
-                s_dirty = true;
+        // Redraw immediately on any pager state change (drag, animation step,
+        // commit, key) so the final frame is never left to the 1 s idle tick —
+        // otherwise the screen freezes on a mid-swipe frame for up to a second.
+        bool fast = animated || s_uiDirty;
+        if (fast || now - s_lastDraw >= 1000) {
+            s_lastDraw = now;
+            if (s_easterState == 1) {
+                usageDisplayDrawEaster555(now - s_easterStart);
+            } else if (s_thinking) {
+                usageDisplayDrawThinking(now - s_thinkingSince);
+            } else {
+                renderUi();
             }
-#endif
+            s_uiDirty = false;
+            s_dirty = true;
         }
+#endif
     } else {
         wifiSetupDraw(s_wifi);
         s_dirty = true;

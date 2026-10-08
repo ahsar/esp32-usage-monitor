@@ -32,11 +32,22 @@ static const uint16_t COL_SNOW   = 0xE73F;
 static const uint16_t COL_MOON   = 0xEF7D;
 static const uint16_t COL_MOONDK = 0x39E7;
 
+#if BOARD_DISPLAY_UI_SCALE > 1
+// Supersampled canvas (see ScaledCanvas): the logical layout is scaled ×2, so
+// fonts are bumped to ~2× size. Rendered natively at this size they stay crisp
+// on the 314-PPI panel instead of being block-upscaled from a 184×224 raster.
+static const uint8_t* F_BIG   = u8g2_font_logisoso54_tf;
+static const uint8_t* F_MED   = u8g2_font_logisoso42_tf;
+static const uint8_t* F_HEAD  = u8g2_font_helvB24_tf;
+static const uint8_t* F_BODY  = u8g2_font_helvB18_tf;
+static const uint8_t* F_SMALL = u8g2_font_helvB14_tf;
+#else
 static const uint8_t* F_BIG   = u8g2_font_logisoso28_tf;
 static const uint8_t* F_MED   = u8g2_font_logisoso22_tf;
 static const uint8_t* F_HEAD  = u8g2_font_helvB12_tf;
 static const uint8_t* F_BODY  = u8g2_font_helvB10_tf;
 static const uint8_t* F_SMALL = u8g2_font_helvB08_tf;
+#endif
 
 static UiEnv g_env;
 
@@ -624,13 +635,34 @@ static bool loadImg555() {
   if (s_img555) return true;
   File f = LittleFS.open("/555.raw", "r");
   if (!f) return false;
-  size_t sz = f.size();
-  s_img555 = (uint16_t*)malloc(sz);
-  if (!s_img555) { f.close(); return false; }
-  f.read((uint8_t*)s_img555, sz);
+  const int SRC_W = 160, SRC_H = 26;
+  const int S = BOARD_DISPLAY_UI_SCALE;
+  const size_t srcSz = (size_t)SRC_W * SRC_H * 2;
+  uint16_t* tmp = (uint16_t*)malloc(srcSz);
+  if (!tmp) { f.close(); return false; }
+  if (f.read((uint8_t*)tmp, srcSz) != srcSz) { free(tmp); f.close(); return false; }
   f.close();
-  s_img555W = 160;
-  s_img555H = 26;
+#if BOARD_DISPLAY_UI_SCALE > 1
+  // Pre-scale the artwork so the ScaledCanvas blit (which multiplies position
+  // and size) lands it at the right physical size. Nearest-neighbour is fine
+  // for this chunky logo.
+  s_img555 = (uint16_t*)malloc(srcSz * S * S);
+  if (!s_img555) { free(tmp); return false; }
+  for (int y = 0; y < SRC_H; y++) {
+    for (int x = 0; x < SRC_W; x++) {
+      uint16_t c = tmp[y * SRC_W + x];
+      for (int dy = 0; dy < S; dy++) {
+        uint16_t* drow = s_img555 + (y * S + dy) * (SRC_W * S) + x * S;
+        for (int dx = 0; dx < S; dx++) drow[dx] = c;
+      }
+    }
+  }
+  free(tmp);
+#else
+  s_img555 = tmp;
+#endif
+  s_img555W = SRC_W;
+  s_img555H = SRC_H;
   return true;
 }
 
@@ -657,7 +689,7 @@ void usageDisplayDrawThinking(uint32_t elapsedMs) {
     spr.draw16bitRGBBitmap(HW_W / 2 - s_img555W / 2, SAFE_T + 40,
                            s_img555, s_img555W, s_img555H);
   }
-  spr.setFont(u8g2_font_helvB12_tf);
+  spr.setFont(F_HEAD);
   spr.setTextColor(COL_TEXT);
   spr.setCursor(HW_W / 2 - 26, SAFE_T + 150);
   spr.print("Thinking...");
