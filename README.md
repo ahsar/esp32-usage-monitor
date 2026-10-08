@@ -1,133 +1,180 @@
-# ESP32-S3 用量监视器
+# ESP32-S3 Usage Monitor
 
-在 Waveshare ESP32-S3-Touch-AMOLED-2.16 开发板上显示 OpenCode Token 用量的固件。
+Firmware for the Waveshare ESP32-S3-Touch-AMOLED-2.16 board that shows OpenCode
+token usage, weather and a clock.
 
 <img width="307" height="409" alt="1b2b0536bc8ad161e428c0deda3aafb6" src="https://github.com/user-attachments/assets/d59a0a6f-1483-4df2-9ebe-b20832e409ec" />
 <img width="307" height="409" alt="b598914ee3e2701626b0c7eb8ab07a65" src="https://github.com/user-attachments/assets/d649e905-e27e-4900-8f70-dff1deca24a8" />
 
+## Features
 
+- **Three horizontal pages**: Weather ↔ Usage ↔ Clock, swipe or tap to switch
+- **Vertical weather cards**: Now → Sun → Air → Moon → Moonrise/Moonset
+- Usage shows **5-hour** / **week** / **month** progress bars
+- Countdown to the next reset (days, hours, minutes, seconds)
+- Bars turn yellow above 10% and red above 50%
+- Auto refresh: usage every 60 s, weather every 15 min, moon every 6 h, air quality every 30 min
+- Status bar with WiFi, battery, charging state and time
+- **OAuth device flow**: authorise once with `tools/authorize.py`; the refresh token rotates automatically and is persisted to LittleFS
+- WiFi setup UI (scan + on-screen keyboard / button password entry)
+- Boot tone; shake the device to play the 555 easter egg
+- Configuration stored in the LittleFS filesystem
 
+## Hardware
 
-## 功能
+- **Board**: Waveshare ESP32-S3-Touch-AMOLED-2.16
+- **Display**: 480×480 AMOLED (CO5300 driver)
+- **Touch**: CST9220
+- **PSRAM**: 8 MB | **Flash**: 16 MB
 
-- 显示 **5小时** / **每周** / **每月** 用量进度条
-- 显示距离重置的倒计时（天时分秒格式）
-- 超过 10% 进度条变黄，超过 50% 变红
-- 每 60 秒自动刷新，按最左边按键可手动刷新
-- WiFi 配置界面（按钮输入密码）
-- 配置存储在 LittleFS 文件系统
+## Setup
 
-## 硬件
-
-- **开发板**: Waveshare ESP32-S3-Touch-AMOLED-2.16
-- **屏幕**: 480×480 AMOLED (CO5300 驱动)
-- **触摸**: CST9220
-- **PSRAM**: 8MB | **Flash**: 16MB
-
-## 环境搭建
-
-1. 安装 [PlatformIO](https://platformio.org/)
-2. 克隆仓库：
+1. Install [PlatformIO](https://platformio.org/)
+2. Clone the repository:
    ```bash
    git clone https://github.com/2700zc/esp32-usage-monitor.git
    cd esp32-usage-monitor
    ```
 
-## 配置
+## Configuration
 
-复制配置模板并填入你的信息：
+Copy the template:
 
 ```bash
 cp data/config.json.example data/config.json
 ```
 
-编辑 `data/config.json`：
+Fields in `data/config.json`:
 
 ```json
 {
-  "server_id": "你的 OpenCode server_id",
-  "cookie": "oc_locale=zh; auth=你的认证 cookie",
-  "workspace_id": "你的 workspace_id (wrk_开头)",
-  "baidu_app_id": "",
-  "baidu_api_key": "",
-  "baidu_secret_key": ""
+  "workspace_id": "wrk_XXXXXXXXXXXXXXXXXXXXXXXX",
+  "refresh_token": "",
+  "org_id": "",
+  "waqi_token": ""
 }
 ```
 
-### 获取配置信息
+| Field | Required | Description |
+|---|---|---|
+| `workspace_id` | ✅ | Your workspace / org id (starts with `wrk_`) |
+| `refresh_token` |  | Written automatically by `tools/authorize.py`; do not fill in by hand |
+| `org_id` |  | Written automatically by the authoriser; falls back to `workspace_id` when empty |
+| `waqi_token` |  | Optional [aqicn.org](https://aqicn.org/data-platform/token/) token, enables the air-quality card |
 
-1. 登录 [opencode.ai](https://opencode.ai)
-2. 打开浏览器开发者工具 (F12) → 网络 (Network)
-3. 访问用量页面，抓取 `_server` 请求
-4. 从请求 URL 中提取 `id` 参数 → `server_id`
-5. 从请求头中提取 `Cookie` → `cookie`
-6. 从请求参数中提取 `args` 里的 workspace ID → `workspace_id`
-
-## 编译与上传
+### Authorisation (OAuth device flow)
 
 ```bash
-# 编译
+python3 tools/authorize.py
+```
+
+Open the printed URL, sign in and confirm the device code. The script writes
+`refresh_token` / `org_id` back into `data/config.json`. Then upload the filesystem:
+
+```bash
+pio run -e esp32-usage-monitor -t uploadfs
+```
+
+> **⚠️ Token lifecycle**
+> The refresh token is **single-use** and rotates on every refresh; reusing an old
+> one revokes the whole token family (and you must re-authorise). After the first
+> boot the device takes ownership and saves the rotated token to LittleFS
+> `/tokens.json`.
+>
+> - `pio run -t upload` (firmware only) is **safe** — it does not touch the filesystem.
+> - `pio run -t uploadfs` **erases** LittleFS (including `/tokens.json`), so the device
+>   falls back to the possibly stale token in `config.json`. **Always run
+>   `python3 tools/authorize.py` right before an `uploadfs`.**
+> - Do **not** run `python3 tools/authorize.py --check` while the device is live — it
+>   rotates the token and invalidates the device's copy.
+
+## Build & upload
+
+```bash
+# compile
 pio run -e esp32-usage-monitor
 
-# 上传固件
+# upload firmware
 pio run -e esp32-usage-monitor -t upload
 
-# 上传文件系统（包含 config.json）
+# upload filesystem (includes config.json)
 pio run -e esp32-usage-monitor -t uploadfs
 
-# 同时上传固件和文件系统
+# upload both
 pio run -e esp32-usage-monitor -t upload -t uploadfs
 ```
 
-## 使用说明
+OTA (when the device is already on WiFi):
 
-1. 首次启动进入 WiFi 配置界面
-2. 用三个按键输入 WiFi 密码：
-   - **按键A（左）**: 切换字符
-   - **按键B（中）**: 确认输入
-   - **按键Boot（右）**: 重置
-3. 连接 WiFi 后长按按键A（600ms）进入桌面
-4. 桌面自动每 60 秒刷新用量数据
-5. 按最左边按键可手动刷新
+```bash
+pio run -t upload --upload-port <ESP32_IP>
+```
 
-## 项目结构
+### macOS arm64 note
+
+PlatformIO's `tool-mklittlefs` package ships an x86_64-only binary, so `uploadfs`
+fails with `mklittlefs: Bad CPU type in executable`. Download the
+`aarch64-apple-darwin-*.tar.gz` asset from
+<https://github.com/jason2866/mklittlefs/releases> and replace
+`~/.platformio/packages/tool-mklittlefs@3.2.0/mklittlefs`.
+
+## Usage
+
+1. On first boot the device opens the WiFi setup UI. Scan, pick a network and enter
+   the password:
+   - **Button A (left)**: short press cycles the character, long press (600 ms) switches the character group (abc/ABC/123/symbols)
+   - **Button B (middle)**: short press types the character, long press (800 ms) connects
+   - The on-screen touch keyboard works too
+2. Once connected the device enters the desktop automatically and syncs NTP
+3. Swipe left/right (or tap) to switch between **Weather / Usage / Clock**; swipe up/down on the weather page to switch cards
+4. Press the leftmost button (Key1) to cycle pages
+5. Long-press the power key to shut down
+
+## Project structure
 
 ```
 ├── data/
-│   ├── config.json          # 运行时配置（已 gitignore）
-│   └── config.json.example  # 配置模板
+│   ├── config.json          # runtime config (gitignored)
+│   ├── config.json.example  # config template
+│   ├── 555_audio.raw        # shake easter-egg audio
+│   └── 555.raw              # shake easter-egg image
 ├── src/
-│   ├── main.cpp             # 主循环和状态机
-│   ├── api_client.cpp/h     # OpenCode API 客户端
-│   ├── usage_display.cpp/h  # 用量显示界面
-│   ├── wifi_setup.cpp/h     # WiFi 配置界面
-│   ├── config.h             # 配置结构体定义
-│   ├── audio_recorder.cpp/h # 录音（保留未使用）
-│   ├── usb_keyboard.cpp/h   # USB 键盘（保留未使用）
-│   └── hw/                  # 硬件驱动层
-│       ├── display.cpp/h    # AMOLED 显示驱动
-│       ├── input.cpp/h      # 按键和触摸输入
-│       ├── power.cpp/h      # 电源管理 (AXP2101)
-│       ├── audio.cpp/h      # 音频驱动 (ES8311)
-│       ├── imu.cpp/h        # 加速度计
-│       ├── rtc.cpp/h        # 实时时钟
-│       ├── expander.cpp/h   # IO 扩展器
-│       ├── border.cpp/h     # 边框绘制
-│       ├── net.cpp/h        # 网络工具
-│       ├── pins.h            # 引脚定义
-│       └── hw.cpp/h         # 硬件初始化
-├── lib/                      # 本地库
-└── platformio.ini            # PlatformIO 配置
+│   ├── main.cpp             # main loop, pager state machine, gesture handling
+│   ├── config.h             # config struct + LittleFS JSON loader
+│   ├── token_store.cpp/h    # OAuth tokens persisted to LittleFS
+│   ├── http_client.cpp/h    # shared blocking HTTPS helper
+│   ├── api_client.cpp/h     # OpenCode console REST client
+│   ├── weather_client.cpp/h # weather / moon / air quality
+│   ├── usage_display.cpp/h  # UI drawing (pages, cards, icons)
+│   ├── wifi_setup.cpp/h     # WiFi setup UI
+│   ├── voice/               # I2S audio (ES8311, easter-egg playback)
+│   ├── boards/              # per-board pin definitions
+│   └── hw/                  # hardware driver layer
+│       ├── display.cpp/h    # AMOLED display driver
+│       ├── input.cpp/h      # button and touch input
+│       ├── power.cpp/h      # power management (AXP2101)
+│       ├── audio.cpp/h      # audio driver (ES8311)
+│       ├── imu.cpp/h        # accelerometer
+│       ├── rtc.cpp/h        # real-time clock
+│       ├── expander.cpp/h   # IO expander
+│       ├── border.cpp/h     # frame drawing
+│       ├── net.cpp/h        # WiFi connection and credentials
+│       ├── pins.h           # pin definitions
+│       └── hw.cpp/h         # hardware init
+├── tools/
+│   └── authorize.py         # OAuth device-flow authoriser / --check
+└── platformio.ini           # PlatformIO config
 ```
 
-## 注意事项
+## Notes
 
-- `data/config.json` 包含认证信息，已被 `.gitignore` 排除，不会上传到仓库
-- 每次修改 `config.json` 后需要重新上传文件系统：`pio run -e esp32-usage-monitor -t uploadfs`
-- Cookie 有效期有限，失效后需要从浏览器重新获取并更新配置
+- `data/config.json` contains credentials and is excluded by `.gitignore`; it is never committed
+- After editing `config.json`, re-upload the filesystem: `pio run -e esp32-usage-monitor -t uploadfs`
+- Tokens rotate on the device; to re-authorise, run `python3 tools/authorize.py` and then `uploadfs`
+- Weather comes from [wttr.in](https://wttr.in/Beijing) (Beijing), moon data from MET Norway, air quality from waqi
 
-## 友情链接
-- 同时还做了一个Windows上的用量显示悬浮窗，地址是：https://github.com/2700zc/TokenHub 配置好了之后，开箱即用
+## Related
+- A Windows floating usage widget is also available: https://github.com/2700zc/TokenHub — ready to use once configured
 
 ## License
 

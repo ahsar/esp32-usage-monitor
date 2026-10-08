@@ -28,8 +28,8 @@ python3 tools/authorize.py --check  # refresh + print current usage (sanity chec
 pio run -e esp32-usage-monitor -t uploadfs
 ```
 
-`workspace_id` (the `wrk_...` org id) is the only required base field; `server_id` /
-`cookie` are legacy and no longer used. After editing config, re-run `uploadfs`.
+`workspace_id` (the `wrk_...` org id) is the only required base field. After
+editing config, re-run `uploadfs`.
 
 > **⚠️ Token lifecycle.** The refresh token is single-use and *rotates* on every
 > refresh; reusing an old one revokes the whole token family (then you must
@@ -115,9 +115,6 @@ PLATFORMIO_BUILD_FLAGS='-DFRAME_DUMP' pio run -e esp32-usage-monitor -t upload
 ## PC-side tools
 
 - `tools/authorize.py` — opencode console device-flow authoriser + `--check`  
-- `tools/listen.py` — UDP audio receiver, saves WAV files  
-- `tools/voice_server.py` — WebSocket voice keyboard (transcribes with `faster-whisper`, types result)  
-  Deps: `pip install websockets faster-whisper keyboard numpy`
 
 ## No tests / no CI
 
