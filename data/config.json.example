@@ -2,7 +2,5 @@
   "workspace_id": "wrk_XXXXXXXXXXXXXXXXXXXXXXXX",
   "refresh_token": "",
   "org_id": "",
-  "waqi_token": "",
-  "pc_host": "192.168.31.100",
-  "pc_port": 12345
+  "waqi_token": ""
 }
