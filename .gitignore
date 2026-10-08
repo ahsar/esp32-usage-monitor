@@ -1,0 +1,7 @@
+.pio/
+.vscode/
+*.bin
+*.elf
+*.map
+data/config.json
+__pycache__/
