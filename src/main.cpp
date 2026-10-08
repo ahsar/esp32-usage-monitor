@@ -34,6 +34,48 @@ static bool s_thinking = false;
 static uint32_t s_thinkingSince = 0;
 static WifiState s_wifi;
 
+// ---- display power (dirty-frame push + idle dim / screen-off) -------------
+static bool     s_dirty = true;          // canvas changed → panel needs a push
+static bool     s_screenOff = false;
+static bool     s_screenDim = false;
+static int      s_brightLevel = 2;       // BRIGHT_LUT index; 2 = 150/255
+static uint32_t s_lastActivity = 0;
+static uint32_t s_lastShake = 0;
+static bool     s_swallowTouch = false;  // first tap only wakes, doesn't page
+static bool     s_swallowKey   = false;
+static uint32_t s_lastDraw = 0;          // shared with the render loop below
+
+static const uint32_t IDLE_DIM_MS = 30000;   // 30 s idle → dim
+static const uint32_t IDLE_OFF_MS = 120000;  // 2 min idle → panel off
+static const uint8_t  DIM_LEVEL   = 0;       // BRIGHT_LUT[0] = 50/255
+
+static void screenWake() {
+    if (s_screenOff) {
+        hwDisplaySleep(false);
+        hwDisplayBrightness((uint8_t)s_brightLevel);
+        s_screenOff = false;
+        s_dirty = true;
+    } else if (s_screenDim) {
+        hwDisplayBrightness((uint8_t)s_brightLevel);
+        s_screenDim = false;
+    }
+    s_lastDraw = 0;          // force an immediate re-render on wake
+    s_lastActivity = millis();
+}
+
+static void screenIdleUpdate() {
+    if (s_screenOff) return;
+    uint32_t idle = millis() - s_lastActivity;
+    if (idle >= IDLE_OFF_MS) {
+        hwDisplaySleep(true);
+        s_screenOff = true;
+        s_screenDim = false;
+    } else if (!s_screenDim && idle >= IDLE_DIM_MS) {
+        hwDisplayBrightness(DIM_LEVEL);
+        s_screenDim = true;
+    }
+}
+
 static int s_easterState = 0;
 static uint32_t s_easterStart = 0;
 static File s_easterFile;
@@ -62,7 +104,6 @@ static const uint32_t ANIM_MS = 170;
 
 static UiEnv s_env;
 static uint32_t s_envNext = 0;
-static uint32_t s_lastDraw = 0;
 
 extern "C" void handleHttpStatus() {
     WiFiClient client = s_server.accept();
@@ -88,6 +129,7 @@ extern "C" void handleHttpStatus() {
         s_thinking = true;
         s_thinkingSince = millis();
         Serial.println("state=running");
+        screenWake();          // light the panel while the agent is working
     } else if (req.indexOf("state=done") >= 0 || req.indexOf("state=failed") >= 0) {
         s_thinking = false;
         Serial.println("state=done/failed");
@@ -244,6 +286,12 @@ static void pagerUpdate() {
     const HwTouch& tp = hwTouch();
     uint32_t now = millis();
 
+    // A tap that woke the screen is consumed here so it doesn't also page.
+    if (s_swallowTouch) {
+        if (tp.justReleased || !tp.down) s_swallowTouch = false;
+        return;
+    }
+
     if (tp.justPressed) {
         s_touchActive = true;
         s_tx0 = tp.x; s_ty0 = tp.y;
@@ -383,7 +431,13 @@ void setup() {
     bool hasCreds = netLoadCred(savedSSID, 33, savedPass, 65);
 
     WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);   // modem sleep adds ~100ms+ latency per round trip
+    // Radio sleeps between DTIM beacons — big heat/power win vs. the old
+    // WiFi.setSleep(false). Costs up to ~a DTIM interval of latency on the
+    // status-server webhook, which is fine for a desk gadget.
+    WiFi.setSleep(WIFI_PS_MIN_MODEM);
+    // Desk device sits close to the AP; 11 dBm (~13 mW) is plenty and cuts
+    // radio heat vs. the ~19.5 dBm default (~89 mW). Bump if signal is weak.
+    WiFi.setTxPower(WIFI_POWER_11dBm);
     delay(300);
     if (hasCreds) {
         WiFi.begin(savedSSID, savedPass);
@@ -419,7 +473,8 @@ void loop() {
     refreshEnv();
 
     if (s_wifi.open && WiFi.status() == WL_CONNECTED) {
-        WiFi.setSleep(false);
+        WiFi.setSleep(WIFI_PS_MIN_MODEM);
+        WiFi.setTxPower(WIFI_POWER_11dBm);
         syncNtp();
         s_server.begin();
         s_wifi.open = false;
@@ -427,8 +482,31 @@ void loop() {
         s_lastWeather = 0;
         s_lastMoon = 0;
         s_lastAir = 0;
+        s_lastActivity = millis();   // don't idle-out the instant setup closes
         Serial.println("WiFi connected (auto)");
     }
+
+    // Any touch/key activity resets the idle timer (and wakes a dimmed panel).
+    const HwTouch& tp = hwTouch();
+    bool keyHit = hwBtnA().wasPressed
+#if BOARD_HAS_KEY2
+                || hwBtnB().wasPressed
+#endif
+#if BOARD_BTN_THIRD
+                || hwBtnBoot().wasPressed
+#endif
+                ;
+    bool activity = tp.justPressed || tp.down || keyHit;
+    if (activity) {
+        if (s_screenOff || s_screenDim) {
+            screenWake();
+            if (tp.justPressed) s_swallowTouch = true;
+            if (keyHit)         s_swallowKey   = true;
+        } else {
+            s_lastActivity = now;
+        }
+    }
+    if (!s_wifi.open) screenIdleUpdate();
 
     if (!s_wifi.open) {
         // Desktop mode
@@ -464,8 +542,9 @@ void loop() {
             syncNtp();
         }
 
-        // Shake detection
-        if (s_easterState == 0 && !s_thinking) {
+        // Shake detection (throttled to 20 Hz — the IMU read is an I2C op)
+        if (s_easterState == 0 && !s_thinking && now - s_lastShake >= 50) {
+            s_lastShake = now;
             float ax, ay, az;
             hwImuAccel(&ax, &ay, &az);
             float mag2 = ax*ax + ay*ay + az*az;
@@ -477,6 +556,7 @@ void loop() {
                 Serial.println("Easter: shake detected!");
                 stopEaster();
                 s_thinking = false;
+                screenWake();
                 s_easterFile = LittleFS.open("/555_audio.raw", "r");
                 if (s_easterFile) {
                     s_easterTotal = s_easterFile.size();
@@ -509,7 +589,7 @@ void loop() {
 
         bool animated = (s_easterState == 1) || s_thinking;
 
-        if (hwBtnA().wasPressed) {
+        if (hwBtnA().wasPressed && !s_swallowKey) {
             if (s_easterState == 1) {
                 stopEaster();
             }
@@ -520,30 +600,40 @@ void loop() {
             }
         }
 
-        if (!animated) {
-            pagerUpdate();
-        }
+        if (!s_screenOff) {
+            if (!animated) {
+                pagerUpdate();
+            }
 
 #ifdef FRAME_DUMP
-        frameDump();
+            frameDump();
 #else
-        bool fast = animated || s_touchActive || s_animating;
-        if (fast || now - s_lastDraw >= 1000) {
-            s_lastDraw = now;
-            if (s_easterState == 1) {
-                usageDisplayDrawEaster555(now - s_easterStart);
-            } else if (s_thinking) {
-                usageDisplayDrawThinking(now - s_thinkingSince);
-            } else {
-                renderUi();
+            bool fast = animated || s_touchActive || s_animating;
+            if (fast || now - s_lastDraw >= 1000) {
+                s_lastDraw = now;
+                if (s_easterState == 1) {
+                    usageDisplayDrawEaster555(now - s_easterStart);
+                } else if (s_thinking) {
+                    usageDisplayDrawThinking(now - s_thinkingSince);
+                } else {
+                    renderUi();
+                }
+                s_dirty = true;
             }
-        }
 #endif
+        }
     } else {
         wifiSetupDraw(s_wifi);
+        s_dirty = true;
     }
 
+    // Push only when the canvas actually changed: idle frames drop from ~60/s
+    // to ~1/s, and nothing is pushed while the panel is off.
     // ApiFetch* keep the status server alive; nothing else to do here.
-    hwDisplayPush();
+    if (s_dirty) {
+        hwDisplayPush();
+        s_dirty = false;
+    }
+    s_swallowKey = false;
     delay(16);
 }

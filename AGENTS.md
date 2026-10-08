@@ -79,6 +79,21 @@ from <https://github.com/jason2866/mklittlefs/releases> (asset
 - Weather cards reserve the right `WC_R` margin so content never collides with the
   card dots.
 
+### Display power / heat
+
+The panel is only pushed when the canvas is dirty (`s_dirty`), so idle frames drop
+from ~60/s to ~1/s instead of re-sending the full 480×480 frame every loop. Idle
+also dims and then sleeps the panel:
+
+- 30 s idle (`IDLE_DIM_MS`) → brightness `BRIGHT_LUT[0]` = 50/255.
+- 2 min idle (`IDLE_OFF_MS`) → `hwDisplaySleep(true)` (brightness 0 + displayOff).
+- Any touch/key (and `state=running` webhooks / shake) wakes it; the waking tap is
+  swallowed so it doesn't also page.
+- Radio: modem sleep is on (`WIFI_PS_MIN_MODEM`) and TX power is capped at
+  `WIFI_POWER_11dBm` — both cut heat a lot. Raise the TX power if WiFi is weak.
+
+Tunables live at the top of `src/main.cpp` (search `IDLE_DIM_MS`).
+
 ### Auth / API notes
 
 - opencode moved the console from the old `/_server` RPC to a REST API under
