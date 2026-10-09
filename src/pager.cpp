@@ -87,19 +87,20 @@ bool pagerUpdate() {
   const HwTouch& tp = hwTouch();
   uint32_t now = millis();
 
-  // A tap that woke the screen is consumed here so it doesn't also page.
-  if (s_swallowTouch) {
-    if (tp.justReleased || !tp.down) s_swallowTouch = false;
-    return false;
-  }
+  // A tap that woke the screen must not also page — but a *drag* that woke it
+  // should still scroll, so the swallow only survives while the gesture is
+  // still an undecided tap (cleared as soon as an axis locks below).
+  if (s_swallowTouch && !tp.down) s_swallowTouch = false;
 
   if (tp.justPressed) {
+    // A new touch landing on an in-flight commit used to silently cancel it
+    // (the pending card/page change was dropped). Finish it first instead.
+    if (s_animating) commitAnim();
     s_touchActive = true;
     s_tx0 = tp.x; s_ty0 = tp.y;
     s_dragAxis = 0;
     s_touchDownMs = now;
     s_off = 0;
-    s_animating = false;
   }
 
   if (s_touchActive && tp.down) {
@@ -107,6 +108,7 @@ bool pagerUpdate() {
     int dy = tp.y - s_ty0;
     if (s_dragAxis == 0 && (abs(dx) > 8 || abs(dy) > 8))
       s_dragAxis = (abs(dy) > abs(dx)) ? 2 : 1;
+    if (s_dragAxis != 0) s_swallowTouch = false;   // real drag → not a wake tap
 
     if (s_dragAxis == 1) {
       s_off = dx;
@@ -123,12 +125,14 @@ bool pagerUpdate() {
 
   if (s_touchActive && tp.justReleased) {
     s_touchActive = false;
+    bool swallowTap = s_swallowTouch;   // still set → it was a wake tap
+    s_swallowTouch = false;
     bool vertical = (s_dragAxis == 2) && (s_page == UI_PAGE_WEATHER);
     int swipeThresh = 38;
     int dir = 0;
 
     if (s_dragAxis == 0 || (abs((int)s_off) < 8 && now - s_touchDownMs < 350)) {
-      pagerAdvance();                // treat as a tap
+      if (!swallowTap) pagerAdvance();   // wake tap: don't also page
       s_off = 0;
     } else if (s_dragAxis == 2 && !vertical) {
       s_off = 0;                     // vertical on non-weather pages: nothing

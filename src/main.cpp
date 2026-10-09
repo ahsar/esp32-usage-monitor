@@ -1,6 +1,7 @@
 #include "config.h"
 #include "storage.h"
 #include "api_client.h"
+#include "http_client.h"
 #include "token_store.h"
 #include "weather_client.h"
 #include "usage_display.h"
@@ -131,6 +132,97 @@ static void playBootTone() {
     Serial.println("boot tone done");
 }
 
+// ---- UI service frame -----------------------------------------------------
+
+// One UI frame: activity/idle bookkeeping, Key1 handling, pager, render and
+// panel push. Input must already be up to date for this iteration. Factored
+// out of loop() so the blocking fetch path can pump the same code (uiPump)
+// and never freeze the screen mid-scroll.
+static void uiFrame(uint32_t now) {
+    const HwTouch& tp = hwTouch();
+    bool keyHit = hwBtnA().wasPressed
+#if BOARD_HAS_KEY2
+                || hwBtnB().wasPressed
+#endif
+#if BOARD_BTN_THIRD
+                || hwBtnBoot().wasPressed
+#endif
+                ;
+    bool activity = tp.justPressed || tp.down || keyHit;
+    if (activity) {
+        if (s_screenDim) {
+            screenWake();
+            if (tp.justPressed) pagerSwallowNextTap();
+            if (keyHit)         s_swallowKey   = true;
+        } else {
+            s_lastActivity = now;
+        }
+    }
+
+    if (s_wifi.open) {
+        wifiSetupDraw(s_wifi);
+        s_dirty = true;
+        return;
+    }
+
+    screenIdleUpdate();
+
+    bool thinking = statusServerThinking();
+    if (hwBtnA().wasPressed && !s_swallowKey) {
+        if (easterEggActive()) {
+            easterEggStop();
+        }
+        if (thinking) {
+            statusServerClearThinking();
+            thinking = false;
+        } else {
+            pagerAdvance();
+            s_redrawNow = true;
+        }
+    }
+
+    // Always advance the gesture machine, even while the easter egg / thinking
+    // animation owns the screen — otherwise scrolling is ignored and looks
+    // stuck. The render below still shows the animation instead of the pager.
+    if (pagerUpdate()) s_redrawNow = true;
+
+    bool animated = easterEggActive() || thinking;
+
+#ifdef FRAME_DUMP
+    frameDumpTick(now, currentUiData());
+#else
+    bool fast = animated || s_redrawNow;
+    if (fast || now - s_lastDraw >= 1000) {
+        s_lastDraw = now;
+        if (easterEggActive()) {
+            usageDisplayDrawEaster555(easterEggElapsedMs());
+        } else if (thinking) {
+            usageDisplayDrawThinking(now - statusServerThinkingSince());
+        } else {
+            uiRender(currentUiData());
+        }
+        s_redrawNow = false;
+        s_dirty = true;
+    }
+#endif
+
+    if (s_dirty) {
+        hwDisplayPush();
+        s_dirty = false;
+    }
+}
+
+// Pumped from inside a blocking fetch (http_client) so input/pager/animation
+// keep running while the radio is busy. Must not touch the network stack.
+static void uiPump() {
+    uint32_t now = millis();
+    hwInputUpdate();
+    refreshEnv(now);
+    clockSyncUpdate(now, false);
+    easterEggUpdate(now);
+    uiFrame(now);
+}
+
 void setup() {
     Serial.begin(115200);
     delay(100);
@@ -155,6 +247,7 @@ void setup() {
     }
 
     pagerInit();
+    httpSetUiPump(uiPump);
     statusServerSetWakeCallback(screenWake);
     easterEggSetWakeCallback(screenWake);
 
@@ -224,33 +317,13 @@ void loop() {
         Serial.println("WiFi connected (auto)");
     }
 
-    // Any touch/key activity resets the idle timer (and wakes a dimmed panel).
-    const HwTouch& tp = hwTouch();
-    bool keyHit = hwBtnA().wasPressed
-#if BOARD_HAS_KEY2
-                || hwBtnB().wasPressed
-#endif
-#if BOARD_BTN_THIRD
-                || hwBtnBoot().wasPressed
-#endif
-                ;
-    bool activity = tp.justPressed || tp.down || keyHit;
-    if (activity) {
-        if (s_screenDim) {
-            screenWake();
-            if (tp.justPressed) pagerSwallowNextTap();
-            if (keyHit)         s_swallowKey   = true;
-        } else {
-            s_lastActivity = now;
-        }
-    }
-    if (!s_wifi.open) screenIdleUpdate();
-
     if (!s_wifi.open) {
         // ---- network polling (at most one fetch per iteration) ----
         // Skip the whole block while offline: a due timer stays pending, so the
         // first fetch fires as soon as the link is back instead of each timer
         // attempt blocking the loop on a connect() timeout.
+        // The fetch is blocking, but http_client pumps uiPump() every ~16 ms so
+        // input and page animations keep running while it is in flight.
         if (WiFi.status() == WL_CONNECTED) {
             if (s_tokens.valid && s_ivUsage.due(now)) {
                 s_ivUsage.ran(now);
@@ -275,59 +348,13 @@ void loop() {
         }
 
         clockSyncUpdate(now, false);
-
-        // ---- easter egg (shake) ----
         easterEggUpdate(now);
-
-        bool thinking = statusServerThinking();
-        bool animated = easterEggActive() || thinking;
-
-        if (hwBtnA().wasPressed && !s_swallowKey) {
-            if (easterEggActive()) {
-                easterEggStop();
-            }
-            if (thinking) {
-                statusServerClearThinking();
-            } else {
-                pagerAdvance();
-                s_redrawNow = true;
-            }
-        }
-
-        if (!animated && pagerUpdate()) s_redrawNow = true;
-
-#ifdef FRAME_DUMP
-        frameDumpTick(now, currentUiData());
-#else
-        // Redraw immediately on any pager state change (drag, animation step,
-        // commit, key) so the final frame is never left to the 1 s idle tick —
-        // otherwise the screen freezes on a mid-swipe frame for up to a second.
-        bool fast = animated || s_redrawNow;
-        if (fast || now - s_lastDraw >= 1000) {
-            s_lastDraw = now;
-            if (easterEggActive()) {
-                usageDisplayDrawEaster555(easterEggElapsedMs());
-            } else if (thinking) {
-                usageDisplayDrawThinking(now - statusServerThinkingSince());
-            } else {
-                uiRender(currentUiData());
-            }
-            s_redrawNow = false;
-            s_dirty = true;
-        }
-#endif
-    } else {
-        wifiSetupDraw(s_wifi);
-        s_dirty = true;
     }
 
-    // Push only when the canvas actually changed: idle frames drop from ~60/s
-    // to ~1/s, and nothing is pushed while the panel is off.
-    // ApiFetch* keep the status server alive; nothing else to do here.
-    if (s_dirty) {
-        hwDisplayPush();
-        s_dirty = false;
-    }
+    // Input is already up to date (top of loop); render/push + pager live here
+    // so the same frame can be pumped from inside a blocking fetch.
+    uiFrame(now);
+
     s_swallowKey = false;
     delay(16);
 }

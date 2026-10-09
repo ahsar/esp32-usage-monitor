@@ -82,7 +82,6 @@ bool apiEnsureToken(TokenSet& tokens) {
 }
 
 bool apiFetchUsage(UsageData& out, TokenSet& tokens) {
-  out.valid = false;
   if (!apiEnsureToken(tokens)) return false;
 
   String headers;
@@ -107,10 +106,14 @@ bool apiFetchUsage(UsageData& out, TokenSet& tokens) {
   }
   uint32_t nowSec = (uint32_t)time(nullptr);
   if (nowSec < CLOCK_VALID_MIN) nowSec = httpDateToEpoch(res.date.c_str());
-  if (!usageParse(res.body.c_str(), nowSec, out)) {
+  // Parse into a scratch copy and only publish on success, so the UI (which is
+  // pumped during this blocking fetch) never renders a half-cleared meter.
+  UsageData tmp;
+  if (!usageParse(res.body.c_str(), nowSec, tmp)) {
     Serial.println("usage parse failed");
     return false;
   }
+  out = tmp;
   Serial.printf("usage: rolling=%d%% (%lus) weekly=%d%% (%lus) monthly=%d%% (%lus)\n",
                 out.rollingPercent, (unsigned long)out.rollingResetSec,
                 out.weeklyPercent,  (unsigned long)out.weeklyResetSec,

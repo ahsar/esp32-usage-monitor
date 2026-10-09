@@ -124,10 +124,12 @@ static void scanAxp() {
 #endif
 
 static void scanTouch() {
-  // Poll when IRQ fires OR when a finger was down last frame — both FT3168
+  // Poll when the IRQ fired OR when a finger was down last frame — both FT3168
   // and CST92xx only reliably IRQ on state edges, so a drag wouldn't advance
-  // x/y without this.
-  bool shouldPoll = s_tpIrqFlag || s_tp.down;
+  // x/y without this. Also keep polling while the IRQ line is still asserted:
+  // the level stays low for as long as the glass is touched, so a single
+  // failed read mid-drag can't make us drop a finger that is still down.
+  bool shouldPoll = s_tpIrqFlag || s_tp.down || digitalRead(PIN_TP_INT) == LOW;
   s_tpIrqFlag = false;
 
   if (!shouldPoll) {

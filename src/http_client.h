@@ -19,3 +19,9 @@ bool httpRequest(const char* host, const char* method, const char* path,
                  HttpResponse& res, bool http10 = false, size_t maxBody = 20000,
                  uint32_t timeoutMs = 25000,
                  const char* userAgent = "esp32-usage-monitor");
+
+// Optional UI service hook, invoked every ~16 ms while a request is in flight.
+// The main loop is single-threaded and blocking fetches can hold the CPU for
+// seconds; without this the screen freezes mid-swipe until the request ends.
+// The callback must not re-enter the network stack.
+void httpSetUiPump(void (*cb)());

@@ -4,6 +4,9 @@
 
 extern "C" void handleHttpStatus();
 
+static void (*s_uiPump)() = nullptr;
+void httpSetUiPump(void (*cb)()) { s_uiPump = cb; }
+
 bool httpRequest(const char* host, const char* method, const char* path,
                  const char* extraHeaders, const char* body,
                  HttpResponse& res, bool http10, size_t maxBody, uint32_t timeoutMs,
@@ -43,6 +46,7 @@ bool httpRequest(const char* host, const char* method, const char* path,
 
   uint32_t start = millis();
   uint32_t lastPoll = 0;
+  uint32_t lastPump = 0;
   uint32_t lastData = millis();
   String raw;
   raw.reserve(maxBody < 4096 ? 4096 : (maxBody > 16384 ? 16384 : maxBody));
@@ -52,6 +56,12 @@ bool httpRequest(const char* host, const char* method, const char* path,
     if (now - lastPoll >= 100) {
       handleHttpStatus();
       lastPoll = now;
+    }
+    // Keep input/pager/render alive so a scroll or page animation never
+    // freezes behind this (blocking) fetch.
+    if (s_uiPump && now - lastPump >= 16) {
+      s_uiPump();
+      lastPump = millis();
     }
 
     int avail = client.available();

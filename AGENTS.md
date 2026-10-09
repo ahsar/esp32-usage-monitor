@@ -99,14 +99,33 @@ also dims the panel but **never blanks it** (so it stays glanceable):
 
 - 30 s idle (`IDLE_DIM_MS`) → brightness `BRIGHT_LUT[0]` = 50/255, and it stays
   there until activity (no full screen-off stage).
-- Any touch/key (and `state=running` webhooks / shake) wakes it; the waking tap is
-  swallowed so it doesn't also page.
-- Pager state changes (`s_uiDirty`) force an immediate redraw, so a swipe/tap never
+- Any touch/key (and `state=running` webhooks / shake) wakes it; the waking **tap**
+  is swallowed so it doesn't also page — a wake **drag** still scrolls (the swallow
+  is dropped as soon as the gesture locks an axis, `pager.cpp`).
+- Pager state changes (`s_redrawNow`) force an immediate redraw, so a swipe/tap never
   freezes on a mid-transition frame while waiting for the 1 s idle tick.
 - Radio: modem sleep is on (`WIFI_PS_MIN_MODEM`) and TX power is capped at
   `WIFI_POWER_11dBm` — both cut heat a lot. Raise the TX power if WiFi is weak.
 
 Tunables live at the top of `src/main.cpp` (search `IDLE_DIM_MS`).
+
+### Blocking fetches never freeze the UI
+
+`loop()` is single-threaded and the network fetches are **blocking** (up to
+8–12 s each, weather retries ×2), so a due fetch used to hold input + rendering
+for seconds — a scroll would freeze mid-swipe. Two things keep the UI alive:
+
+- `uiFrame(now)` (`main.cpp`) owns activity/idle, Key1, the pager, render and
+  push; `loop()` just calls it. `http_client` is given a `uiPump` hook
+  (`httpSetUiPump`) and calls it every ~16 ms while a request is in flight, so
+  input/animation keep running behind the fetch.
+- The pager runs even while the easter egg / `state=running` animation owns the
+  screen (previously `pagerUpdate()` was skipped entirely, so scrolling was
+  ignored and looked stuck).
+
+Because the UI is pumped mid-fetch, fetchers must not publish half-updated
+structs: `apiFetchUsage()` parses into a scratch copy and only assigns on
+success.
 
 ### WiFi scan
 
@@ -141,8 +160,9 @@ skip straight to the network list.
 > **⚠️ Throughput note.** Large responses (e.g. wttr.in `format=j1`, ~39 KB) transfer
 > at only ~1-3 KB/s on this device, which looks like sender-side pacing. Keep network
 > payloads small and prefer the one-line endpoints. `handleHttpStatus()` is pumped
-> every 100 ms during a fetch, and reads drain the TLS buffer in an inner loop
-> (calling `available()` per chunk cripples throughput).
+> every 100 ms during a fetch (and the UI via `uiPump()` every ~16 ms), and reads
+> drain the TLS buffer in an inner loop (calling `available()` per chunk cripples
+> throughput).
 
 ### Debug: frame dump
 
