@@ -248,25 +248,30 @@ void loop() {
 
     if (!s_wifi.open) {
         // ---- network polling (at most one fetch per iteration) ----
-        if (s_tokens.valid && s_ivUsage.due(now)) {
-            s_ivUsage.ran(now);
-            apiFetchUsage(s_usage, s_tokens);
-            if (s_tokens.dirty) {
-                tokenStoreSave(s_tokens);
-                s_tokens.dirty = false;
+        // Skip the whole block while offline: a due timer stays pending, so the
+        // first fetch fires as soon as the link is back instead of each timer
+        // attempt blocking the loop on a connect() timeout.
+        if (WiFi.status() == WL_CONNECTED) {
+            if (s_tokens.valid && s_ivUsage.due(now)) {
+                s_ivUsage.ran(now);
+                apiFetchUsage(s_usage, s_tokens);
+                if (s_tokens.dirty) {
+                    tokenStoreSave(s_tokens);
+                    s_tokens.dirty = false;
+                }
+            } else if (s_ivWeather.due(now)) {
+                s_ivWeather.ran(now);
+                if (apiFetchWeather(s_weather) && clockSyncValid()) {
+                    snprintf(s_weather.obsTime, sizeof(s_weather.obsTime), "%02d:%02d",
+                             s_env.hh, s_env.mm);
+                }
+            } else if (s_ivMoon.due(now)) {
+                s_ivMoon.ran(now);
+                apiFetchMoon(s_moon);
+            } else if (s_cfg.waqi_token[0] && s_ivAir.due(now)) {
+                s_ivAir.ran(now);
+                apiFetchAir(s_air, s_cfg.waqi_token);
             }
-        } else if (s_ivWeather.due(now)) {
-            s_ivWeather.ran(now);
-            if (apiFetchWeather(s_weather) && clockSyncValid()) {
-                snprintf(s_weather.obsTime, sizeof(s_weather.obsTime), "%02d:%02d",
-                         s_env.hh, s_env.mm);
-            }
-        } else if (s_ivMoon.due(now)) {
-            s_ivMoon.ran(now);
-            apiFetchMoon(s_moon);
-        } else if (s_cfg.waqi_token[0] && s_ivAir.due(now)) {
-            s_ivAir.ran(now);
-            apiFetchAir(s_air, s_cfg.waqi_token);
         }
 
         clockSyncUpdate(now, false);
