@@ -87,25 +87,8 @@ bool netConnect(const char* ssid, const char* pass) {
   return WiFi.status() == WL_CONNECTED;
 }
 
-void netDisconnect() {
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-}
-
-bool netConnected() {
-  return WiFi.status() == WL_CONNECTED;
-}
-
-const char* netSSID() {
-  return WiFi.SSID().c_str();
-}
-
 IPAddress netIP() {
   return WiFi.localIP();
-}
-
-int8_t netRSSI() {
-  return WiFi.RSSI();
 }
 
 void netSaveCred(const char* ssid, const char* pass) {

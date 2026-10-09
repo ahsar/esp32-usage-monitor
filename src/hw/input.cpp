@@ -1,5 +1,6 @@
 #include "hw/input.h"
 #include "hw/pins.h"
+#include "hw/display.h"
 #include "hw/expander.h"
 #include "hw/power.h"
 #include <Arduino.h>
@@ -141,32 +142,12 @@ static void scanTouch() {
   if (n > 0) {
     s_tp.justPressed  = !s_tp.down;
     s_tp.justReleased = false;
-    // Mirror of hwDisplayPush's letterbox scale: reverse (physical → canvas).
-    // Use BOARD_* (raw macros from board header) since display.h's constexpr
-    // wrappers aren't visible here.
-    #if BOARD_DISPLAY_LETTERBOX
-      constexpr int OFF_X  = (LCD_W_PHYS - BOARD_DISPLAY_DEST_W) / 2;
-      constexpr int OFF_Y  = (LCD_H_PHYS - BOARD_DISPLAY_DEST_H) / 2;
-      int dx = x[0] - OFF_X;
-      int dy = y[0] - OFF_Y;
-      int tx = (dx * BOARD_HW_W) / BOARD_DISPLAY_DEST_W;
-      int ty = (dy * BOARD_HW_H) / BOARD_DISPLAY_DEST_H;
-      if (tx < 0) tx = 0; else if (tx >= BOARD_HW_W) tx = BOARD_HW_W - 1;
-      if (ty < 0) ty = 0; else if (ty >= BOARD_HW_H) ty = BOARD_HW_H - 1;
-      s_tp.x = tx;
-      s_tp.y = ty;
-    #else
-      // Non-letterbox: physical → canvas via OFFSET subtract + scale downscale.
-      // OFFSET is 0 on 1.8 (full-fill), 148/128 on 2.16 (centred 184×224 in 480×480).
-      int dx = x[0] - BOARD_DISPLAY_OFFSET_X;
-      int dy = y[0] - BOARD_DISPLAY_OFFSET_Y;
-      int tx = dx / BOARD_DISPLAY_SCALE;
-      int ty = dy / BOARD_DISPLAY_SCALE;
-      if (tx < 0) tx = 0; else if (tx >= BOARD_HW_W) tx = BOARD_HW_W - 1;
-      if (ty < 0) ty = 0; else if (ty >= BOARD_HW_H) ty = BOARD_HW_H - 1;
-      s_tp.x = tx;
-      s_tp.y = ty;
-    #endif
+    // Physical → logical mapping is shared with hwDisplayPush(), so the two
+    // can never drift (see hwDisplayMapTouch).
+    int lx, ly;
+    hwDisplayMapTouch(x[0], y[0], &lx, &ly);
+    s_tp.x = (int16_t)lx;
+    s_tp.y = (int16_t)ly;
     s_tp.down = true;
     #ifdef DEBUG_TOUCH
       Serial.printf("TP raw=%d,%d  mapped=%d,%d  down=%d jp=%d\n",
@@ -187,14 +168,10 @@ static void scanTouch() {
         Arduino_IIC_Touch::Value_Information::TOUCH_COORDINATE_Y);
     s_tp.justPressed  = !s_tp.down;
     s_tp.justReleased = false;
-    int dx = rx - BOARD_DISPLAY_OFFSET_X;
-    int dy = ry - BOARD_DISPLAY_OFFSET_Y;
-    int tx = dx / BOARD_DISPLAY_SCALE;
-    int ty = dy / BOARD_DISPLAY_SCALE;
-    if (tx < 0) tx = 0; else if (tx >= BOARD_HW_W) tx = BOARD_HW_W - 1;
-    if (ty < 0) ty = 0; else if (ty >= BOARD_HW_H) ty = BOARD_HW_H - 1;
-    s_tp.x = tx;
-    s_tp.y = ty;
+    int lx, ly;
+    hwDisplayMapTouch(rx, ry, &lx, &ly);
+    s_tp.x = (int16_t)lx;
+    s_tp.y = (int16_t)ly;
     s_tp.down = true;
   } else {
     s_tp.justReleased = s_tp.down;
@@ -234,4 +211,3 @@ uint8_t hwAxpBtnEvent() {
 }
 
 const HwTouch& hwTouch() { return s_tp; }
-bool hwTouchIrqPending() { return s_tpIrqFlag; }

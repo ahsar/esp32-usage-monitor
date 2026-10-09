@@ -1,5 +1,6 @@
 #include "api_client.h"
 #include "http_client.h"
+#include "util/time_util.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <string.h>
@@ -11,40 +12,6 @@ static const char* CLIENT_ID = "opencode-cli";
 
 // Sanity floor for a synced clock (2020-09-13). Below this we treat time as unset.
 static const uint32_t CLOCK_MIN = 1600000000u;
-
-// ---------------------------------------------------------------------------
-// Time parsing
-// ---------------------------------------------------------------------------
-
-// Days-from-civil algorithm (Howard Hinnant), returns UTC epoch seconds.
-static uint32_t civilToEpoch(int Y, int Mo, int D, int H, int Mi, int S) {
-  int y = Y - (Mo <= 2);
-  int era = (y >= 0 ? y : y - 399) / 400;
-  unsigned yoe = (unsigned)(y - era * 400);
-  unsigned doy = (153u * (unsigned)(Mo + (Mo > 2 ? -3 : 9)) + 2) / 5 + (unsigned)D - 1;
-  unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  long long days = (long long)era * 146097 + (long long)doe - 719468;
-  long long secs = days * 86400LL + H * 3600 + Mi * 60 + S;
-  return (uint32_t)secs;
-}
-
-static uint32_t isoToEpoch(const char* iso) {
-  int Y, Mo, D, H, Mi, S;
-  if (!iso || sscanf(iso, "%d-%d-%dT%d:%d:%d", &Y, &Mo, &D, &H, &Mi, &S) != 6) return 0;
-  return civilToEpoch(Y, Mo, D, H, Mi, S);
-}
-
-// "Thu, 08 Oct 2026 05:21:03 GMT"
-static uint32_t httpDateToEpoch(const String& d) {
-  int day, year, h, mi, s;
-  char mon[8] = {0};
-  if (sscanf(d.c_str(), "%*3s, %d %7s %d %d:%d:%d", &day, mon, &year, &h, &mi, &s) != 6) return 0;
-  static const char* MONTHS = "JanFebMarAprMayJunJulAugSepOctNovDec";
-  const char* p = strstr(MONTHS, mon);
-  if (!p) return 0;
-  int mo = (int)((p - MONTHS) / 3) + 1;
-  return civilToEpoch(year, mo, day, h, mi, s);
-}
 
 // ---------------------------------------------------------------------------
 // Usage parsing
@@ -80,7 +47,7 @@ static bool parseUsage(const String& body, const String& dateHeader, UsageData& 
   if (meters.isNull()) return false;
 
   uint32_t nowSec = (uint32_t)time(nullptr);
-  if (nowSec < CLOCK_MIN) nowSec = httpDateToEpoch(dateHeader);
+  if (nowSec < CLOCK_MIN) nowSec = httpDateToEpoch(dateHeader.c_str());
 
   struct MeterMap { const char* key; int* pct; uint32_t* reset; };
   MeterMap map[3] = {

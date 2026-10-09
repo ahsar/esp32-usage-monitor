@@ -418,7 +418,3 @@ void wifiSetupDraw(WifiState& state) {
     return;
   }
 }
-
-void wifiSetupHandleButtons(WifiState& state) {
-  (void)state;
-}

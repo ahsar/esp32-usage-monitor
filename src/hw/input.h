@@ -25,4 +25,3 @@ HwBtn& hwBtnBoot();       // BOOT key (rightmost)
 uint8_t hwAxpBtnEvent();  // 0 / 0x02 / 0x04 — caller consumes 0x04
 
 const HwTouch& hwTouch();
-bool hwTouchIrqPending();  // peek at IRQ flag without consuming; for break-early sleep

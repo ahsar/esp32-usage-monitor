@@ -1,4 +1,5 @@
 #include "token_store.h"
+#include "storage.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
@@ -6,16 +7,10 @@
 
 static const char* TOKENS_PATH = "/tokens.json";
 
-static bool fsReady() {
-  if (LittleFS.begin(false)) return true;
-  if (!LittleFS.format()) return false;
-  return LittleFS.begin(false);
-}
-
 bool tokenStoreLoad(TokenSet& t) {
   memset(&t, 0, sizeof(t));
 
-  if (!fsReady()) return false;
+  if (!storageMount()) return false;
 
   File f = LittleFS.open(TOKENS_PATH, "r");
   if (!f) return false;
@@ -35,7 +30,7 @@ bool tokenStoreLoad(TokenSet& t) {
 }
 
 bool tokenStoreSave(const TokenSet& t) {
-  if (!fsReady()) return false;
+  if (!storageMount()) return false;
 
   JsonDocument doc;
   doc["refresh_token"] = t.refreshToken;
@@ -48,9 +43,4 @@ bool tokenStoreSave(const TokenSet& t) {
   serializeJson(doc, f);
   f.close();
   return true;
-}
-
-void tokenStoreClear(TokenSet& t) {
-  memset(&t, 0, sizeof(t));
-  if (fsReady()) LittleFS.remove(TOKENS_PATH);
 }

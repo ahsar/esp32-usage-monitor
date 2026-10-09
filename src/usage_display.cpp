@@ -1,4 +1,5 @@
 #include "usage_display.h"
+#include "util/value_util.h"
 #include "hw/display.h"
 #include <cstdio>
 #include <cstring>
@@ -169,24 +170,6 @@ static void drawFog(int cx, int cy, uint16_t c) {
   spr.fillRoundRect(X(cx - 14), Y(cy + 8), 28, 3, 2, c);
 }
 
-// kind: 0 clear, 1 partly, 2 cloudy, 3 overcast, 4 fog, 5 thunder,
-//       6 rain, 7 snow, 8 sleet
-static int kindFromText(const char* c) {
-  if (!c) return 2;
-  if (strstr(c, "Thunder")) return 5;
-  if (strstr(c, "Blizzard")) return 7;
-  if (strstr(c, "Snow") || strstr(c, "snow")) return 7;
-  if (strstr(c, "Sleet") || strstr(c, "Ice") || strstr(c, "Freezing")) return 8;
-  if (strstr(c, "Rain") || strstr(c, "Drizzle") || strstr(c, "rain")) return 6;
-  if (strstr(c, "Fog") || strstr(c, "Mist")) return 4;
-  if (strstr(c, "Haze") || strstr(c, "Smoky")) return 4;
-  if (strstr(c, "Overcast")) return 3;
-  if (strstr(c, "Cloudy")) return 2;
-  if (strstr(c, "Partly")) return 1;
-  if (strstr(c, "Sunny") || strstr(c, "Clear")) return 0;
-  return 2;
-}
-
 static void drawWeatherIcon(int kind, int cx, int cy) {
   switch (kind) {
     case 0:
@@ -267,16 +250,6 @@ static uint16_t usageColor(int pct) {
   return COL_GREEN;
 }
 
-static const char* aqiCategory(int aqi) {
-  if (aqi < 0) return "--";
-  if (aqi <= 50) return "Good";
-  if (aqi <= 100) return "Moderate";
-  if (aqi <= 150) return "Sensitive";
-  if (aqi <= 200) return "Unhealthy";
-  if (aqi <= 300) return "Very Unhealthy";
-  return "Hazardous";
-}
-
 static uint16_t aqiColor(int aqi) {
   if (aqi < 0) return COL_MUTED;
   if (aqi <= 50) return COL_GREEN;
@@ -336,14 +309,6 @@ void uiBeginFrame() {
 }
 
 void uiSetEnv(const UiEnv& env) { g_env = env; }
-
-const char* uiPageTitle(int page) {
-  switch (page) {
-    case UI_PAGE_USAGE: return "Usage";
-    case UI_PAGE_CLOCK: return "Clock";
-    default:            return (g_env.city && g_env.city[0]) ? g_env.city : "Weather";
-  }
-}
 
 // ---------------------------------------------------------------------------
 // USAGE card
@@ -612,16 +577,6 @@ void uiDrawClock(int ox, int oy) {
   roundBar(SAFE_L, 160, SAFE_W, 12, g_env.batteryPct, bcol);
 
   drawLogo555(HW_W / 2, 188);
-}
-
-void uiDrawAuthNeeded(int ox, int oy) {
-  g_ox = ox; g_oy = oy;
-  cardBg();
-  statusBar("Setup");
-
-  textCenter(F_HEAD, COL_YELLOW, HW_W / 2, 84, "AUTH NEEDED");
-  textCenter(F_BODY, COL_TEXT, HW_W / 2, 116, "run tools/authorize.py");
-  textCenter(F_SMALL, COL_MUTED, HW_W / 2, 140, "then uploadfs");
 }
 
 // ---------------------------------------------------------------------------

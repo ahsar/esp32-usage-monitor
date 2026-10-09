@@ -15,4 +15,3 @@ struct TokenSet {
 
 bool tokenStoreLoad(TokenSet& t);
 bool tokenStoreSave(const TokenSet& t);
-void tokenStoreClear(TokenSet& t);

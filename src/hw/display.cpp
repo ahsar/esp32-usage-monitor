@@ -120,29 +120,29 @@ bool hwDisplayInit() {
 
 ScaledCanvas* hwCanvas() { return s_ui; }
 
+void hwDisplayMapTouch(int px, int py, int* lx, int* ly) {
+  int tx, ty;
+#if BOARD_DISPLAY_LETTERBOX
+  constexpr int OFF_X = (LCD_W_PHYS - BOARD_DISPLAY_DEST_W) / 2;
+  constexpr int OFF_Y = (LCD_H_PHYS - BOARD_DISPLAY_DEST_H) / 2;
+  tx = ((px - OFF_X) * BOARD_HW_W) / BOARD_DISPLAY_DEST_W;
+  ty = ((py - OFF_Y) * BOARD_HW_H) / BOARD_DISPLAY_DEST_H;
+#else
+  tx = (px - BOARD_DISPLAY_OFFSET_X) / BOARD_DISPLAY_SCALE;
+  ty = (py - BOARD_DISPLAY_OFFSET_Y) / BOARD_DISPLAY_SCALE;
+#endif
+  if (tx < 0) tx = 0; else if (tx >= BOARD_HW_W) tx = BOARD_HW_W - 1;
+  if (ty < 0) ty = 0; else if (ty >= BOARD_HW_H) ty = BOARD_HW_H - 1;
+  *lx = tx;
+  *ly = ty;
+}
+
 void hwDisplayBrightness(uint8_t lvl) {
   if (lvl > 4) lvl = 4;
   s_gfx->setBrightness(BRIGHT_LUT[lvl]);
 }
 
-void hwDisplaySleep(bool off) {
-  if (off) {
-    s_gfx->setBrightness(0);
-    s_gfx->displayOff();
-  } else {
-    s_gfx->displayOn();
-    hwDisplayBrightness(2);   // mid; caller usually re-applies stored level
-  }
-}
-
 static uint16_t s_lineBuf[LCD_W_PHYS];   // one physical row, internal RAM
-static bool     s_borderAlertOn = false;
-
-extern "C" void hwBorderAlertSetInternal(bool on);  // forward decl from border.cpp
-
-void hwBorderAlertSetInternal(bool on) { s_borderAlertOn = on; }
-
-static const uint16_t BORDER_RED = 0xF800;
 
 void hwDisplayPush() {
 #ifdef DEBUG_SAFE_BOX
@@ -270,15 +270,4 @@ void hwDisplayPush() {
   }
 #endif
 #endif
-
-  // Attention indicator: small red pill centered at the top of the
-  // panel. Inset well below the rounded bezel corners. Less intrusive
-  // than a full frame; reads as a "notification dot".
-  if (s_borderAlertOn) {
-    const int BAR_W = 200;
-    const int BAR_H = 8;
-    const int BAR_Y = 18;
-    const int BAR_X = (LCD_W_PHYS - BAR_W) / 2;
-    s_gfx->fillRoundRect(BAR_X, BAR_Y, BAR_W, BAR_H, BAR_H / 2, BORDER_RED);
-  }
 }

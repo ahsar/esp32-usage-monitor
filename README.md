@@ -84,7 +84,7 @@ Clock
 - **Board**: Waveshare ESP32-S3-Touch-AMOLED-2.16
 - **Display**: 480×480 AMOLED (CO5300 driver)
 - **Touch**: CST9220
-- **PSRAM**: 8 MB | **Flash**: 16 MB
+- **PSRAM**: 8 MB | **Flash**: 16 MB (8 MB app partitions)
 
 ## Setup
 
@@ -198,7 +198,12 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
 │   ├── 555_audio.raw        # shake easter-egg audio
 │   └── 555.raw              # shake easter-egg image
 ├── src/
-│   ├── main.cpp             # main loop, pager state machine, gesture handling
+│   ├── main.cpp             # setup/loop, network polling, render dispatch
+│   ├── pager.cpp/h          # page + weather-card gesture/animation machine
+│   ├── status_server.cpp/h  # HTTP status server (?state=running|done|failed)
+│   ├── clock_sync.cpp/h     # NTP bootstrap + RTC resync scheduling
+│   ├── easter_egg.cpp/h     # shake detection + 555 audio playback
+│   ├── storage.cpp/h        # LittleFS mount helper (one-shot, format-on-fail)
 │   ├── config.h             # config struct + LittleFS JSON loader
 │   ├── token_store.cpp/h    # OAuth tokens persisted to LittleFS
 │   ├── http_client.cpp/h    # shared blocking HTTPS helper
@@ -206,23 +211,36 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
 │   ├── weather_client.cpp/h # weather / moon / air quality
 │   ├── usage_display.cpp/h  # UI drawing (pages, cards, icons)
 │   ├── wifi_setup.cpp/h     # WiFi setup UI
+│   ├── util/                # dependency-free helpers (host-unit-tested)
+│   │   ├── time_util.h      # epoch / ISO / HTTP-date parsing
+│   │   └── value_util.h     # weather-icon kind, moon phase, AQI label
 │   ├── voice/               # I2S audio (ES8311, easter-egg playback)
 │   ├── boards/              # per-board pin definitions
 │   └── hw/                  # hardware driver layer
-│       ├── display.cpp/h    # AMOLED display driver
+│       ├── display.cpp/h    # AMOLED display driver + touch coord mapping
 │       ├── input.cpp/h      # button and touch input
 │       ├── power.cpp/h      # power management (AXP2101)
-│       ├── audio.cpp/h      # audio driver (ES8311)
 │       ├── imu.cpp/h        # accelerometer
 │       ├── rtc.cpp/h        # real-time clock
 │       ├── expander.cpp/h   # IO expander
-│       ├── border.cpp/h     # frame drawing
 │       ├── net.cpp/h        # WiFi connection and credentials
 │       ├── pins.h           # pin definitions
 │       └── hw.cpp/h         # hardware init
+├── test/
+│   └── test_util/           # host unit tests (pio test -e native)
 ├── tools/
 │   └── authorize.py         # OAuth device-flow authoriser / --check
 └── platformio.ini           # PlatformIO config
+```
+
+## Tests
+
+The pure helpers under `src/util/` (epoch/date parsing, weather-icon kind,
+moon phase, AQI label) are free of Arduino dependencies and covered by host
+unit tests — no hardware needed:
+
+```bash
+pio test -e native
 ```
 
 ## Notes

@@ -13,10 +13,6 @@ struct NetScanResult {
 
 int  netScan(NetScanResult* out, int max);
 bool netConnect(const char* ssid, const char* pass);
-void netDisconnect();
-bool netConnected();
-const char* netSSID();
 IPAddress netIP();
-int8_t netRSSI();
 void netSaveCred(const char* ssid, const char* pass);
 bool netLoadCred(char* ssid, size_t ssidLen, char* pass, size_t passLen);

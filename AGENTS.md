@@ -55,17 +55,24 @@ from <https://github.com/jason2866/mklittlefs/releases> (asset
 
 | Path | Role |
 |---|---|
-| `src/main.cpp` | Entrypoint, two-axis pager state machine, gesture handling |
+| `src/main.cpp` | Entrypoint: setup/loop, network polling, render dispatch |
+| `src/pager.{h,cpp}` | Two-axis page/weather-card gesture + animation state machine |
+| `src/status_server.{h,cpp}` | HTTP status server (`?state=running\|done\|failed`) |
+| `src/clock_sync.{h,cpp}` | NTP bootstrap + RTC resync scheduling |
+| `src/easter_egg.{h,cpp}` | Shake detection + 555 audio playback |
+| `src/storage.{h,cpp}` | LittleFS mount helper (one-shot, format-on-fail) |
 | `src/config.h` | `AppConfig` struct + LittleFS JSON loader (`/config.json`) |
 | `src/token_store.{h,cpp}` | Runtime OAuth tokens persisted to LittleFS (`/tokens.json`) |
 | `src/http_client.{h,cpp}` | Shared blocking HTTPS helper (headers, HTTP/1.0, timeouts) |
 | `src/api_client.cpp` | opencode console REST client (`https://opencode.ai/console/api/go/status`) |
 | `src/weather_client.{h,cpp}` | Weather (wttr.in), moon (MET Norway), air quality (waqi) |
 | `src/usage_display.{h,cpp}` | UI: page/card renderers, icons, easter egg |
+| `src/util/` | Dependency-free helpers (time/value parsing, host-unit-tested) |
 | `src/wifi_setup.cpp` | WiFi config UI (button-based password entry) |
 | `src/hw/` | Drivers: display, input, power, IMU, RTC, net |
 | `src/boards/` | Board-specific pin definitions |
-| `src/voice/` | I2S audio capture (ES8311) |
+| `src/voice/` | I2S audio output (ES8311) |
+| `test/` | Host unit tests (`pio test -e native`) |
 | `tools/` | PC-side Python tools |
 
 ### UI / navigation
@@ -146,6 +153,19 @@ PLATFORMIO_BUILD_FLAGS='-DFRAME_DUMP' pio run -e esp32-usage-monitor -t upload
 
 - `tools/authorize.py` — opencode console device-flow authoriser + `--check`  
 
-## No tests / no CI
+## Tests / no CI
 
-Bare-metal firmware. No tests, no CI pipeline. Verify by building.
+Bare-metal firmware, no CI pipeline. Verify flash builds with `pio run`.
+
+The dependency-free helpers under `src/util/` (epoch/date parsing, weather-icon
+kind, moon phase, AQI label) are covered by host unit tests — no hardware
+needed:
+
+```bash
+pio test -e native
+```
+
+`platformio.ini` keeps the shared ESP32 settings in `[esp32_base]` (extended by
+`[env:esp32-usage-monitor]`) so the `[env:native]` test env does not inherit
+`framework = arduino`/`lib_deps`. `default_envs` keeps bare `pio run` to the
+firmware only.

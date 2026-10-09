@@ -117,5 +117,10 @@ private:
 bool hwDisplayInit();
 void hwDisplayPush();
 void hwDisplayBrightness(uint8_t lvl_0_4);
-void hwDisplaySleep(bool off);
 ScaledCanvas* hwCanvas();
+
+// Map a raw touch coordinate (physical panel pixels) to the logical UI grid
+// (BOARD_HW_W × BOARD_HW_H) that all drawing is authored against. This is the
+// exact inverse of hwDisplayPush()'s blit geometry, kept in one place so the
+// display and touch paths can never drift apart.
+void hwDisplayMapTouch(int px, int py, int* lx, int* ly);

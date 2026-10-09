@@ -24,4 +24,3 @@ struct WifiState {
 // `savedSsid` is the stored STA SSID (NULL/empty = no credentials).
 void wifiSetupInit(WifiState& state, const char* savedSsid);
 void wifiSetupDraw(WifiState& state);
-void wifiSetupHandleButtons(WifiState& state);

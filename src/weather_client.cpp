@@ -1,5 +1,7 @@
 #include "weather_client.h"
 #include "http_client.h"
+#include "util/time_util.h"
+#include "util/value_util.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <string.h>
@@ -30,14 +32,6 @@ static int parseSignedInt(const char* s) {
   if (!s) return 0;
   while (*s && (*s == '+' || *s == ' ')) s++;
   return atoi(s);
-}
-
-// "06:16:52" or "06:16" -> minutes since midnight (-1 on failure)
-static int parseHms(const char* s) {
-  if (!s || !s[0]) return -1;
-  int h = 0, m = 0;
-  if (sscanf(s, "%d:%d", &h, &m) < 2) return -1;
-  return h * 60 + m;
 }
 
 // wttr.in wind arrow (UTF-8 e2 86 9x) -> 16-point compass string.
@@ -137,25 +131,6 @@ bool apiFetchWeather(WeatherData& out) {
 // ---------------------------------------------------------------------------
 // moon (MET Norway)
 // ---------------------------------------------------------------------------
-
-static const char* phaseNameFor(float p) {
-  if (p < 0.03f || p >= 0.97f) return "New Moon";
-  if (p < 0.22f) return "Waxing Crescent";
-  if (p < 0.28f) return "First Quarter";
-  if (p < 0.47f) return "Waxing Gibbous";
-  if (p < 0.53f) return "Full Moon";
-  if (p < 0.72f) return "Waning Gibbous";
-  if (p < 0.78f) return "Last Quarter";
-  return "Waning Crescent";
-}
-
-// "2026-10-08T03:27+08:00" -> minutes since midnight
-static int parseIsoLocalMinutes(const char* s) {
-  if (!s) return -1;
-  const char* t = strchr(s, 'T');
-  if (!t) return -1;
-  return parseHms(t + 1);
-}
 
 bool apiFetchMoon(MoonData& out) {
   bool hadData = out.valid;

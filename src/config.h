@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include "storage.h"
 
 struct AppConfig {
   char workspace_id[128];
@@ -11,10 +12,7 @@ struct AppConfig {
 };
 
 inline bool loadConfig(AppConfig& cfg) {
-  if (!LittleFS.begin(false)) {
-    if (!LittleFS.format()) return false;
-    if (!LittleFS.begin(false)) return false;
-  }
+  if (!storageMount()) return false;
   File f = LittleFS.open("/config.json", "r");
   if (!f) return false;
   JsonDocument doc;

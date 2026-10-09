@@ -4,7 +4,6 @@
 #include "hw/power.h"
 #include "hw/imu.h"
 #include "hw/rtc.h"
-#include "hw/border.h"
 #include "hw/expander.h"
 #include "hw/pins.h"
 
