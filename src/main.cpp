@@ -14,7 +14,6 @@
 #include "hw/hw.h"
 #include "hw/net.h"
 #include "voice/i2s_audio.h"
-#include <math.h>
 #include <WiFi.h>
 
 static UsageData s_usage;
@@ -166,28 +165,10 @@ static void renderUi() {
 
 // ---- boot / loop ----------------------------------------------------------
 
-static void playBootTone() {
-    if (!audioInit()) return;
-    uint8_t toneBuf[512];
-    float phase = 0;
-    uint32_t total = 0;
-    const uint32_t target = 32000;
-    if (!audioTxStart()) return;
-    while (total < target) {
-        size_t n = 512;
-        if (total + n > target) n = target - total;
-        for (size_t i = 0; i < n; i += 2) {
-            int16_t s = (int16_t)(8000 * sin(phase));
-            toneBuf[i] = s & 0xFF;
-            toneBuf[i + 1] = (s >> 8) & 0xFF;
-            phase += 2 * PI * 440.0 / 16000.0;
-            if (phase > 2 * PI) phase -= 2 * PI;
-        }
-        audioTxWrite(toneBuf, n);
-        total += n;
-    }
-    audioTxStop();
-    Serial.println("boot tone done");
+// Bring up the I2S bus + ES8311 codec at boot. No startup sound; this is what
+// the shake-to-play 555 easter egg relies on for playback later.
+static void audioBootInit() {
+    if (!audioInit()) Serial.println("audio: init failed (no easter-egg sound)");
 }
 
 void setup() {
@@ -226,7 +207,7 @@ void setup() {
     statusServerSetWakeCallback(screenWake);
     easterEggSetWakeCallback(screenWake);
 
-    playBootTone();
+    audioBootInit();
 
     char savedSSID[33], savedPass[65];
     bool hasCreds = netLoadCred(savedSSID, 33, savedPass, 65);

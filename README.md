@@ -76,7 +76,7 @@ Clock
 - Status bar with a connection dot, page title and time (battery and charging state are on the Clock page)
 - **OAuth device flow**: authorise once with `tools/authorize.py`; the refresh token rotates automatically and is persisted to LittleFS
 - WiFi setup UI (scan + on-screen keyboard / button password entry)
-- Boot tone; shake the device to play the 555 easter egg
+- Shake the device to play the 555 easter egg
 - Configuration stored in the LittleFS filesystem
 
 ## Hardware
