@@ -1,5 +1,6 @@
 #include "clock_sync.h"
 #include "hw/rtc.h"
+#include "util/time_util.h"
 #include <Arduino.h>
 #include <time.h>
 
@@ -13,7 +14,7 @@ static void doSync() {
     s_started = true;
   }
   time_t ts = time(nullptr);
-  if (ts > 100000) {
+  if (ts > (time_t)CLOCK_VALID_MIN) {
     struct tm lt;
     localtime_r(&ts, &lt);
     HwTime rt = {

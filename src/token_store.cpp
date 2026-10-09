@@ -44,3 +44,17 @@ bool tokenStoreSave(const TokenSet& t) {
   f.close();
   return true;
 }
+
+bool tokenStoreInit(TokenSet& t, const char* fallbackRefresh, const char* fallbackOrg) {
+  tokenStoreLoad(t);
+
+  if (!t.refreshToken[0] && fallbackRefresh && fallbackRefresh[0]) {
+    strlcpy(t.refreshToken, fallbackRefresh, sizeof(t.refreshToken));
+    t.valid = true;
+    t.dirty = true;
+  }
+  if (!t.orgId[0] && fallbackOrg && fallbackOrg[0]) {
+    strlcpy(t.orgId, fallbackOrg, sizeof(t.orgId));
+  }
+  return t.valid;
+}

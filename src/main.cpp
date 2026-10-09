@@ -1,19 +1,21 @@
-#define spr (*hwCanvas())
-
 #include "config.h"
 #include "storage.h"
 #include "api_client.h"
 #include "token_store.h"
 #include "weather_client.h"
 #include "usage_display.h"
+#include "ui_compose.h"
+#include "frame_dump.h"
 #include "wifi_setup.h"
 #include "pager.h"
 #include "status_server.h"
 #include "clock_sync.h"
 #include "easter_egg.h"
+#include "util/interval.h"
 #include "hw/hw.h"
 #include "hw/net.h"
 #include "voice/i2s_audio.h"
+#include <math.h>
 #include <WiFi.h>
 
 static UsageData s_usage;
@@ -23,10 +25,15 @@ static AirData s_air;
 static AppConfig s_cfg;
 static TokenSet s_tokens;
 
-static uint32_t s_lastFetch = 0;
-static uint32_t s_lastWeather = 0;
-static uint32_t s_lastMoon = 0;
-static uint32_t s_lastAir = 0;
+// Periodic network pollers. loop() runs at most ONE of these per iteration, so
+// a burst of due timers (e.g. right after WiFi connects) can never stall input
+// and rendering behind several back-to-back blocking fetches.
+static Interval s_ivUsage(60000);
+static Interval s_ivWeather(900000);
+static Interval s_ivMoon(21600000);
+static Interval s_ivAir(1800000);
+static Interval s_ivEnv(1000);
+
 static WifiState s_wifi;
 
 // ---- display power (dirty-frame push + idle dim) --------------------------
@@ -36,7 +43,11 @@ static int      s_brightLevel = 2;       // BRIGHT_LUT index; 2 = 150/255
 static uint32_t s_lastActivity = 0;
 static bool     s_swallowKey   = false;  // first key only wakes, doesn't act
 static uint32_t s_lastDraw = 0;
-static bool     s_uiDirty = true;        // pager state changed → redraw now
+// Two distinct dirty stages: `s_redrawNow` means input/pager changed so we must
+// re-render this iteration; `s_dirty` means the canvas differs from the panel
+// and needs a push. Keeping them separate is what lets idle frames skip the
+// render+push entirely (idle drops from ~60/s to ~1/s).
+static bool     s_redrawNow = true;      // render this iteration (pager/key/wake)
 
 static const uint32_t IDLE_DIM_MS = 30000;   // 30 s idle → dim
 static const uint8_t  DIM_LEVEL   = 0;       // BRIGHT_LUT[0] = 50/255
@@ -47,7 +58,7 @@ static void screenWake() {
         s_screenDim = false;
     }
     s_lastDraw = 0;          // force an immediate re-render on wake
-    s_uiDirty  = true;
+    s_redrawNow = true;
     s_lastActivity = millis();
 }
 
@@ -63,12 +74,10 @@ static void screenIdleUpdate() {
 // ---- UI environment -------------------------------------------------------
 
 static UiEnv s_env;
-static uint32_t s_envNext = 0;
 
-static void refreshEnv() {
-    uint32_t now = millis();
-    if (now < s_envNext) return;
-    s_envNext = now + 1000;
+static void refreshEnv(uint32_t now) {
+    if (!s_ivEnv.due(now)) return;
+    s_ivEnv.ran(now);
 
     s_env.online = (WiFi.status() == WL_CONNECTED);
     s_env.timeValid = clockSyncValid();
@@ -86,89 +95,40 @@ static void refreshEnv() {
     uiSetEnv(s_env);
 }
 
-// ---- rendering ------------------------------------------------------------
-
-static const int PAGE_W = HW_W;
-static const int PAGE_H = HW_H;
-
-#ifdef FRAME_DUMP
-static void renderUi();
-
-// Debug-only: walk every screen/card and stream the raw RGB565 canvas over USB
-// CDC so a host script can rebuild PNGs. Build with -DFRAME_DUMP.
-static uint32_t s_dumpIdx = 0;
-static uint32_t s_dumpNext = 0;
-static void frameDump() {
-    if (s_dumpIdx >= 7) return;
-    if (millis() < s_dumpNext) return;
-    // Wait for real data (or give up after 45s) so the cards aren't placeholders.
-    if (s_dumpIdx == 0 && !(s_usage.valid && s_weather.valid) && millis() < 45000) return;
-    s_dumpNext = millis() + 1500;
-
-    uint32_t idx = s_dumpIdx;
-    if (idx < UI_PAGE_COUNT) {
-        pagerSetPage((int)idx);
-    } else {
-        pagerSetPage(UI_PAGE_WEATHER);
-        pagerSetCard((int)(idx - UI_PAGE_COUNT + 1));
-    }
-    pagerCancelAnim();
-
-    renderUi();
-    hwDisplayPush();
-
-    uint16_t* fb = (uint16_t*)hwCanvas()->getFramebuffer();
-    Serial.printf("FRAME %u %d %d\n", idx, HW_CANVAS_W, HW_CANVAS_H);
-    delay(30);
-    Serial.write((uint8_t*)fb, HW_CANVAS_W * HW_CANVAS_H * 2);
-    Serial.write('\n');
-    Serial.flush();
-    s_dumpIdx++;
-}
-#endif
-
-static void drawPage(int page, int card, int ox, int oy) {
-    switch (page) {
-        case UI_PAGE_USAGE: uiDrawUsage(s_usage, ox, oy); break;
-        case UI_PAGE_CLOCK: uiDrawClock(ox, oy); break;
-        default:
-            uiDrawWeatherCard(card, s_weather, s_moon, s_air,
-                              s_cfg.waqi_token[0] != 0, ox, oy);
-            break;
-    }
-}
-
-static void renderUi() {
-    uiBeginFrame();
-
-    bool vaxis = pagerVerticalAxis();
-    int off = (int)lroundf(pagerOffset());
-    int page = pagerPage();
-    int card = pagerCard();
-    bool hasAir = s_cfg.waqi_token[0] != 0;
-
-    if (vaxis && page == UI_PAGE_WEATHER) {
-        uiDrawWeatherCard(card, s_weather, s_moon, s_air, hasAir, 0, off);
-        if (off < 0 && card + 1 < UI_WC_COUNT)
-            uiDrawWeatherCard(card + 1, s_weather, s_moon, s_air, hasAir, 0, off + PAGE_H);
-        else if (off > 0 && card - 1 >= 0)
-            uiDrawWeatherCard(card - 1, s_weather, s_moon, s_air, hasAir, 0, off - PAGE_H);
-    } else {
-        drawPage(page, card, off, 0);
-        if (off < 0 && page + 1 < UI_PAGE_COUNT) drawPage(page + 1, card, off + PAGE_W, 0);
-        else if (off > 0 && page - 1 >= 0) drawPage(page - 1, card, off - PAGE_W, 0);
-    }
-
-    uiDrawPageDots(page);
-    if (page == UI_PAGE_WEATHER) uiDrawCardDots(card, UI_WC_COUNT);
+static UiData currentUiData() {
+    UiData d;
+    d.usage   = &s_usage;
+    d.weather = &s_weather;
+    d.moon    = &s_moon;
+    d.air     = &s_air;
+    d.hasAir  = s_cfg.waqi_token[0] != 0;
+    return d;
 }
 
 // ---- boot / loop ----------------------------------------------------------
 
-// Bring up the I2S bus + ES8311 codec at boot. No startup sound; this is what
-// the shake-to-play 555 easter egg relies on for playback later.
-static void audioBootInit() {
-    if (!audioInit()) Serial.println("audio: init failed (no easter-egg sound)");
+static void playBootTone() {
+    if (!audioInit()) return;
+    uint8_t toneBuf[512];
+    float phase = 0;
+    uint32_t total = 0;
+    const uint32_t target = 32000;
+    if (!audioTxStart()) return;
+    while (total < target) {
+        size_t n = 512;
+        if (total + n > target) n = target - total;
+        for (size_t i = 0; i < n; i += 2) {
+            int16_t s = (int16_t)(8000 * sin(phase));
+            toneBuf[i] = s & 0xFF;
+            toneBuf[i + 1] = (s >> 8) & 0xFF;
+            phase += 2 * PI * 440.0 / 16000.0;
+            if (phase > 2 * PI) phase -= 2 * PI;
+        }
+        audioTxWrite(toneBuf, n);
+        total += n;
+    }
+    audioTxStop();
+    Serial.println("boot tone done");
 }
 
 void setup() {
@@ -185,17 +145,8 @@ void setup() {
 
     storageMount();
     loadConfig(s_cfg);
-    tokenStoreLoad(s_tokens);
-    if (!s_tokens.refreshToken[0] && s_cfg.refresh_token[0]) {
-        strlcpy(s_tokens.refreshToken, s_cfg.refresh_token, sizeof(s_tokens.refreshToken));
-        s_tokens.valid = true;
-        s_tokens.dirty = true;
-    }
-    if (!s_tokens.orgId[0]) {
-        strlcpy(s_tokens.orgId,
-                s_cfg.org_id[0] ? s_cfg.org_id : s_cfg.workspace_id,
-                sizeof(s_tokens.orgId));
-    }
+    tokenStoreInit(s_tokens, s_cfg.refresh_token,
+                   s_cfg.org_id[0] ? s_cfg.org_id : s_cfg.workspace_id);
     if (!s_tokens.valid) {
         Serial.println("No refresh token; run tools/authorize.py to authorise");
     }
@@ -207,7 +158,7 @@ void setup() {
     statusServerSetWakeCallback(screenWake);
     easterEggSetWakeCallback(screenWake);
 
-    audioBootInit();
+    playBootTone();
 
     char savedSSID[33], savedPass[65];
     bool hasCreds = netLoadCred(savedSSID, 33, savedPass, 65);
@@ -256,7 +207,7 @@ void loop() {
     }
 
     uint32_t now = millis();
-    refreshEnv();
+    refreshEnv(now);
 
     if (s_wifi.open && WiFi.status() == WL_CONNECTED) {
         WiFi.setSleep(WIFI_PS_MIN_MODEM);
@@ -264,10 +215,11 @@ void loop() {
         clockSyncUpdate(now, true);
         statusServerBegin();
         s_wifi.open = false;
-        s_lastFetch = 0;
-        s_lastWeather = 0;
-        s_lastMoon = 0;
-        s_lastAir = 0;
+        // Pull fresh data on the next few iterations (one fetch per iteration).
+        s_ivUsage.forcePending();
+        s_ivWeather.forcePending();
+        s_ivMoon.forcePending();
+        s_ivAir.forcePending();
         s_lastActivity = millis();   // don't idle-out the instant setup closes
         Serial.println("WiFi connected (auto)");
     }
@@ -295,31 +247,25 @@ void loop() {
     if (!s_wifi.open) screenIdleUpdate();
 
     if (!s_wifi.open) {
-        // ---- network polling ----
-        if (s_tokens.valid && (now - s_lastFetch >= 60000 || s_lastFetch == 0)) {
-            s_lastFetch = now;
+        // ---- network polling (at most one fetch per iteration) ----
+        if (s_tokens.valid && s_ivUsage.due(now)) {
+            s_ivUsage.ran(now);
             apiFetchUsage(s_usage, s_tokens);
             if (s_tokens.dirty) {
                 tokenStoreSave(s_tokens);
                 s_tokens.dirty = false;
             }
-        }
-
-        if (now - s_lastWeather >= 900000 || s_lastWeather == 0) {
-            s_lastWeather = now;
+        } else if (s_ivWeather.due(now)) {
+            s_ivWeather.ran(now);
             if (apiFetchWeather(s_weather) && clockSyncValid()) {
                 snprintf(s_weather.obsTime, sizeof(s_weather.obsTime), "%02d:%02d",
                          s_env.hh, s_env.mm);
             }
-        }
-
-        if (now - s_lastMoon >= 21600000 || s_lastMoon == 0) {
-            s_lastMoon = now;
+        } else if (s_ivMoon.due(now)) {
+            s_ivMoon.ran(now);
             apiFetchMoon(s_moon);
-        }
-
-        if (s_cfg.waqi_token[0] && (now - s_lastAir >= 1800000 || s_lastAir == 0)) {
-            s_lastAir = now;
+        } else if (s_cfg.waqi_token[0] && s_ivAir.due(now)) {
+            s_ivAir.ran(now);
             apiFetchAir(s_air, s_cfg.waqi_token);
         }
 
@@ -339,19 +285,19 @@ void loop() {
                 statusServerClearThinking();
             } else {
                 pagerAdvance();
-                s_uiDirty = true;
+                s_redrawNow = true;
             }
         }
 
-        if (!animated && pagerUpdate()) s_uiDirty = true;
+        if (!animated && pagerUpdate()) s_redrawNow = true;
 
 #ifdef FRAME_DUMP
-        frameDump();
+        frameDumpTick(now, currentUiData());
 #else
         // Redraw immediately on any pager state change (drag, animation step,
         // commit, key) so the final frame is never left to the 1 s idle tick —
         // otherwise the screen freezes on a mid-swipe frame for up to a second.
-        bool fast = animated || s_uiDirty;
+        bool fast = animated || s_redrawNow;
         if (fast || now - s_lastDraw >= 1000) {
             s_lastDraw = now;
             if (easterEggActive()) {
@@ -359,9 +305,9 @@ void loop() {
             } else if (thinking) {
                 usageDisplayDrawThinking(now - statusServerThinkingSince());
             } else {
-                renderUi();
+                uiRender(currentUiData());
             }
-            s_uiDirty = false;
+            s_redrawNow = false;
             s_dirty = true;
         }
 #endif

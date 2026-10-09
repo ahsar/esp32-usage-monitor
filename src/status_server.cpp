@@ -34,6 +34,13 @@ extern "C" void handleHttpStatus() {
     if (line == "\r") break;
   }
 
+  if (req.indexOf("GET ") < 0) {
+    client.println("HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\n");
+    delay(10);
+    client.stop();
+    return;
+  }
+
   if (req.indexOf("state=running") >= 0) {
     s_thinking = true;
     s_thinkingSince = millis();

@@ -55,19 +55,24 @@ from <https://github.com/jason2866/mklittlefs/releases> (asset
 
 | Path | Role |
 |---|---|
-| `src/main.cpp` | Entrypoint: setup/loop, network polling, render dispatch |
+| `src/main.cpp` | Entrypoint: setup/loop, network polling schedule, input wiring, display power |
+| `src/ui_compose.{h,cpp}` | Picks page/card(s) for the current pager state and drives the display layer |
+| `src/ui_model.h` | Neutral UI enums (`UiPage`, `UiWeatherCard`) + `UiEnv`, shared by pager/UI |
+| `src/frame_dump.{h,cpp}` | `-DFRAME_DUMP` screen walker (streams raw canvases over USB CDC) |
 | `src/pager.{h,cpp}` | Two-axis page/weather-card gesture + animation state machine |
 | `src/status_server.{h,cpp}` | HTTP status server (`?state=running\|done\|failed`) |
 | `src/clock_sync.{h,cpp}` | NTP bootstrap + RTC resync scheduling |
 | `src/easter_egg.{h,cpp}` | Shake detection + 555 audio playback |
 | `src/storage.{h,cpp}` | LittleFS mount helper (one-shot, format-on-fail) |
 | `src/config.h` | `AppConfig` struct + LittleFS JSON loader (`/config.json`) |
-| `src/token_store.{h,cpp}` | Runtime OAuth tokens persisted to LittleFS (`/tokens.json`) |
+| `src/token_store.{h,cpp}` | Runtime OAuth tokens persisted to LittleFS (`/tokens.json`) + config fallback init |
 | `src/http_client.{h,cpp}` | Shared blocking HTTPS helper (headers, HTTP/1.0, timeouts) |
 | `src/api_client.cpp` | opencode console REST client (`https://opencode.ai/console/api/go/status`) |
-| `src/weather_client.{h,cpp}` | Weather (wttr.in), moon (MET Norway), air quality (waqi) |
+| `src/weather_client.{h,cpp}` | Weather (wttr.in), moon (MET Norway), air quality (waqi) transport |
+| `src/parse/` | Header-only, host-testable payload parsers (usage/moon/air) |
 | `src/usage_display.{h,cpp}` | UI: page/card renderers, icons, easter egg |
-| `src/util/` | Dependency-free helpers (time/value parsing, host-unit-tested) |
+| `src/ui/theme.h` | Shared UI palette (main UI + WiFi setup) |
+| `src/util/` | Dependency-free helpers (time/value/interval, host-unit-tested) |
 | `src/wifi_setup.cpp` | WiFi config UI (button-based password entry) |
 | `src/hw/` | Drivers: display, input, power, IMU, RTC, net |
 | `src/boards/` | Board-specific pin definitions |
@@ -153,13 +158,15 @@ PLATFORMIO_BUILD_FLAGS='-DFRAME_DUMP' pio run -e esp32-usage-monitor -t upload
 
 - `tools/authorize.py` — opencode console device-flow authoriser + `--check`  
 
-## Tests / no CI
+## Tests / CI
 
-Bare-metal firmware, no CI pipeline. Verify flash builds with `pio run`.
+Firmware flash builds are verified with `pio run`; CI (`.github/workflows/ci.yml`)
+runs `pio test -e native` and `pio run -e esp32-usage-monitor` on every push/PR.
 
 The dependency-free helpers under `src/util/` (epoch/date parsing, weather-icon
-kind, moon phase, AQI label) are covered by host unit tests — no hardware
-needed:
+kind, moon phase, AQI label, `Interval`) and the header-only parsers under
+`src/parse/` (usage meters, wttr one-line, moon/air JSON) are covered by host
+unit tests — no hardware needed:
 
 ```bash
 pio test -e native
@@ -167,5 +174,5 @@ pio test -e native
 
 `platformio.ini` keeps the shared ESP32 settings in `[esp32_base]` (extended by
 `[env:esp32-usage-monitor]`) so the `[env:native]` test env does not inherit
-`framework = arduino`/`lib_deps`. `default_envs` keeps bare `pio run` to the
-firmware only.
+`framework = arduino`; the native env instead pulls ArduinoJson only (needed by
+`src/parse/`) plus `-Isrc -Isrc/util`.

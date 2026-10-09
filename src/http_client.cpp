@@ -84,8 +84,11 @@ bool httpRequest(const char* host, const char* method, const char* path,
   String headers = raw.substring(0, hdrEnd);
   res.body = raw.substring(hdrEnd + 4);
 
-  int sp = headers.indexOf(' ');
-  if (sp > 0) res.status = headers.substring(sp + 1, sp + 4).toInt();
+  // Only trust a well-formed status line ("HTTP/1.x <code> ...").
+  if (headers.startsWith("HTTP/")) {
+    int sp = headers.indexOf(' ');
+    if (sp > 0) res.status = headers.substring(sp + 1).toInt();  // stops at the space
+  }
 
   String lower = headers;
   lower.toLowerCase();

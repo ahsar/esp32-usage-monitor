@@ -119,6 +119,9 @@ void hwDisplayPush();
 void hwDisplayBrightness(uint8_t lvl_0_4);
 ScaledCanvas* hwCanvas();
 
+// Shorthand used by the UI translation units to draw on the logical canvas.
+#define spr (*hwCanvas())
+
 // Map a raw touch coordinate (physical panel pixels) to the logical UI grid
 // (BOARD_HW_W × BOARD_HW_H) that all drawing is authored against. This is the
 // exact inverse of hwDisplayPush()'s blit geometry, kept in one place so the

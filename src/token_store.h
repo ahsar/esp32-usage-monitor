@@ -15,3 +15,11 @@ struct TokenSet {
 
 bool tokenStoreLoad(TokenSet& t);
 bool tokenStoreSave(const TokenSet& t);
+
+// Load persisted tokens and apply config.json fallbacks: seed the refresh token
+// from `fallbackRefresh` when none is stored, and the org id from `fallbackOrg`
+// when none is known. Returns true when a usable refresh token is present.
+//
+// Kept here (rather than in main) so the single-use / rotating-refresh-token
+// migration lives in one place.
+bool tokenStoreInit(TokenSet& t, const char* fallbackRefresh, const char* fallbackOrg);

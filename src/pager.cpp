@@ -1,5 +1,5 @@
 #include "pager.h"
-#include "usage_display.h"
+#include "ui_model.h"
 #include "hw/input.h"
 #include "hw/display.h"
 #include <Arduino.h>

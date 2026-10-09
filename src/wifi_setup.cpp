@@ -1,11 +1,10 @@
 #include "wifi_setup.h"
+#include "ui/theme.h"
 #include "hw/display.h"
 #include "hw/input.h"
 #include "hw/net.h"
 #include <string.h>
 #include <Arduino.h>
-
-#define spr (*hwCanvas())
 
 // All on-screen copy here is ASCII, so on the supersampled canvas use a 2×
 // Helvetica face instead of the (upscaled) 12 px CJK font that only ever
@@ -16,13 +15,7 @@
   #define WIFI_FONT u8g2_font_wqy12_t_gb2312b
 #endif
 
-static const uint16_t COL_BG      = 0x0000;
-static const uint16_t COL_TEXT    = 0xFFFF;
-static const uint16_t COL_DIM     = 0x8410;
-static const uint16_t COL_GREEN   = 0x07E0;
-static const uint16_t COL_HOT     = 0xFA20;
-static const uint16_t COL_BTN     = 0x2108;
-static const uint16_t COL_ACCENT  = 0x3949;
+using namespace ui_theme;
 
 static const char* WIFI_CHARS[] = {
   "abcdefghijklmnopqrstuvwxyz",

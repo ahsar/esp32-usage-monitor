@@ -5,9 +5,12 @@
 #include <stdio.h>
 #include <string.h>
 
+// Floor for a "synced" clock (2020-09-13 UTC). Below this, time() is treated as
+// unset and callers fall back to a parsed Date header / RTC.
+constexpr uint32_t CLOCK_VALID_MIN = 1600000000u;
+
 // Days-from-civil algorithm (Howard Hinnant), returns UTC epoch seconds.
-inline uint32_t civilToEpoch(int Y, int Mo, int D, int H, int Mi, int S) {
-  int y = Y - (Mo <= 2);
+inline uint32_t civilToEpoch(int Y, int Mo, int D, int H, int Mi, int S) {  int y = Y - (Mo <= 2);
   int era = (y >= 0 ? y : y - 399) / 400;
   unsigned yoe = (unsigned)(y - era * 400);
   unsigned doy = (153u * (unsigned)(Mo + (Mo > 2 ? -3 : 9)) + 2) / 5 + (unsigned)D - 1;

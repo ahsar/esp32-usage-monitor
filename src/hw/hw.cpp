@@ -1,9 +1,25 @@
 #include "hw/hw.h"
 #include <Arduino.h>
+#include <U8g2lib.h>
 #include <Wire.h>
 
 static void die(const char* what) {
   Serial.printf("hwInit FAIL: %s\n", what);
+  // Best-effort on-screen report: if the display is already up (so the failure
+  // is a later subsystem) show what died instead of a blank panel. If the
+  // display itself is the casualty, only the serial log will have it.
+  ScaledCanvas* c = hwCanvas();
+  if (c) {
+    c->fillScreen(0x0000);
+    c->setFont(u8g2_font_helvB12_tf);
+    c->setTextColor(0xF800);
+    c->setCursor(SAFE_L, SAFE_T + 20);
+    c->print("INIT FAIL:");
+    c->setTextColor(0xFFFF);
+    c->setCursor(SAFE_L, SAFE_T + 40);
+    c->print(what);
+    hwDisplayPush();
+  }
   while (1) delay(1000);
 }
 
