@@ -16,6 +16,7 @@
 #include "hw/hw.h"
 #include "hw/net.h"
 #include "voice/i2s_audio.h"
+#include "version.h"
 #include <WiFi.h>
 
 static UsageData s_usage;
@@ -207,7 +208,7 @@ static void uiPump() {
 void setup() {
     Serial.begin(115200);
     delay(100);
-    Serial.println("ESP32 Usage Monitor");
+    Serial.printf("ESP32 Usage Monitor fw %s\n", FW_VERSION);
 
     hwInit();
 

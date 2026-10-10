@@ -209,11 +209,15 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
 │   ├── http_client.cpp/h    # shared blocking HTTPS helper
 │   ├── api_client.cpp/h     # OpenCode console REST client
 │   ├── weather_client.cpp/h # weather / moon / air quality
-│   ├── usage_display.cpp/h  # UI drawing (pages, cards, icons)
+│   ├── usage_display.h      # public UI drawing API (page/card renderers)
+│   ├── ui/                  # UI drawing impl (cards, primitives, icons, theme)
 │   ├── wifi_setup.cpp/h     # WiFi setup UI
+│   ├── parse/               # header-only payload parsers (usage/weather/moon/air)
 │   ├── util/                # dependency-free helpers (host-unit-tested)
 │   │   ├── time_util.h      # epoch / ISO / HTTP-date parsing
-│   │   └── value_util.h     # weather-icon kind, moon phase, AQI label
+│   │   ├── value_util.h     # weather-icon kind, moon phase, AQI label
+│   │   ├── interval.h       # periodic scheduling helper
+│   │   └── dirty_rect.h     # dirty-region diffing for panel pushes
 │   ├── voice/               # I2S audio (ES8311, easter-egg playback)
 │   ├── boards/              # per-board pin definitions
 │   └── hw/                  # hardware driver layer
@@ -236,8 +240,9 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
 ## Tests
 
 The pure helpers under `src/util/` (epoch/date parsing, weather-icon kind,
-moon phase, AQI label) are free of Arduino dependencies and covered by host
-unit tests — no hardware needed:
+moon phase, AQI label, `Interval`, dirty-rect diffing) and the header-only
+parsers under `src/parse/` (usage meters, wttr one-line, moon/air JSON) are free
+of Arduino dependencies and covered by host unit tests — no hardware needed:
 
 ```bash
 pio test -e native

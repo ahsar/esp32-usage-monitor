@@ -5,3 +5,7 @@
 *.map
 data/config.json
 __pycache__/
+
+# Local/IDE + build artifacts
+.claude/
+compile_commands.json

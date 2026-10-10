@@ -70,8 +70,8 @@ from <https://github.com/jason2866/mklittlefs/releases> (asset
 | `src/api_client.cpp` | opencode console REST client (`https://opencode.ai/console/api/go/status`) |
 | `src/weather_client.{h,cpp}` | Weather (wttr.in), moon (MET Norway), air quality (waqi) transport |
 | `src/parse/` | Header-only, host-testable payload parsers (usage/moon/air) |
-| `src/usage_display.{h,cpp}` | UI: page/card renderers, icons, easter egg |
-| `src/ui/theme.h` | Shared UI palette (main UI + WiFi setup) |
+| `src/usage_display.h` | Public UI drawing API (frame setup, page/card renderers, dots) |
+| `src/ui/` | UI drawing impl (`cards`, `primitives`, `icons`) + shared palette (`theme.h`) |
 | `src/util/` | Dependency-free helpers (time/value/interval/dirty-rect, host-unit-tested) |
 | `src/wifi_setup.cpp` | WiFi config UI (button-based password entry) |
 | `src/hw/` | Drivers: display, input, power, IMU, RTC, net |
