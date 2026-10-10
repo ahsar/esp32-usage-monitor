@@ -10,6 +10,7 @@
 #include "time_util.h"
 #include "value_util.h"
 #include "interval.h"
+#include "dirty_rect.h"
 #include "parse/usage_parse.h"
 #include "parse/weather_parse.h"
 
@@ -234,6 +235,68 @@ void test_interval_wrap(void) {
   TEST_ASSERT_TRUE(iv.due(0x00000400u));    // wrapped: 0x500 ms elapsed
 }
 
+// ---- dirtyRect16 ----------------------------------------------------------
+
+void test_dirty_rect_identical_is_empty(void) {
+  uint16_t a[8 * 4];
+  for (int i = 0; i < 8 * 4; i++) a[i] = (uint16_t)i;
+  uint16_t b[8 * 4];
+  memcpy(b, a, sizeof(a));
+  DirtyRect r = dirtyRect16(a, b, 8, 4);
+  TEST_ASSERT_TRUE(r.empty());
+  TEST_ASSERT_EQUAL_INT(0, r.w());
+  TEST_ASSERT_EQUAL_INT(0, r.h());
+}
+
+void test_dirty_rect_single_pixel(void) {
+  uint16_t a[8 * 4] = {0};
+  uint16_t b[8 * 4] = {0};
+  a[2 * 8 + 5] = 0x1234;              // (x=5, y=2)
+  DirtyRect r = dirtyRect16(a, b, 8, 4);
+  TEST_ASSERT_FALSE(r.empty());
+  TEST_ASSERT_EQUAL_INT(5, r.x0);
+  TEST_ASSERT_EQUAL_INT(2, r.y0);
+  TEST_ASSERT_EQUAL_INT(5, r.x1);     // word granularity is folded back to pixels
+  TEST_ASSERT_EQUAL_INT(2, r.y1);
+  TEST_ASSERT_EQUAL_INT(1, r.w());
+  TEST_ASSERT_EQUAL_INT(1, r.h());
+}
+
+void test_dirty_rect_pair_in_one_word(void) {
+  uint16_t a[8 * 2] = {0};
+  uint16_t b[8 * 2] = {0};
+  a[0 * 8 + 3] = 1;                   // (3,0) and (4,0) land in adjacent words
+  a[0 * 8 + 4] = 2;
+  DirtyRect r = dirtyRect16(a, b, 8, 2);
+  TEST_ASSERT_EQUAL_INT(3, r.x0);
+  TEST_ASSERT_EQUAL_INT(4, r.x1);
+  TEST_ASSERT_EQUAL_INT(0, r.y0);
+  TEST_ASSERT_EQUAL_INT(0, r.y1);
+}
+
+void test_dirty_rect_bounding_box(void) {
+  uint16_t a[8 * 5] = {0};
+  uint16_t b[8 * 5] = {0};
+  a[1 * 8 + 1] = 1;
+  a[4 * 8 + 6] = 1;
+  DirtyRect r = dirtyRect16(a, b, 8, 5);
+  TEST_ASSERT_EQUAL_INT(1, r.x0);
+  TEST_ASSERT_EQUAL_INT(1, r.y0);
+  TEST_ASSERT_EQUAL_INT(6, r.x1);
+  TEST_ASSERT_EQUAL_INT(4, r.y1);
+  TEST_ASSERT_EQUAL_INT(6, r.w());
+  TEST_ASSERT_EQUAL_INT(4, r.h());
+}
+
+void test_dirty_rect_odd_stride_is_full(void) {
+  uint16_t a[5 * 3] = {0};
+  uint16_t b[5 * 3] = {0};
+  DirtyRect r = dirtyRect16(a, b, 5, 3);
+  TEST_ASSERT_FALSE(r.empty());
+  TEST_ASSERT_EQUAL_INT(0, r.x0);
+  TEST_ASSERT_EQUAL_INT(4, r.x1);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_civil_epoch_unix_origin);
@@ -261,5 +324,10 @@ int main(int, char**) {
   RUN_TEST(test_air_parse_status_not_ok);
   RUN_TEST(test_interval);
   RUN_TEST(test_interval_wrap);
+  RUN_TEST(test_dirty_rect_identical_is_empty);
+  RUN_TEST(test_dirty_rect_single_pixel);
+  RUN_TEST(test_dirty_rect_pair_in_one_word);
+  RUN_TEST(test_dirty_rect_bounding_box);
+  RUN_TEST(test_dirty_rect_odd_stride_is_full);
   return UNITY_END();
 }

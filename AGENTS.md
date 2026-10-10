@@ -72,7 +72,7 @@ from <https://github.com/jason2866/mklittlefs/releases> (asset
 | `src/parse/` | Header-only, host-testable payload parsers (usage/moon/air) |
 | `src/usage_display.{h,cpp}` | UI: page/card renderers, icons, easter egg |
 | `src/ui/theme.h` | Shared UI palette (main UI + WiFi setup) |
-| `src/util/` | Dependency-free helpers (time/value/interval, host-unit-tested) |
+| `src/util/` | Dependency-free helpers (time/value/interval/dirty-rect, host-unit-tested) |
 | `src/wifi_setup.cpp` | WiFi config UI (button-based password entry) |
 | `src/hw/` | Drivers: display, input, power, IMU, RTC, net |
 | `src/boards/` | Board-specific pin definitions |
@@ -94,8 +94,19 @@ from <https://github.com/jason2866/mklittlefs/releases> (asset
 ### Display power / heat
 
 The panel is only pushed when the canvas is dirty (`s_dirty`), so idle frames drop
-from ~60/s to ~1/s instead of re-sending the full 480×480 frame every loop. Idle
-also dims the panel but **never blanks it** (so it stays glanceable):
+from ~60/s to ~1/s instead of re-sending the full 480×480 frame every loop.
+
+On top of that, each push is **dirty-region limited**. `hwDisplayPush()`
+(`src/hw/display.cpp`) keeps a PSRAM shadow of the last frame it sent, diffs the
+canvas against it (`dirtyRect16()` in `src/util/dirty_rect.h`) and blits only the
+bounding box of changed pixels — in **one** QSPI transaction, since this CO5300
+panel black-screens when a frame is split into many small draws. Nothing changes
+⇒ nothing is sent. Most screens here hold HH:MM (not seconds), so a static minute
+costs zero panel traffic and only the minute tick / a data refresh pushes pixels;
+swipes and the easter-egg animation fall back to a near-full box. Both shadow and
+staging buffers are PSRAM; if either allocation fails the push falls back to the
+old full-frame blit. Idle also dims the panel but **never blanks it** (so it stays
+glanceable):
 
 - 30 s idle (`IDLE_DIM_MS`) → brightness `BRIGHT_LUT[0]` = 50/255, and it stays
   there until activity (no full screen-off stage).
@@ -184,7 +195,7 @@ Firmware flash builds are verified with `pio run`; CI (`.github/workflows/ci.yml
 runs `pio test -e native` and `pio run -e esp32-usage-monitor` on every push/PR.
 
 The dependency-free helpers under `src/util/` (epoch/date parsing, weather-icon
-kind, moon phase, AQI label, `Interval`) and the header-only parsers under
+kind, moon phase, AQI label, `Interval`, dirty-rect diffing) and the header-only parsers under
 `src/parse/` (usage meters, wttr one-line, moon/air JSON) are covered by host
 unit tests — no hardware needed:
 

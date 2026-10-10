@@ -1,5 +1,6 @@
 #include "hw/display.h"
 #include "hw/pins.h"
+#include "util/dirty_rect.h"
 #include <Arduino.h>
 
 static Arduino_DataBus*  s_bus    = nullptr;
@@ -144,6 +145,45 @@ void hwDisplayBrightness(uint8_t lvl) {
 
 static uint16_t s_lineBuf[LCD_W_PHYS];   // one physical row, internal RAM
 
+// ---------------------------------------------------------------------------
+// Dirty-region push (letterbox + supersampled canvas path)
+//
+// The UI is composed from scratch into the canvas every render, but the panel
+// already shows the previous frame and the vast majority of pixels are
+// unchanged black. Pushing the full 368×448 frame every time wastes QSPI
+// bandwidth (and therefore power/heat). Instead we keep a shadow copy of what
+// the panel last received, diff the canvas against it to get the bounding box
+// of the changed pixels, and blit only that rectangle — in ONE QSPI
+// transaction, because the CO5300 on this panel is known to fail when a frame
+// is broken into many small draws.
+//
+// Both buffers live in PSRAM (322 KB each). If either allocation fails we just
+// fall back to the original full-frame blit.
+static uint16_t* s_prev      = nullptr;  // shadow of the last pushed frame
+static uint16_t* s_rect      = nullptr;  // staging buffer for a sub-rect blit
+static bool      s_prevValid = false;
+static bool      s_diffTried = false;
+static bool      s_diffOk    = false;
+
+static bool displayDiffReady() {
+  if (s_diffOk)    return true;
+  if (s_diffTried) return false;
+  s_diffTried = true;
+
+  const size_t bytes = (size_t)HW_CANVAS_W * HW_CANVAS_H * sizeof(uint16_t);
+  s_prev = (uint16_t*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  s_rect = (uint16_t*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!s_prev || !s_rect) {
+    if (s_prev) { heap_caps_free(s_prev); s_prev = nullptr; }
+    if (s_rect) { heap_caps_free(s_rect); s_rect = nullptr; }
+    Serial.println("hwDisplay: diff buffers alloc failed; full-frame push");
+    return false;
+  }
+  s_prevValid = false;   // first push must cover the whole canvas
+  s_diffOk    = true;
+  return true;
+}
+
 void hwDisplayPush() {
 #ifdef DEBUG_SAFE_BOX
   // 1-px green outline at the logical safe-area boundary. Used to
@@ -158,10 +198,48 @@ void hwDisplayPush() {
   {
     constexpr int DEST_W = BOARD_DISPLAY_DEST_W;
     constexpr int DEST_H = BOARD_DISPLAY_DEST_H;
+    constexpr int OFX    = (LCD_W_PHYS - DEST_W) / 2;
+    constexpr int OFY    = (LCD_H_PHYS - DEST_H) / 2;
     static_assert(DEST_W == HW_CANVAS_W && DEST_H == HW_CANVAS_H,
                   "BOARD_DISPLAY_DEST_* must equal the supersampled canvas size");
-    s_gfx->draw16bitRGBBitmap((LCD_W_PHYS - DEST_W) / 2, (LCD_H_PHYS - DEST_H) / 2,
-                              src, DEST_W, DEST_H);
+
+    if (!displayDiffReady()) {
+      // No shadow/scratch memory: keep the original full-frame behaviour.
+      s_gfx->draw16bitRGBBitmap(OFX, OFY, src, DEST_W, DEST_H);
+      return;
+    }
+
+    constexpr int CW = DEST_W, CH = DEST_H;
+
+    // Bounding box of pixels that differ from what the panel already shows.
+    // On the first push the shadow is not yet meaningful, so cover everything.
+    const DirtyRect box = s_prevValid ? dirtyRect16(src, s_prev, CW, CH)
+                                      : DirtyRect{ 0, 0, CW - 1, CH - 1 };
+
+    if (!box.empty()) {
+      const int x0 = box.x0, y0 = box.y0;
+      const int w  = box.w(),  h = box.h();
+      // draw16bitRGBBitmap() reads w×h tightly packed, but the canvas has a
+      // CW stride. Full-width boxes are already contiguous; narrower ones are
+      // staged into s_rect row by row.
+      if (x0 == 0 && w == CW) {
+        s_gfx->draw16bitRGBBitmap(OFX, OFY + y0, src + (size_t)y0 * CW, CW, h);
+      } else {
+        for (int j = 0; j < h; j++) {
+          memcpy(s_rect + (size_t)j * w, src + (size_t)(y0 + j) * CW + x0,
+                 (size_t)w * sizeof(uint16_t));
+        }
+        s_gfx->draw16bitRGBBitmap(OFX + x0, OFY + y0, s_rect, w, h);
+      }
+      // Shadow now matches exactly the rectangle we just sent.
+      for (int j = 0; j < h; j++) {
+        memcpy(s_prev + (size_t)(y0 + j) * CW + x0,
+               src + (size_t)(y0 + j) * CW + x0, (size_t)w * sizeof(uint16_t));
+      }
+      s_prevValid = true;
+    }
+    // Nothing changed → nothing to send.
+    return;
   }
 #elif BOARD_DISPLAY_LETTERBOX
   // Bilinear scale HW_W×HW_H → DEST_W×DEST_H, centred in physical frame,
