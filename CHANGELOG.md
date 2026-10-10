@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Docs: correct the `src/ui/` / `usage_display.h` project-structure entries and
   the test-coverage notes in `README.md` / `AGENTS.md`.
+- Pin all PlatformIO library dependencies to exact versions for reproducible
+  builds, and add an `.editorconfig`.
+
+### Testing
+
+- Expand the host unit tests with parser boundary/robustness cases (truncated
+  JSON, non-object meters, numeric vs string fields, over-long fields).
 
 ### Removed
 

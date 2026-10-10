@@ -148,6 +148,44 @@ void test_usage_parse_bad_input(void) {
   TEST_ASSERT_FALSE(usageParse("{}", 0, u));
 }
 
+void test_usage_parse_truncated_json(void) {
+  UsageData u;
+  // A network read cut short mid-body must be rejected, not half-applied.
+  TEST_ASSERT_FALSE(usageParse("{\"access\":{\"meters\":{\"fiveHour\":", 0, u));
+  TEST_ASSERT_FALSE(u.valid);
+}
+
+void test_usage_parse_meters_not_object(void) {
+  UsageData u;
+  TEST_ASSERT_FALSE(usageParse("{\"access\":{\"meters\":[1,2]}}", 0, u));
+  TEST_ASSERT_FALSE(u.valid);
+}
+
+void test_usage_parse_numeric_micros(void) {
+  // The console sometimes sends the micro-cent fields as JSON numbers rather
+  // than strings; both must decode.
+  UsageData u;
+  const char* json =
+      "{\"access\":{\"meters\":{"
+      "\"fiveHour\":{\"usedMicroCents\":2500000,\"limitMicroCents\":10000000},"
+      "\"week\":{\"usedMicroCents\":1.0e7,\"limitMicroCents\":1.0e7}}}}";
+  TEST_ASSERT_TRUE(usageParse(json, 0, u));
+  TEST_ASSERT_EQUAL_INT(25, u.rollingPercent);
+  TEST_ASSERT_EQUAL_INT(100, u.weeklyPercent);
+}
+
+void test_usage_parse_reset_in_past_or_unset_clock(void) {
+  const char* json =
+      "{\"access\":{\"meters\":{"
+      "\"fiveHour\":{\"usedMicroCents\":\"1\",\"limitMicroCents\":\"10\","
+      "\"resetsAt\":\"2026-10-08T06:00:00Z\"}}}}";
+  UsageData u;
+  TEST_ASSERT_TRUE(usageParse(json, isoToEpoch("2026-10-08T07:00:00Z"), u));
+  TEST_ASSERT_EQUAL_UINT32(0u, u.rollingResetSec);   // reset already passed
+  TEST_ASSERT_TRUE(usageParse(json, 0, u));          // clock unset
+  TEST_ASSERT_EQUAL_UINT32(0u, u.rollingResetSec);
+}
+
 // ---- weatherParseLine -----------------------------------------------------
 
 void test_weather_parse_line(void) {
@@ -173,6 +211,40 @@ void test_weather_parse_too_few_fields(void) {
   TEST_ASSERT_FALSE(weatherParseLine("a|b|c", w));
 }
 
+void test_weather_parse_no_input(void) {
+  WeatherData w;
+  TEST_ASSERT_FALSE(weatherParseLine("", w));
+  TEST_ASSERT_FALSE(weatherParseLine(nullptr, w));
+}
+
+void test_weather_parse_extra_fields_ignored(void) {
+  WeatherData w;
+  const char* line =
+      "Beijing|Sunny|+15\u00B0C|+14\u00B0C|40|10km/h|0.0mm|06:16|18:02|extra";
+  TEST_ASSERT_TRUE(weatherParseLine(line, w));
+  TEST_ASSERT_EQUAL_STRING("Beijing", w.area);
+  TEST_ASSERT_EQUAL_INT(1082, w.sunsetMin);   // untouched by the trailing field
+}
+
+void test_weather_parse_fields_are_trimmed(void) {
+  WeatherData w;
+  const char* line =
+      "  Beijing  |  Sunny  |+15\u00B0C|+14\u00B0C|40|10km/h|0.0mm|06:16|18:02";
+  TEST_ASSERT_TRUE(weatherParseLine(line, w));
+  TEST_ASSERT_EQUAL_STRING("Beijing", w.area);
+  TEST_ASSERT_EQUAL_STRING("Sunny", w.condition);
+}
+
+void test_weather_parse_long_area_is_truncated(void) {
+  WeatherData w;
+  const char* line =
+      "AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDD|Sunny|+15\u00B0C|+14\u00B0C|40|"
+      "10km/h|0.0mm|06:16|18:02";
+  TEST_ASSERT_TRUE(weatherParseLine(line, w));
+  TEST_ASSERT_EQUAL_INT(31, (int)strlen(w.area));   // fits area[32]
+  TEST_ASSERT_EQUAL_INT(0, w.area[31]);             // NUL-terminated
+}
+
 // ---- moonParseJson --------------------------------------------------------
 
 void test_moon_parse(void) {
@@ -189,6 +261,23 @@ void test_moon_parse(void) {
   TEST_ASSERT_EQUAL_INT(50, m.illumPct);
   TEST_ASSERT_TRUE(m.waxing);
   TEST_ASSERT_EQUAL_STRING("First Quarter", m.phaseName);
+}
+
+void test_moon_parse_truncated_and_missing_properties(void) {
+  MoonData m;
+  TEST_ASSERT_FALSE(moonParseJson("{\"properties\":{\"moonrise\":", m));
+  TEST_ASSERT_FALSE(moonParseJson("{}", m));
+}
+
+void test_moon_parse_empty_properties_defaults(void) {
+  MoonData m;
+  TEST_ASSERT_TRUE(moonParseJson("{\"properties\":{}}", m));
+  TEST_ASSERT_TRUE(m.valid);
+  TEST_ASSERT_EQUAL_INT(-1, m.moonriseMin);   // no times reported
+  TEST_ASSERT_EQUAL_INT(-1, m.moonsetMin);
+  TEST_ASSERT_EQUAL_INT(0, m.illumPct);       // phase 0 -> new moon
+  TEST_ASSERT_TRUE(m.waxing);
+  TEST_ASSERT_EQUAL_STRING("New Moon", m.phaseName);
 }
 
 // ---- airParseJson ---------------------------------------------------------
@@ -210,6 +299,44 @@ void test_air_parse(void) {
 void test_air_parse_status_not_ok(void) {
   AirData a;
   TEST_ASSERT_FALSE(airParseJson("{\"status\":\"error\"}", a));
+}
+
+void test_air_parse_truncated_and_missing_status(void) {
+  AirData a;
+  TEST_ASSERT_FALSE(airParseJson("{\"status\":\"ok\",\"data\":", a));
+  TEST_ASSERT_FALSE(airParseJson("{}", a));
+}
+
+void test_air_parse_missing_data_defaults(void) {
+  AirData a;
+  TEST_ASSERT_TRUE(airParseJson("{\"status\":\"ok\"}", a));
+  TEST_ASSERT_TRUE(a.valid);
+  TEST_ASSERT_EQUAL_INT(-1, a.aqi);       // unknowns stay -1
+  TEST_ASSERT_EQUAL_INT(-1, a.pm25);
+  TEST_ASSERT_EQUAL_INT(-1, a.pm10);
+  TEST_ASSERT_EQUAL_STRING("", a.observedAt);
+}
+
+void test_air_parse_string_values(void) {
+  AirData a;
+  const char* json =
+      "{\"status\":\"ok\",\"data\":{\"aqi\":\"75\","
+      "\"iaqi\":{\"pm25\":{\"v\":\"22\"},\"pm10\":{\"v\":null}},"
+      "\"time\":{\"s\":\"2026-10-08 14:00:00\"}}}";
+  TEST_ASSERT_TRUE(airParseJson(json, a));
+  TEST_ASSERT_EQUAL_INT(75, a.aqi);       // numeric string
+  TEST_ASSERT_EQUAL_INT(22, a.pm25);      // numeric string
+  TEST_ASSERT_EQUAL_INT(-1, a.pm10);      // null -> unknown
+  TEST_ASSERT_EQUAL_STRING("14:00", a.observedAt);
+}
+
+void test_air_parse_bad_aqi_and_short_time(void) {
+  AirData a;
+  const char* json =
+      "{\"status\":\"ok\",\"data\":{\"aqi\":\"n/a\",\"time\":{\"s\":\"2026\"}}}";
+  TEST_ASSERT_TRUE(airParseJson(json, a));
+  TEST_ASSERT_EQUAL_INT(-1, a.aqi);       // non-numeric -> unknown
+  TEST_ASSERT_EQUAL_STRING("", a.observedAt);
 }
 
 // ---- Interval -------------------------------------------------------------
@@ -317,11 +444,25 @@ int main(int, char**) {
   RUN_TEST(test_usage_parse);
   RUN_TEST(test_usage_parse_clamps_and_zero_limit);
   RUN_TEST(test_usage_parse_bad_input);
+  RUN_TEST(test_usage_parse_truncated_json);
+  RUN_TEST(test_usage_parse_meters_not_object);
+  RUN_TEST(test_usage_parse_numeric_micros);
+  RUN_TEST(test_usage_parse_reset_in_past_or_unset_clock);
   RUN_TEST(test_weather_parse_line);
   RUN_TEST(test_weather_parse_too_few_fields);
+  RUN_TEST(test_weather_parse_no_input);
+  RUN_TEST(test_weather_parse_extra_fields_ignored);
+  RUN_TEST(test_weather_parse_fields_are_trimmed);
+  RUN_TEST(test_weather_parse_long_area_is_truncated);
   RUN_TEST(test_moon_parse);
+  RUN_TEST(test_moon_parse_truncated_and_missing_properties);
+  RUN_TEST(test_moon_parse_empty_properties_defaults);
   RUN_TEST(test_air_parse);
   RUN_TEST(test_air_parse_status_not_ok);
+  RUN_TEST(test_air_parse_truncated_and_missing_status);
+  RUN_TEST(test_air_parse_missing_data_defaults);
+  RUN_TEST(test_air_parse_string_values);
+  RUN_TEST(test_air_parse_bad_aqi_and_short_time);
   RUN_TEST(test_interval);
   RUN_TEST(test_interval_wrap);
   RUN_TEST(test_dirty_rect_identical_is_empty);
