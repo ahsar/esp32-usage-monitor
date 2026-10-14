@@ -1,7 +1,14 @@
 #include "hw/display.h"
 #include "hw/pins.h"
-#include "util/dirty_rect.h"
 #include <Arduino.h>
+
+// QSPI clock to the CO5300. 40 MHz is the library default and known-good on
+// this panel; higher values (60/80 MHz) are out of spec for most CO5300 modules
+// and can wedge the bus mid-push, so the default stays conservative. Raise it
+// deliberately only after verifying on hardware.
+#ifndef BOARD_DISPLAY_QSPI_HZ
+#define BOARD_DISPLAY_QSPI_HZ 40000000
+#endif
 
 static Arduino_DataBus*  s_bus    = nullptr;
 #if BOARD_DISPLAY_CO5300
@@ -87,7 +94,7 @@ bool hwDisplayInit() {
 #endif
   // canvas->begin() internally calls gfx->begin() which calls bus init.
   // Calling them separately would double-init the SPI bus → ESP_ERR_INVALID_STATE.
-  if (!s_canvas->begin()) { Serial.println("hwDisplay: canvas begin failed"); return false; }
+  if (!s_canvas->begin(BOARD_DISPLAY_QSPI_HZ)) { Serial.println("hwDisplay: canvas begin failed"); return false; }
   // UTF-8 decode for u8g2 CJK fonts — without this, print() treats each
   // byte of a multi-byte codepoint as its own glyph lookup → mojibake.
   s_canvas->setUTF8Print(true);
@@ -146,43 +153,17 @@ void hwDisplayBrightness(uint8_t lvl) {
 static uint16_t s_lineBuf[LCD_W_PHYS];   // one physical row, internal RAM
 
 // ---------------------------------------------------------------------------
-// Dirty-region push (letterbox + supersampled canvas path)
+// Full-frame push (letterbox + supersampled canvas path)
 //
-// The UI is composed from scratch into the canvas every render, but the panel
-// already shows the previous frame and the vast majority of pixels are
-// unchanged black. Pushing the full 368×448 frame every time wastes QSPI
-// bandwidth (and therefore power/heat). Instead we keep a shadow copy of what
-// the panel last received, diff the canvas against it to get the bounding box
-// of the changed pixels, and blit only that rectangle — in ONE QSPI
-// transaction, because the CO5300 on this panel is known to fail when a frame
-// is broken into many small draws.
-//
-// Both buffers live in PSRAM (322 KB each). If either allocation fails we just
-// fall back to the original full-frame blit.
-static uint16_t* s_prev      = nullptr;  // shadow of the last pushed frame
-static uint16_t* s_rect      = nullptr;  // staging buffer for a sub-rect blit
-static bool      s_prevValid = false;
-static bool      s_diffTried = false;
-static bool      s_diffOk    = false;
-
-static bool displayDiffReady() {
-  if (s_diffOk)    return true;
-  if (s_diffTried) return false;
-  s_diffTried = true;
-
-  const size_t bytes = (size_t)HW_CANVAS_W * HW_CANVAS_H * sizeof(uint16_t);
-  s_prev = (uint16_t*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  s_rect = (uint16_t*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (!s_prev || !s_rect) {
-    if (s_prev) { heap_caps_free(s_prev); s_prev = nullptr; }
-    if (s_rect) { heap_caps_free(s_rect); s_rect = nullptr; }
-    Serial.println("hwDisplay: diff buffers alloc failed; full-frame push");
-    return false;
-  }
-  s_prevValid = false;   // first push must cover the whole canvas
-  s_diffOk    = true;
-  return true;
-}
+// We always blit the whole 368×448 window in ONE QSPI transaction. Two reasons
+// we do NOT track dirty rectangles any more:
+//   1. This CO5300 misbehaves when a frame is split into many address windows.
+//   2. A dirty-rect shadow must stay byte-identical to what the panel actually
+//      shows; a single partial blit that lands wrong desynchronises it forever,
+//      so errors accumulate as you swipe between pages.
+// Power is saved one level up instead: main.cpp only re-renders — and therefore
+// only pushes — when the visible UI state actually changes (see uiFrameKey()).
+// ---------------------------------------------------------------------------
 
 void hwDisplayPush() {
 #ifdef DEBUG_SAFE_BOX
@@ -202,43 +183,7 @@ void hwDisplayPush() {
     constexpr int OFY    = (LCD_H_PHYS - DEST_H) / 2;
     static_assert(DEST_W == HW_CANVAS_W && DEST_H == HW_CANVAS_H,
                   "BOARD_DISPLAY_DEST_* must equal the supersampled canvas size");
-
-    if (!displayDiffReady()) {
-      // No shadow/scratch memory: keep the original full-frame behaviour.
-      s_gfx->draw16bitRGBBitmap(OFX, OFY, src, DEST_W, DEST_H);
-      return;
-    }
-
-    constexpr int CW = DEST_W, CH = DEST_H;
-
-    // Bounding box of pixels that differ from what the panel already shows.
-    // On the first push the shadow is not yet meaningful, so cover everything.
-    const DirtyRect box = s_prevValid ? dirtyRect16(src, s_prev, CW, CH)
-                                      : DirtyRect{ 0, 0, CW - 1, CH - 1 };
-
-    if (!box.empty()) {
-      const int x0 = box.x0, y0 = box.y0;
-      const int w  = box.w(),  h = box.h();
-      // draw16bitRGBBitmap() reads w×h tightly packed, but the canvas has a
-      // CW stride. Full-width boxes are already contiguous; narrower ones are
-      // staged into s_rect row by row.
-      if (x0 == 0 && w == CW) {
-        s_gfx->draw16bitRGBBitmap(OFX, OFY + y0, src + (size_t)y0 * CW, CW, h);
-      } else {
-        for (int j = 0; j < h; j++) {
-          memcpy(s_rect + (size_t)j * w, src + (size_t)(y0 + j) * CW + x0,
-                 (size_t)w * sizeof(uint16_t));
-        }
-        s_gfx->draw16bitRGBBitmap(OFX + x0, OFY + y0, s_rect, w, h);
-      }
-      // Shadow now matches exactly the rectangle we just sent.
-      for (int j = 0; j < h; j++) {
-        memcpy(s_prev + (size_t)(y0 + j) * CW + x0,
-               src + (size_t)(y0 + j) * CW + x0, (size_t)w * sizeof(uint16_t));
-      }
-      s_prevValid = true;
-    }
-    // Nothing changed → nothing to send.
+    s_gfx->draw16bitRGBBitmap(OFX, OFY, src, DEST_W, DEST_H);
     return;
   }
 #elif BOARD_DISPLAY_LETTERBOX

@@ -50,7 +50,7 @@ int netScan(NetScanResult* out, int max) {
     delay(100);                   // WIFI_SCAN_FAILED — one retry
   }
 
-  WiFi.setSleep(WIFI_PS_MIN_MODEM);
+  WiFi.setSleep(APP_WIFI_PS_BOOT);
   WiFi.setAutoReconnect(true);
 
   if (n <= 0) {
@@ -80,6 +80,7 @@ bool netConnect(const char* ssid, const char* pass) {
   for (int i = 0; i < 50; i++) {
     if (WiFi.status() == WL_CONNECTED) {
       netSaveCred(ssid, pass);
+      WiFi.setSleep(APP_WIFI_PS);   // associated → allow max modem sleep
       return true;
     }
     delay(200);

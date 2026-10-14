@@ -65,7 +65,7 @@ static void fillBtn(const Rect& r, uint16_t color, const char* label) {
 // Grace period for the boot-time connect when credentials are saved. Only if
 // this elapses without connecting do we fall back to scanning (the old code
 // scanned after 2 s and aborted a perfectly good — just slow — connect).
-static const uint32_t CONNECT_GRACE_MS = 15000;
+static const uint32_t CONNECT_GRACE_MS = 30000;
 
 // ── Init ────────────────────────────────────────────────────
 void wifiSetupInit(WifiState& state, const char* savedSsid) {

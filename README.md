@@ -216,8 +216,7 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
 │   ├── util/                # dependency-free helpers (host-unit-tested)
 │   │   ├── time_util.h      # epoch / ISO / HTTP-date parsing
 │   │   ├── value_util.h     # weather-icon kind, moon phase, AQI label
-│   │   ├── interval.h       # periodic scheduling helper
-│   │   └── dirty_rect.h     # dirty-region diffing for panel pushes
+│   │   └── interval.h       # periodic scheduling helper
 │   ├── voice/               # I2S audio (ES8311, easter-egg playback)
 │   ├── boards/              # per-board pin definitions
 │   └── hw/                  # hardware driver layer
@@ -240,7 +239,7 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
 ## Tests
 
 The pure helpers under `src/util/` (epoch/date parsing, weather-icon kind,
-moon phase, AQI label, `Interval`, dirty-rect diffing) and the header-only
+moon phase, AQI label, `Interval`) and the header-only
 parsers under `src/parse/` (usage meters, wttr one-line, moon/air JSON) are free
 of Arduino dependencies and covered by host unit tests — no hardware needed:
 

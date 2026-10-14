@@ -28,39 +28,49 @@ static TokenSet s_tokens;
 
 // Periodic network pollers. loop() runs at most ONE of these per iteration, so
 // a burst of due timers (e.g. right after WiFi connects) can never stall input
-// and rendering behind several back-to-back blocking fetches.
+// and rendering behind several back-to-back blocking fetches. The periods are
+// overwritten from config in setup(); the literals here are only the fallback.
 static Interval s_ivUsage(60000);
-static Interval s_ivWeather(900000);
-static Interval s_ivMoon(21600000);
-static Interval s_ivAir(1800000);
+static Interval s_ivWeather(1800000);
+static Interval s_ivMoon(43200000);
+static Interval s_ivAir(3600000);
 static Interval s_ivEnv(1000);
 
 static WifiState s_wifi;
 
-// ---- display power (dirty-frame push + idle dim) --------------------------
-static bool     s_dirty = true;          // canvas changed → panel needs a push
+// ---- display power (state-driven render + idle dim) ------------------------
 static bool     s_screenDim = false;
 static int      s_brightLevel = 2;       // BRIGHT_LUT index; 2 = 150/255
 static uint32_t s_lastActivity = 0;
 static bool     s_swallowKey   = false;  // first key only wakes, doesn't act
-static uint32_t s_lastDraw = 0;
-// Two distinct dirty stages: `s_redrawNow` means input/pager changed so we must
-// re-render this iteration; `s_dirty` means the canvas differs from the panel
-// and needs a push. Keeping them separate is what lets idle frames skip the
-// render+push entirely (idle drops from ~60/s to ~1/s).
-static bool     s_redrawNow = true;      // render this iteration (pager/key/wake)
 
-static const uint32_t IDLE_DIM_MS = 30000;   // 30 s idle → dim
-static const uint8_t  DIM_LEVEL   = 0;       // BRIGHT_LUT[0] = 50/255
+// Rendering is state-driven. uiFrame() re-renders — and full-frame pushes —
+// only when the visible state changes. `s_frameKey` is a hash of everything the
+// frame depends on; `s_forceRender` covers one-shot events (wake/key/drag/data)
+// that must not wait for the hash to differ.
+static uint32_t s_lastPush = 0;          // throttle for animated/setup frames
+static uint32_t s_frameKey = 0;
+static bool     s_frameKeyValid = false;
+static bool     s_forceRender   = false;
+static uint32_t s_dataRev = 0;           // bumped on every successful fetch
+
+static const uint32_t IDLE_DIM_MS   = 30000;   // 30 s idle → dim
+static const uint8_t  DIM_LEVEL     = 0;       // BRIGHT_LUT[0] = 50/255
+static const uint32_t IDLE_NET_MS   = 30000;   // idle > this → slow the pollers
+static const uint32_t ANIM_FRAME_MS = 60;      // blink anims: cap the push rate
 
 static void screenWake() {
     if (s_screenDim) {
         hwDisplayBrightness((uint8_t)s_brightLevel);
         s_screenDim = false;
     }
-    s_lastDraw = 0;          // force an immediate re-render on wake
-    s_redrawNow = true;
+    s_forceRender  = true;
     s_lastActivity = millis();
+    // If the usage meter has gone stale while idle, pull it once on wake — but
+    // rate-limit it, so a chatty status-server callback can't spam fetches.
+    if (!s_ivUsage.pending && (uint32_t)(millis() - s_ivUsage.lastMs) >= 30000u) {
+        s_ivUsage.forcePending();
+    }
 }
 
 static void screenIdleUpdate() {
@@ -106,6 +116,32 @@ static UiData currentUiData() {
     return d;
 }
 
+// ---- state-driven render key ----------------------------------------------
+
+static uint32_t hashMix(uint32_t h, uint32_t v) {
+    h ^= v + 0x9e3779b9u + (h << 6) + (h >> 2);
+    return h;
+}
+
+// Hash of everything the rendered frame depends on. When it is unchanged the
+// canvas would come out pixel-identical, so uiFrame() skips the render and the
+// full-frame push entirely — this is what keeps idle cost near zero without
+// diffing pixels.
+static uint32_t uiFrameKey() {
+    uint32_t flags = (s_env.timeValid ? 1u : 0u) | (s_env.online ? 2u : 0u) |
+                     (s_env.charging  ? 4u : 0u) | (s_env.usbPresent ? 8u : 0u);
+    uint32_t h = 2166136261u;
+    h = hashMix(h, (uint32_t)pagerPage());
+    h = hashMix(h, (uint32_t)pagerCard());
+    h = hashMix(h, (uint32_t)(int)(pagerOffset() * 4.0f));   // quantised drag offset
+    h = hashMix(h, flags);
+    h = hashMix(h, (uint32_t)s_env.hh);
+    h = hashMix(h, (uint32_t)s_env.mm);
+    h = hashMix(h, (uint32_t)s_env.batteryPct);
+    h = hashMix(h, s_dataRev);
+    return h;
+}
+
 // ---- boot / loop ----------------------------------------------------------
 
 // Bring up the I2S bus + ES8311 codec at boot. No startup sound; this is what
@@ -142,8 +178,17 @@ static void uiFrame(uint32_t now) {
     }
 
     if (s_wifi.open) {
-        wifiSetupDraw(s_wifi);
-        s_dirty = true;
+        // The setup screen has a blink + elapsed counters but no heavy motion,
+        // and every frame is a full-panel push, so cap it at ~10 fps. Touch and
+        // key handling still run inside wifiSetupDraw() at this cadence.
+        if (now - s_lastPush >= 100) {
+            wifiSetupDraw(s_wifi);
+            hwDisplayPush();
+            s_lastPush = now;
+        }
+        // The setup canvas never participates in the frame key, so force a
+        // re-render as soon as it closes.
+        s_frameKeyValid = false;
         return;
     }
 
@@ -159,39 +204,49 @@ static void uiFrame(uint32_t now) {
             thinking = false;
         } else {
             pagerAdvance();
-            s_redrawNow = true;
+            s_forceRender = true;
         }
     }
 
     // Always advance the gesture machine, even while the easter egg / thinking
     // animation owns the screen — otherwise scrolling is ignored and looks
     // stuck. The render below still shows the animation instead of the pager.
-    if (pagerUpdate()) s_redrawNow = true;
+    if (pagerUpdate()) s_forceRender = true;
 
     bool animated = easterEggActive() || thinking;
 
 #ifdef FRAME_DUMP
     frameDumpTick(now, currentUiData());
 #else
-    bool fast = animated || s_redrawNow;
-    if (fast || now - s_lastDraw >= 1000) {
-        s_lastDraw = now;
-        if (easterEggActive()) {
-            usageDisplayDrawEaster555(easterEggElapsedMs());
-        } else if (thinking) {
-            usageDisplayDrawThinking(now - statusServerThinkingSince());
-        } else {
-            uiRender(currentUiData());
+    if (animated) {
+        // Blink animations only change every ~100 ms; a full-frame push takes
+        // tens of ms, so cap the cadence instead of re-pushing identical frames.
+        if (now - s_lastPush >= ANIM_FRAME_MS) {
+            if (easterEggActive()) {
+                usageDisplayDrawEaster555(easterEggElapsedMs());
+            } else {
+                usageDisplayDrawThinking(now - statusServerThinkingSince());
+            }
+            hwDisplayPush();
+            s_lastPush = now;
         }
-        s_redrawNow = false;
-        s_dirty = true;
+        // The animation canvas never participates in the frame key, so force a
+        // re-render of the normal page as soon as the animation ends.
+        s_frameKeyValid = false;
+    } else {
+        // Re-render only when something visible actually changed: a static
+        // minute costs zero renders and zero panel traffic.
+        uint32_t key = uiFrameKey();
+        if (s_forceRender || !s_frameKeyValid || key != s_frameKey) {
+            uiRender(currentUiData());
+            hwDisplayPush();
+            s_frameKey      = key;
+            s_frameKeyValid = true;
+            s_forceRender   = false;
+            s_lastPush      = now;
+        }
     }
 #endif
-
-    if (s_dirty) {
-        hwDisplayPush();
-        s_dirty = false;
-    }
 }
 
 // Pumped from inside a blocking fetch (http_client) so input/pager/animation
@@ -228,6 +283,16 @@ void setup() {
         Serial.println("No waqi_token; air quality card will be empty");
     }
 
+    // Poll periods from config (loadConfig() already filled sane defaults).
+    s_ivUsage.periodMs   = (uint32_t)s_cfg.poll_usage_s   * 1000u;
+    s_ivWeather.periodMs = (uint32_t)s_cfg.poll_weather_s * 1000u;
+    s_ivAir.periodMs     = (uint32_t)s_cfg.poll_air_s     * 1000u;
+    s_ivMoon.periodMs    = (uint32_t)s_cfg.poll_moon_s    * 1000u;
+    Serial.printf("poll: usage %us (idle %us) weather %us air %us moon %us\n",
+                  (unsigned)s_cfg.poll_usage_s, (unsigned)s_cfg.poll_usage_idle_s,
+                  (unsigned)s_cfg.poll_weather_s, (unsigned)s_cfg.poll_air_s,
+                  (unsigned)s_cfg.poll_moon_s);
+
     pagerInit();
     httpSetUiPump(uiPump);
     statusServerSetWakeCallback(screenWake);
@@ -239,10 +304,11 @@ void setup() {
     bool hasCreds = netLoadCred(savedSSID, 33, savedPass, 65);
 
     WiFi.mode(WIFI_STA);
-    // Radio sleeps between DTIM beacons — big heat/power win vs. the old
-    // WiFi.setSleep(false). Costs up to ~a DTIM interval of latency on the
-    // status-server webhook, which is fine for a desk gadget.
-    WiFi.setSleep(WIFI_PS_MIN_MODEM);
+    // Keep the radio responsive until we are associated (see APP_WIFI_PS_* in
+    // hw/net.h): MAX_MODEM during association can miss the AP's handshake frames
+    // and blow past the setup UI's connect grace. loop() / netConnect() switch to
+    // MAX_MODEM once connected.
+    WiFi.setSleep(APP_WIFI_PS_BOOT);
     // Desk device sits close to the AP; 11 dBm (~13 mW) is plenty and cuts
     // radio heat vs. the ~19.5 dBm default (~89 mW). Bump if signal is weak.
     WiFi.setTxPower(WIFI_POWER_11dBm);
@@ -285,7 +351,7 @@ void loop() {
     refreshEnv(now);
 
     if (s_wifi.open && WiFi.status() == WL_CONNECTED) {
-        WiFi.setSleep(WIFI_PS_MIN_MODEM);
+        WiFi.setSleep(APP_WIFI_PS);
         WiFi.setTxPower(WIFI_POWER_11dBm);
         clockSyncUpdate(now, true);
         statusServerBegin();
@@ -307,25 +373,35 @@ void loop() {
         // The fetch is blocking, but http_client pumps uiPump() every ~16 ms so
         // input and page animations keep running while it is in flight.
         if (WiFi.status() == WL_CONNECTED) {
+            // Idle backoff: the usage meter only matters while someone is
+            // looking, so poll it slowly once the device has been idle a while.
+            // Any activity refreshes s_lastActivity and restores the fast rate.
+            bool idle = (uint32_t)(now - s_lastActivity) >= IDLE_NET_MS;
+            s_ivUsage.periodMs = (uint32_t)(idle ? s_cfg.poll_usage_idle_s
+                                                 : s_cfg.poll_usage_s) * 1000u;
+
             if (s_tokens.valid && s_ivUsage.due(now)) {
                 s_ivUsage.ran(now);
-                apiFetchUsage(s_usage, s_tokens);
+                if (apiFetchUsage(s_usage, s_tokens)) s_dataRev++;
                 if (s_tokens.dirty) {
                     tokenStoreSave(s_tokens);
                     s_tokens.dirty = false;
                 }
             } else if (s_ivWeather.due(now)) {
                 s_ivWeather.ran(now);
-                if (apiFetchWeather(s_weather) && clockSyncValid()) {
-                    snprintf(s_weather.obsTime, sizeof(s_weather.obsTime), "%02d:%02d",
-                             s_env.hh, s_env.mm);
+                if (apiFetchWeather(s_weather)) {
+                    s_dataRev++;
+                    if (clockSyncValid()) {
+                        snprintf(s_weather.obsTime, sizeof(s_weather.obsTime), "%02d:%02d",
+                                 s_env.hh, s_env.mm);
+                    }
                 }
             } else if (s_ivMoon.due(now)) {
                 s_ivMoon.ran(now);
-                apiFetchMoon(s_moon);
+                if (apiFetchMoon(s_moon)) s_dataRev++;
             } else if (s_cfg.waqi_token[0] && s_ivAir.due(now)) {
                 s_ivAir.ran(now);
-                apiFetchAir(s_air, s_cfg.waqi_token);
+                if (apiFetchAir(s_air, s_cfg.waqi_token)) s_dataRev++;
             }
         }
 

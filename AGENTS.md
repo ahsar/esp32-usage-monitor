@@ -72,7 +72,7 @@ from <https://github.com/jason2866/mklittlefs/releases> (asset
 | `src/parse/` | Header-only, host-testable payload parsers (usage/moon/air) |
 | `src/usage_display.h` | Public UI drawing API (frame setup, page/card renderers, dots) |
 | `src/ui/` | UI drawing impl (`cards`, `primitives`, `icons`) + shared palette (`theme.h`) |
-| `src/util/` | Dependency-free helpers (time/value/interval/dirty-rect, host-unit-tested) |
+| `src/util/` | Dependency-free helpers (time/value/interval, host-unit-tested) |
 | `src/wifi_setup.cpp` | WiFi config UI (button-based password entry) |
 | `src/hw/` | Drivers: display, input, power, IMU, RTC, net |
 | `src/boards/` | Board-specific pin definitions |
@@ -93,32 +93,39 @@ from <https://github.com/jason2866/mklittlefs/releases> (asset
 
 ### Display power / heat
 
-The panel is only pushed when the canvas is dirty (`s_dirty`), so idle frames drop
-from ~60/s to ~1/s instead of re-sending the full 480×480 frame every loop.
+Rendering is **state-driven, not timer-driven**. `uiFrame()` hashes everything
+the frame depends on (`uiFrameKey()` in `src/main.cpp`: page/card, quantised drag
+offset, clock HH:MM, online/charging/battery, and a `s_dataRev` counter bumped on
+every successful fetch) and re-renders only when that hash actually changes.
+Nothing changed ⇒ no render and no panel traffic at all. Most screens hold HH:MM
+(not seconds), so a static minute renders exactly once and the idle loop can run
+for minutes with zero CPU drawing and zero QSPI.
 
-On top of that, each push is **dirty-region limited**. `hwDisplayPush()`
-(`src/hw/display.cpp`) keeps a PSRAM shadow of the last frame it sent, diffs the
-canvas against it (`dirtyRect16()` in `src/util/dirty_rect.h`) and blits only the
-bounding box of changed pixels — in **one** QSPI transaction, since this CO5300
-panel black-screens when a frame is split into many small draws. Nothing changes
-⇒ nothing is sent. Most screens here hold HH:MM (not seconds), so a static minute
-costs zero panel traffic and only the minute tick / a data refresh pushes pixels;
-swipes and the easter-egg animation fall back to a near-full box. Both shadow and
-staging buffers are PSRAM; if either allocation fails the push falls back to the
-old full-frame blit. Idle also dims the panel but **never blanks it** (so it stays
-glanceable):
+Each render is a **full-frame push**: `hwDisplayPush()` (`src/hw/display.cpp`)
+blits the whole 368×448 window in one QSPI transaction. We deliberately do *not*
+track dirty rectangles any more — this CO5300 misbehaves when a frame is split
+into many small address windows, and a dirty-rect shadow must stay byte-identical
+to the panel or a single bad partial blit desynchronises it permanently (errors
+then accumulate as you swipe between pages). The QSPI clock stays at the library
+default 40 MHz (`BOARD_DISPLAY_QSPI_HZ`): 80 MHz intermittently wedges the bus
+mid-push on this panel, so higher values need to be proven on hardware first.
+Idle also dims the panel but **never blanks it** (so it stays glanceable):
 
 - 30 s idle (`IDLE_DIM_MS`) → brightness `BRIGHT_LUT[0]` = 50/255, and it stays
   there until activity (no full screen-off stage).
 - Any touch/key (and `state=running` webhooks / shake) wakes it; the waking **tap**
   is swallowed so it doesn't also page — a wake **drag** still scrolls (the swallow
   is dropped as soon as the gesture locks an axis, `pager.cpp`).
-- Pager state changes (`s_redrawNow`) force an immediate redraw, so a swipe/tap never
-  freezes on a mid-transition frame while waiting for the 1 s idle tick.
-- Radio: modem sleep is on (`WIFI_PS_MIN_MODEM`) and TX power is capped at
-  `WIFI_POWER_11dBm` — both cut heat a lot. Raise the TX power if WiFi is weak.
+- Pager/key/wake/data events set `s_forceRender`, so a swipe/tap never freezes on
+  a mid-transition frame.
+- Radio: TX power is capped at `WIFI_POWER_11dBm`. Power save is two-phase
+  (`hw/net.h`): `APP_WIFI_PS_BOOT` (MIN_MODEM) while associating — MAX_MODEM during
+  association can miss the AP's handshake frames and blow past the setup UI's 15 s
+  connect grace — then `APP_WIFI_PS` (MAX_MODEM) once connected, for the lowest
+  idle radio power at the cost of some status-webhook latency.
 
-Tunables live at the top of `src/main.cpp` (search `IDLE_DIM_MS`).
+Tunables live at the top of `src/main.cpp` (search `IDLE_DIM_MS` / `IDLE_NET_MS`)
+and in `data/config.json` (the `poll_*` fields).
 
 ### Blocking fetches never freeze the UI
 
@@ -138,6 +145,21 @@ Because the UI is pumped mid-fetch, fetchers must not publish half-updated
 structs: `apiFetchUsage()` parses into a scratch copy and only assigns on
 success.
 
+### Network polling / power
+
+Poll periods live in `data/config.json` (`poll_usage_s`, `poll_usage_idle_s`,
+`poll_weather_s`, `poll_air_s`, `poll_moon_s`) and are applied to the `Interval`s
+in `setup()`. Defaults: usage 60 s, weather 30 min, air 60 min, moon 12 h.
+
+- **Idle backoff.** When the device has been untouched for `IDLE_NET_MS` (30 s),
+  the usage poll stretches to `poll_usage_idle_s` (180 s) — the meter only matters
+  while someone is looking. Any activity resets it; `screenWake()` also forces one
+  usage fetch if the meter has gone >30 s stale (rate-limited so a chatty status
+  webhook can't spam fetches).
+- **Coalescing is a no-op.** The `else if` chain runs at most one fetch per loop
+  iteration; adjacent due timers are only one `delay(16)` apart, so the radio
+  never sleeps between them anyway. Keeping the chain keeps input latency bounded.
+
 ### WiFi scan
 
 `netScan()` (`src/hw/net.cpp`) scans with the station kept up: it aborts any
@@ -146,7 +168,7 @@ for the sweep, and uses a 150 ms/channel active scan (~2 s). The old
 `WIFI_OFF → WIFI_STA` power-cycle ×3 re-ran WiFi bring-up + RF calibration each
 time and, with modem sleep on, stretched a boot scan past 30 s.
 
-On boot with saved credentials the setup UI shows a **15 s connect grace**
+On boot with saved credentials the setup UI shows a **30 s connect grace**
 (`wifi_setup.cpp`, `CONNECT_GRACE_MS`) before falling back to a scan, so a
 slow-but-good connect is no longer aborted by a scan. Tap or press a key to
 skip straight to the network list.
@@ -195,7 +217,7 @@ Firmware flash builds are verified with `pio run`; CI (`.github/workflows/ci.yml
 runs `pio test -e native` and `pio run -e esp32-usage-monitor` on every push/PR.
 
 The dependency-free helpers under `src/util/` (epoch/date parsing, weather-icon
-kind, moon phase, AQI label, `Interval`, dirty-rect diffing) and the header-only parsers under
+kind, moon phase, AQI label, `Interval`) and the header-only parsers under
 `src/parse/` (usage meters, wttr one-line, moon/air JSON) are covered by host
 unit tests — no hardware needed:
 

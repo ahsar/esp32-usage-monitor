@@ -2,5 +2,11 @@
   "workspace_id": "wrk_XXXXXXXXXXXXXXXXXXXXXXXX",
   "refresh_token": "",
   "org_id": "",
-  "waqi_token": ""
+  "waqi_token": "",
+
+  "poll_usage_s": 60,
+  "poll_usage_idle_s": 180,
+  "poll_weather_s": 1800,
+  "poll_air_s": 3600,
+  "poll_moon_s": 43200
 }
