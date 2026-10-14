@@ -12,8 +12,9 @@ static uint32_t s_dumpNext = 0;
 void frameDumpTick(uint32_t now, const UiData& d) {
   if (s_dumpIdx >= 7) return;
   if (now < s_dumpNext) return;
-  // Wait for real data (or give up after 45s) so the cards aren't placeholders.
-  if (s_dumpIdx == 0 && !(d.usage->valid && d.weather->valid) && now < 45000) return;
+  // Wait for real data (or give up after 60s) so the cards aren't placeholders.
+  bool ready = d.usage->valid && d.weather->valid && (!d.hasAir || d.air->valid);
+  if (s_dumpIdx == 0 && !ready && now < 60000) return;
   s_dumpNext = now + 1500;
 
   uint32_t idx = s_dumpIdx;
