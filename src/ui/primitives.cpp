@@ -16,7 +16,7 @@ using namespace ui_theme;
 // Supersampled canvas (368×448): Montserrat at roughly 2× the logical sizes.
 // These are 4bpp anti-aliased, so glyph edges are smooth instead of the jagged
 // 1-bit u8g2 ones. Regenerated locally to include µ/³ (see include/lv_conf.h).
-const lv_font_t* F_BIG   = &lv_font_ui_48;
+const lv_font_t* F_BIG   = &lv_font_ui_56;
 const lv_font_t* F_MED   = &lv_font_ui_40;
 const lv_font_t* F_HEAD  = &lv_font_ui_24;
 const lv_font_t* F_BODY  = &lv_font_ui_18;

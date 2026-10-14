@@ -4,6 +4,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include "hw/pins.h"   // provides BOARD_HW_W, BOARD_HW_H, BOARD_SAFE_INSET, BOARD_DISPLAY_UI_SCALE
+#include "ui/lvgl_text.h"
 
 // Logical drawing grid (what the UI code is authored against).
 constexpr int HW_W       = BOARD_HW_W;
@@ -38,13 +39,21 @@ public:
 
   void fillScreen(uint16_t color) { _c->fillScreen(color); }
 
-  void setFont(const uint8_t* f) { _c->setFont(f); }
-  void setTextColor(uint16_t c) { _c->setTextColor(c); }
-  void setTextColor(uint16_t c, uint16_t bg) { _c->setTextColor(c, bg); }
+  // Text goes through LVGL (see ui/lvgl_text.h) so the whole UI — including the
+  // WiFi setup screen — shares one 4bpp anti-aliased pipeline. setCursor() takes
+  // a logical baseline, matching the old u8g2 behaviour.
+  void setFont(const lv_font_t* f) { _font = f; }
+  void setTextColor(uint16_t c) { _fg = c; }
+  void setTextColor(uint16_t c, uint16_t /*bg*/) { _fg = c; }  // text is transparent
 
-  void setCursor(int16_t x, int16_t y) { _c->setCursor((int16_t)(x * _s), (int16_t)(y * _s)); }
-  void print(const char* s) { _c->print(s); }
-  void print(char c) { _c->print(c); }
+  void setCursor(int16_t x, int16_t y) { _cx = (int)x * _s; _cy = (int)y * _s; }
+
+  void print(const char* s) {
+    if (!_font || !s || !s[0]) return;
+    lvglDrawText(_font, _fg, _cx, _cy, s);
+    _cx += lvglTextWidth(_font, s);
+  }
+  void print(char c) { char b[2] = { c, 0 }; print(b); }
 
   void printf(const char* fmt, ...) {
     char buf[128];
@@ -52,16 +61,7 @@ public:
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    _c->print(buf);
-  }
-
-  void getTextBounds(const char* s, int16_t x, int16_t y,
-                     int16_t* x1, int16_t* y1, uint16_t* w, uint16_t* h) {
-    _c->getTextBounds(s, (int16_t)(x * _s), (int16_t)(y * _s), x1, y1, w, h);
-    if (x1) *x1 = (int16_t)(*x1 / _s);
-    if (y1) *y1 = (int16_t)(*y1 / _s);
-    if (w)  *w  = (uint16_t)(*w / _s);
-    if (h)  *h  = (uint16_t)(*h / _s);
+    print(buf);
   }
 
   void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t c) {
@@ -110,8 +110,12 @@ public:
   uint16_t* getFramebuffer() { return _c->getFramebuffer(); }
 
 private:
-  Arduino_Canvas* _c;
-  uint8_t         _s;
+  Arduino_Canvas*  _c;
+  uint8_t          _s;
+  const lv_font_t* _font = nullptr;
+  uint16_t         _fg   = 0xFFFF;   // current text colour (RGB565)
+  int              _cx   = 0;        // text cursor, in canvas pixels
+  int              _cy   = 0;
 };
 
 bool hwDisplayInit();

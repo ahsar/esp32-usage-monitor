@@ -267,7 +267,6 @@ void setup() {
     Serial.printf("ESP32 Usage Monitor fw %s\n", FW_VERSION);
 
     hwInit();
-    lvglTextInit();   // LVGL canvas over the framebuffer, for AA text
 
     spr.fillScreen(0x0000);
     spr.drawRoundRect(SAFE_L, SAFE_T, SAFE_W, SAFE_H, 8, 0xFFFF);
@@ -337,9 +336,9 @@ void loop() {
         Serial.println("PWR long-press: shutting down");
         spr.fillScreen(0x0000);
 #if BOARD_DISPLAY_UI_SCALE > 1
-        spr.setFont(u8g2_font_helvB24_tf);
+        spr.setFont(&lv_font_ui_24);
 #else
-        spr.setFont(u8g2_font_helvB12_tf);
+        spr.setFont(&lv_font_ui_12);
 #endif
         spr.setTextColor(0xFFFF);
         spr.setCursor(SAFE_L, SAFE_T + SAFE_H / 2);

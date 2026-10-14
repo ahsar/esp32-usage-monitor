@@ -59,6 +59,7 @@
 #define LV_FONT_UI_28 1
 #define LV_FONT_UI_40 1
 #define LV_FONT_UI_48 1
+#define LV_FONT_UI_56 1
 
 #define LV_FONT_CUSTOM_DECLARE   \
   LV_FONT_DECLARE(lv_font_ui_8)  \
@@ -70,7 +71,8 @@
   LV_FONT_DECLARE(lv_font_ui_24) \
   LV_FONT_DECLARE(lv_font_ui_28) \
   LV_FONT_DECLARE(lv_font_ui_40) \
-  LV_FONT_DECLARE(lv_font_ui_48)
+  LV_FONT_DECLARE(lv_font_ui_48) \
+  LV_FONT_DECLARE(lv_font_ui_56)
 
 #define LV_FONT_DEFAULT &lv_font_ui_14
 

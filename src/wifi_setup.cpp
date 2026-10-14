@@ -6,13 +6,12 @@
 #include <string.h>
 #include <Arduino.h>
 
-// All on-screen copy here is ASCII, so on the supersampled canvas use a 2×
-// Helvetica face instead of the (upscaled) 12 px CJK font that only ever
-// rendered Latin glyphs anyway.
+// All on-screen copy here is ASCII. Text is rendered by LVGL (see
+// ui/lvgl_text.h) like the rest of the UI, so it is 4bpp anti-aliased too.
 #if BOARD_DISPLAY_UI_SCALE > 1
-  #define WIFI_FONT u8g2_font_helvB24_tf
+  #define WIFI_FONT (&lv_font_ui_24)
 #else
-  #define WIFI_FONT u8g2_font_wqy12_t_gb2312b
+  #define WIFI_FONT (&lv_font_ui_12)
 #endif
 
 using namespace ui_theme;
@@ -56,8 +55,9 @@ static Rect btnRect(int x, int y, int w, int h) {
 
 static void fillBtn(const Rect& r, uint16_t color, const char* label) {
   spr.fillRoundRect(r.x, r.y, r.w, r.h, 3, color);
+  spr.setFont(WIFI_FONT);
   spr.setTextColor(COL_TEXT, color);
-  int tw = strlen(label) * 6;
+  int tw = lvglTextWidth(WIFI_FONT, label) / UI_SCALE;
   spr.setCursor(r.x + (r.w - tw) / 2, r.y + (r.h - 10) / 2);
   spr.print(label);
 }
