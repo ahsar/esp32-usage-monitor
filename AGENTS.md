@@ -217,11 +217,13 @@ Idle also dims the panel but **never blanks it** (so it stays glanceable):
   is dropped as soon as the gesture locks an axis, `pager.cpp`).
 - Pager/key/wake/data events set `s_forceRender`, so a swipe/tap never freezes on
   a mid-transition frame.
-- Radio: TX power is capped at `WIFI_POWER_11dBm`. Power save is two-phase
-  (`hw/net.h`): `APP_WIFI_PS_BOOT` (MIN_MODEM) while associating — MAX_MODEM during
-  association can miss the AP's handshake frames and blow past the setup UI's 15 s
-  connect grace — then `APP_WIFI_PS` (MAX_MODEM) once connected, for the lowest
-  idle radio power at the cost of some status-webhook latency.
+- Radio: TX power is capped at `WIFI_POWER_11dBm`. Power save is `MIN_MODEM`
+  (`APP_WIFI_PS_BOOT` and `APP_WIFI_PS` in `hw/net.h`) — both while associating
+  and afterwards. `MAX_MODEM` (radio dozing between beacons) was tried for idle
+  power and measured out: at the same spot minutes apart, MIN_MODEM gave TLS
+  handshakes of 2.2-4.4 s and all four pollers succeeded, MAX_MODEM gave
+  4.5-31.7 s and every poll timed out. Re-measure `http: … tls=…` before
+  switching back.
 
 Tunables live at the top of `src/main.cpp` (search `IDLE_DIM_MS` / `IDLE_NET_MS`)
 and in `data/config.json` (the `poll_*` fields).

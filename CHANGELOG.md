@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Wi-Fi power save is `MIN_MODEM` for good.** `MAX_MODEM` looked attractive
+  for idle radio power, but the dozing radio loses TLS handshake packets: at the
+  same spot minutes apart, MIN_MODEM gave handshakes of 2.2-4.4 s with all four
+  pollers succeeding, while MAX_MODEM gave 4.5/11.7/31.7/30.7 s with every poll
+  timing out. Fetching is this device's whole job and it is desk hardware.
 - `wttr.in`/moon/air are fetched with one attempt per poll instead of two:
   retries now live in the scheduler's back-off, and the single job slot is
   released sooner.
