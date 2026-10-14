@@ -40,6 +40,24 @@ static bool     s_bootPrinted = false;   // previous-run summary repeated later
 static char     s_prevSummary[192];
 static uint32_t s_prevResetReason = 0;
 static uint32_t s_prevBoots = 0;
+static volatile uint32_t s_fetchCode = DIAG_NONE;   // worker-only breadcrumb
+
+// Codes only the fetch path writes (everything else comes from loop()).
+static bool isFetchCode(uint32_t c) {
+  switch ((DiagCode)c) {
+    case DIAG_FETCH_JOB:
+    case DIAG_FETCH_DONE:
+    case DIAG_HTTP_CONNECT:
+    case DIAG_HTTP_CONNECTED:
+    case DIAG_HTTP_READ:
+    case DIAG_HTTP_DONE:
+    case DIAG_TOKEN_REFRESH:
+    case DIAG_TOKEN_DONE:
+      return true;
+    default:
+      return false;
+  }
+}
 
 const char* diagCodeName(uint32_t c) {
   switch (c) {
@@ -94,12 +112,20 @@ static void emit(const char* fmt, ...) {
 void diagMark(DiagCode code, uint32_t arg) {
   s_d.code = (uint32_t)code;
   s_d.arg  = arg;
+  if (isFetchCode((uint32_t)code)) s_fetchCode = (uint32_t)code;
 }
+
+// The worker's phase, kept apart from s_d.code: the main loop rewrites the
+// breadcrumb through diagLoopTick()/diagPushMs() on every render, which would
+// otherwise make "the fetch is stuck in …" point at the UI instead.
+uint32_t diagFetchCodeNow() { return s_fetchCode; }
 
 void diagMarkHost(const char* host) {
   if (!host) { s_d.host[0] = 0; return; }
   strlcpy(s_d.host, host, sizeof(s_d.host));
 }
+
+const char* diagHostNow() { return s_d.host[0] ? s_d.host : "-"; }
 
 void diagPushMs(uint32_t ms) {
   if (ms > s_d.pushMax) s_d.pushMax = ms;
@@ -159,6 +185,7 @@ void diagBoot() {
   s_d.boots       = prevBoots + 1;
   s_d.resetReason = (uint32_t)rr;
   s_d.code        = DIAG_SETUP;
+  s_fetchCode     = DIAG_NONE;
 
   esp_timer_create_args_t args = {};
   args.callback = &stallCb;
@@ -194,10 +221,14 @@ void diagLoopTick(uint32_t now, uint32_t iter) {
   if ((uint32_t)(now - s_periodic) >= 10000) {
     s_periodic = now;
     Serial.printf("diag: t=%us iter=%u maxIterGap=%ums pushMax=%ums busy=%d "
-                  "jobsQ=%u resQ=%u heap=%u psram=%u online=%u wifi=%u\n",
+                  "job=%s age=%lums fbc=%s host=%s jobsQ=%u resQ=%u heap=%u "
+                  "psram=%u online=%u wifi=%u\n",
                   (unsigned)(now / 1000), (unsigned)iter,
                   (unsigned)s_iterMaxGap, (unsigned)s_d.pushMax,
-                  fetchTaskBusy() ? 1 : 0, (unsigned)fetchTaskPendingJobs(),
+                  fetchTaskBusy() ? 1 : 0, fetchJobName(fetchTaskCurrentJob()),
+                  (unsigned long)fetchTaskJobAgeMs(now),
+                  diagCodeName(s_fetchCode), s_d.host[0] ? s_d.host : "-",
+                  (unsigned)fetchTaskPendingJobs(),
                   (unsigned)fetchTaskPendingResults(),
                   (unsigned)esp_get_free_heap_size(),
                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),

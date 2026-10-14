@@ -15,6 +15,13 @@ struct HttpResponse {
 // this must never run on the main loop task. All callers go through the
 // background worker in fetch_task.cpp; loop() only schedules and harvests.
 //
+// Every blocking phase is bounded and logged ("http: <host> -> <status>
+// dns=… tls=… read=…"): the name is resolved with its own deadline first
+// (TLS connect no longer hides DNS), the handshake is capped, and the read
+// loop runs for at most `timeoutMs`. The whole request therefore has a worst
+// case of ~8 s + 10 s + 15 s + `timeoutMs`, so a blocked host can stall the
+// worker but never wedge it.
+//
 // http10: send "HTTP/1.0" so servers reply without chunked encoding (wttr.in
 //         chunks HTTP/1.1 responses; HTTP/1.0 delimits by closing).
 // maxBody: safety cap on the buffered body size.

@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A blocked host could stop every poller for hours.** `setHandshakeTimeout()`
+  takes *seconds* (the core multiplies by 1000 and compares against `millis()`),
+  so the 15000 passed by `http_client.cpp` asked for 4 h 10 m instead of 15 s.
+  A host that accepts TCP but never completes the TLS handshake (a filtered or
+  blackholed endpoint) therefore wedged the single fetch worker far beyond every
+  other timeout, freezing the usage meter with no error shown. The cap is now a
+  named `HANDSHAKE_TIMEOUT_S`.
+- Every blocking phase of an HTTPS request is bounded and logged
+  (`dns=… tls=… read=…`). DNS is resolved first with its own 8 s deadline —
+  `lwip_getaddrinfo` (inside `client.connect(host, …)`) takes no timeout at all.
+- A fetch that fails no longer retries every cycle: each poller backs its host
+  off (1 min doubling, capped at 2 min for usage and 30 min for weather/moon/air).
+- A worker stuck inside an SDK call that ignores the phase timeouts is now
+  detected by its job age (4 min) and restarted, with the offending host paused,
+  instead of silently freezing the whole poll loop forever.
+
+### Changed
+
+- `wttr.in`/moon/air are fetched with one attempt per poll instead of two:
+  retries now live in the scheduler's back-off, and the single job slot is
+  released sooner.
+- The 10 s diagnostic line carries the in-flight job, its age and the *worker's*
+  own phase (`job=… age=… fbc=… host=…`, kept apart from the loop's breadcrumb,
+  which re-rendering overwrites), so a stalled fetch says where it is stalled.
+
 ### Added
 
 - **PC bridge.** `tools/opencode-plugin/` is an OpenCode V2 plugin that pushes

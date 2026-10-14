@@ -40,3 +40,9 @@ void diagMarkHost(const char* host);          // remember which endpoint is in f
 void diagLoopTick(uint32_t now, uint32_t iter);
 void diagPushMs(uint32_t ms);                 // render+push duration of one frame
 void diagSetNet(bool online, int wifiStatus);
+
+// Where the worker currently is: its own phase breadcrumb (the main loop's
+// diagMark calls do not overwrite it) plus the host of the request in flight.
+// Printed in the periodic line so a fetch that stops making progress says why.
+uint32_t    diagFetchCodeNow();
+const char* diagHostNow();

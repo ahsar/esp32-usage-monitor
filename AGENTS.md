@@ -289,7 +289,32 @@ and after a long idle all four pollers are due back to back.
 
 Each job logs `fetch <name>: ok/fail in <ms>` — on the old inline design that
 duration was visible UI freeze, now it is only worker time. The first job also
-prints the task's stack headroom (16 KB reserved for mbedTLS).
+prints the task's stack headroom (16 KB reserved for mbedTLS). Each HTTPS
+request additionally logs its phases — `http: <host> -> <status> ip=… dns=…
+tls=… read=… rx=…` — so a slow host is obvious at a glance, and the 10 s
+periodic diag line carries the in-flight job, its age and the worker's current
+breadcrumb (`job=… age=… bc=… host=…`).
+
+**Every blocking phase is bounded** (`src/http_client.cpp`): the name is
+resolved first with its own 8 s deadline (the TLS connect resolves internally
+via `lwip_getaddrinfo`, which takes no timeout and would otherwise hide DNS in
+the connect phase), the handshake is capped at `HANDSHAKE_TIMEOUT_S` and the
+read loop runs for at most `timeoutMs`. **`setHandshakeTimeout()` takes
+seconds** — it multiplies by 1000 internally and the value is compared against
+`millis()`; passing milliseconds asked for 4 h 10 m instead of 15 s, which is
+what once froze every poller for hours. Worst case per request is
+8 s + 10 s + 30 s + `timeoutMs`.
+
+Two safety nets sit above that (`src/main.cpp`):
+
+- **Per-job cooldown.** A failed fetch backs its host off (exponential from
+  60 s, capped at 2 min for usage and 30 min for weather/moon/air), so a
+  blocked or erroring endpoint stops taking the single job slot every cycle.
+- **Wedge watchdog.** A job older than `JOB_DEADLINE_MS` (4 min) means the
+  worker is stuck inside an SDK call no timeout covers, so `fetchTaskRestart()`
+  recreates the worker (its tokens survive — they are file-scope statics) and
+  the offending host is paused 5 min (30 min if it recurs). The abandoned TLS
+  session leaks, which the pause bounds.
 
 ### Network polling / power
 
@@ -312,7 +337,10 @@ rotated tokens.
   hands it to the fetch task; `serviceFetch()` harvests the result before the
   next job is scheduled, so a burst of due timers (all four after a long idle)
   drains one at a time. A timer is only marked run when `fetchTaskStart()`
-  accepts the job, so a busy worker just retries a later iteration.
+  accepts the job, so a busy worker just retries a later iteration. A poller
+  that is cooling down (see the safety nets above) is skipped, and a worker
+  that stops making progress is restarted by the watchdog instead of freezing
+  every poller.
 
 ### WiFi scan
 

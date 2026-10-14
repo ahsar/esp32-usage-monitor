@@ -59,6 +59,24 @@ bool fetchTaskTokensValid();
 // True from a successful fetchTaskStart() until that job is harvested.
 bool fetchTaskBusy();
 
+// Wall-clock age of the job in flight, 0 when idle. The main loop uses it to
+// spot a worker that is stuck inside an SDK call no timeout covers (see
+// fetchTaskRestart()).
+uint32_t fetchTaskJobAgeMs(uint32_t now);
+
+// Which job is in flight (FETCH_USAGE when idle / unknown).
+FetchJob fetchTaskCurrentJob();
+
+// Human-readable job name for logs.
+const char* fetchJobName(FetchJob job);
+
+// Kill and recreate a wedged worker, clearing the busy flag. The task's copy of
+// the tokens lives in a file-scope static (not on the task stack) and a pending
+// token hand-off is preserved, so tokens survive. The abandoned task's socket
+// and mbedtls contexts leak (there is no way to interrupt the SDK call), which
+// is why the caller must also back the offending host off.
+void fetchTaskRestart();
+
 // Hand a job to the worker. False when a job is already in flight or the task
 // is unavailable — the caller must then leave the poll timer un-ran so the
 // job is retried on a later iteration.

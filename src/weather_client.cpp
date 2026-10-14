@@ -24,7 +24,9 @@ static const char* WAQI_ID   = "@3303";
 // timeout is ample and keeps the worst-case blocking of the main loop bounded.
 static const uint32_t NET_TIMEOUT_MS = 8000;
 static const size_t   NET_MAX_BODY   = 4096;
-static const int      NET_ATTEMPTS   = 2;
+// One attempt per poll: a failed job is backed off by the scheduler
+// (main.cpp), and retrying here only keeps the single job slot busy longer.
+static const int      NET_ATTEMPTS   = 1;
 
 // ---------------------------------------------------------------------------
 // weather (wttr.in one-line format)

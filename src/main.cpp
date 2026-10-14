@@ -67,6 +67,64 @@ static const uint8_t  DIM_LEVEL     = 0;       // BRIGHT_LUT[0] = 50/255
 static const uint32_t IDLE_NET_MS   = 30000;   // idle > this → slow the pollers
 static const uint32_t ANIM_FRAME_MS = 60;      // blink anims: cap the push rate
 
+// ---- fetch scheduling safety nets ------------------------------------------
+// A worker that stops making progress must never stop *every* poller again
+// (that is exactly what a 4 h handshake timeout once did: the usage meter just
+// froze). Two independent guards:
+//   * a per-job cooldown, so a host that is blocked/erroring stops taking the
+//     single job slot every cycle (exponential, capped per job);
+//   * a watchdog on the job's wall-clock age; a job older than JOB_DEADLINE_MS
+//     means the worker is stuck in an SDK call no timeout covers, so the
+//     worker is recreated (see fetchTaskRestart()).
+// The per-phase bounds in http_client.cpp are what actually keeps the worker
+// moving; this is only the last resort for an SDK call that ignores them (a
+// DNS lookup is the known one), so it is set above the slowest *legitimate*
+// job — a usage poll that refreshes the token twice — to avoid false positives
+// that would pause the meter.
+static const uint32_t JOB_DEADLINE_MS = 240000;  // wedged worker → restart
+static const uint32_t BACKOFF_BASE_MS = 60000;   // first failure: 1 min
+static const uint32_t BACKOFF_USAGE_MS  = 120000;    // the meter matters most
+static const uint32_t BACKOFF_OTHER_MS  = 1800000;   // weather/moon/air: 30 min
+static const uint32_t WEDGE_PAUSE_MS   = 300000;     // 5 min after a wedge
+static const uint32_t WEDGE_PAUSE_MAX_MS = 1800000;  // …30 min if it recurs
+
+// Indexed by FetchJob (1..FETCH_AIR).
+static uint32_t s_failStreak[FETCH_AIR + 1];
+static uint32_t s_cooldownUntil[FETCH_AIR + 1];
+static uint32_t s_wedgeCount = 0;
+
+static bool jobCoolingDown(FetchJob job, uint32_t now) {
+    if (s_cooldownUntil[job] == 0) return false;
+    if ((int32_t)(s_cooldownUntil[job] - now) > 0) return true;
+    s_cooldownUntil[job] = 0;       // expired
+    return false;
+}
+
+static void jobCooldown(FetchJob job, uint32_t now, uint32_t ms) {
+    s_cooldownUntil[job] = now + ms;
+}
+
+// The wedge recovery ladder: recreate the worker, then keep that host out of
+// rotation for a while. Repeated wedges (the restarted worker gets stuck too)
+// stretch the pause, so this can never become a restart loop.
+static void fetchWatchdog(uint32_t now) {
+    if (!fetchTaskBusy()) return;
+    uint32_t age = fetchTaskJobAgeMs(now);
+    if (age < JOB_DEADLINE_MS) return;
+
+    FetchJob job = fetchTaskCurrentJob();
+    uint32_t pause = (s_wedgeCount == 0) ? WEDGE_PAUSE_MS : WEDGE_PAUSE_MAX_MS;
+    s_wedgeCount++;
+    Serial.printf("fetch: %s wedged for %lums (bc=%s host=%s) — restarting "
+                  "worker, %s paused %lus\n",
+                  fetchJobName(job), (unsigned long)age,
+                  diagCodeName(diagFetchCodeNow()), diagHostNow(),
+                  fetchJobName(job), (unsigned long)(pause / 1000));
+    jobCooldown(job, now, pause);
+    fetchTaskRestart();
+    s_forceRender = true;
+}
+
 static void screenWake() {
     // While face-down the panel stays blank; the forced render is deferred
     // until it is lifted (screenFaceDownUpdate restores the level).
@@ -370,6 +428,23 @@ static void serviceFetch() {
         case FETCH_MOON:    s_moon    = res.moon;    break;
         case FETCH_AIR:     s_air     = res.air;     break;
     }
+    uint32_t now = millis();
+    if (!res.ok) {
+        // Back the host off instead of retrying it every cycle: a blocked or
+        // erroring endpoint must not keep occupying the single job slot.
+        uint32_t streak = ++s_failStreak[res.job];
+        uint32_t cool = BACKOFF_BASE_MS << (streak > 5 ? 4 : streak - 1);
+        uint32_t cap = (res.job == FETCH_USAGE) ? BACKOFF_USAGE_MS : BACKOFF_OTHER_MS;
+        if (cool > cap) cool = cap;
+        jobCooldown(res.job, now, cool);
+        Serial.printf("fetch %s failed x%u; retry in %lus\n",
+                      fetchJobName(res.job), (unsigned)streak,
+                      (unsigned long)(cool / 1000));
+    } else {
+        s_failStreak[res.job] = 0;
+        s_cooldownUntil[res.job] = 0;
+        s_wedgeCount = 0;
+    }
     if (res.ok) {
         if (res.job == FETCH_WEATHER && clockSyncValid()) {
             snprintf(s_weather.obsTime, sizeof(s_weather.obsTime), "%02d:%02d",
@@ -469,6 +544,7 @@ void loop() {
     hwInputUpdate();
     handleHttpStatus();
     serviceFetch();               // publish finished fetch jobs (never blocks)
+    fetchWatchdog(millis());      // restart the worker if a job stopped moving
 
 #if BOARD_HAS_KEY2
     bool pwrLong = hwAxpPekeyLongPress();
@@ -568,13 +644,15 @@ void loop() {
 
             FetchJob job = FETCH_USAGE;   // only read when `due` is set
             Interval* due = nullptr;
-            if (fetchTaskTokensValid() && s_ivUsage.due(now)) {
+            if (fetchTaskTokensValid() && s_ivUsage.due(now) &&
+                !jobCoolingDown(FETCH_USAGE, now)) {
                 job = FETCH_USAGE; due = &s_ivUsage;
-            } else if (s_ivWeather.due(now)) {
+            } else if (s_ivWeather.due(now) && !jobCoolingDown(FETCH_WEATHER, now)) {
                 job = FETCH_WEATHER; due = &s_ivWeather;
-            } else if (s_ivMoon.due(now)) {
+            } else if (s_ivMoon.due(now) && !jobCoolingDown(FETCH_MOON, now)) {
                 job = FETCH_MOON; due = &s_ivMoon;
-            } else if (s_cfg.waqi_token[0] && s_ivAir.due(now)) {
+            } else if (s_cfg.waqi_token[0] && s_ivAir.due(now) &&
+                       !jobCoolingDown(FETCH_AIR, now)) {
                 job = FETCH_AIR; due = &s_ivAir;
             }
 
