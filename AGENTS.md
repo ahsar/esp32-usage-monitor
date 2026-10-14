@@ -71,7 +71,7 @@ from <https://github.com/jason2866/mklittlefs/releases> (asset
 | `src/weather_client.{h,cpp}` | Weather (wttr.in), moon (MET Norway), air quality (waqi) transport |
 | `src/parse/` | Header-only, host-testable payload parsers (usage/moon/air) |
 | `src/usage_display.h` | Public UI drawing API (frame setup, page/card renderers, dots) |
-| `src/ui/` | UI drawing impl (`cards`, `primitives`, `icons`) + shared palette (`theme.h`) |
+| `src/ui/` | UI drawing impl (`cards`, `primitives`, `icons`, `lvgl_text`) + shared palette (`theme.h`) |
 | `src/util/` | Dependency-free helpers (time/value/interval, host-unit-tested) |
 | `src/wifi_setup.cpp` | WiFi config UI (button-based password entry) |
 | `src/hw/` | Drivers: display, input, power, IMU, RTC, net |
@@ -86,8 +86,10 @@ from <https://github.com/jason2866/mklittlefs/releases> (asset
 - Weather has vertical cards: **Now → Sun → Air → Moon → Moonrise**.
 - Drag follows the finger and snaps; tap advances; Key1 cycles. Dots: bottom row =
   pages, right column = weather cards.
-- All on-screen copy is English. Only Latin fonts are used (LOGISOSO/helvB), so the
-  CJK point fonts were dropped (saves ~280 KB flash).
+- All on-screen copy is English. Text is rendered with **LVGL Montserrat** (4bpp
+  anti-aliased) via `src/ui/lvgl_text.*`; the old 1-bit u8g2 fonts looked jagged
+  on the 314-PPI panel. u8g2 is still linked for the transient WiFi-setup screen
+  and the `die()`/shutdown messages only.
 - Weather cards reserve the right `WC_R` margin so content never collides with the
   card dots.
 
@@ -126,6 +128,30 @@ Idle also dims the panel but **never blanks it** (so it stays glanceable):
 
 Tunables live at the top of `src/main.cpp` (search `IDLE_DIM_MS` / `IDLE_NET_MS`)
 and in `data/config.json` (the `poll_*` fields).
+
+### Text rendering (LVGL)
+
+Text is anti-aliased with **LVGL used purely as an offscreen rasteriser**: an
+`lv_canvas` points at the existing (PSRAM) Arduino_Canvas framebuffer and
+`lv_canvas_draw_text()` blends Montserrat 4bpp glyphs straight into it. No LVGL
+widgets, screens or driven display — `src/ui/lvgl_text.*` registers a tiny dummy
+display (LVGL needs one before any object exists), creates the canvas once, and
+exposes `lvglDrawText()` / `lvglTextWidth()`.
+
+- `src/ui/primitives.cpp` owns the five fonts (`F_BIG..F_SMALL`) and the
+  `textAt`/`textRight`/`textCenter` helpers that all card code uses. **The helpers
+  take/return logical units and multiply positions by `UI_SCALE` internally** —
+  the LVGL fonts are already sized for the canvas, so getting this wrong shifts
+  every string by half a screen.
+- The fonts are **our own** Montserrat builds in `src/ui/fonts/lv_font_ui_<S>.c`,
+  generated with `lv_font_conv` (recipe in `include/lv_conf.h`), *not* LVGL's
+  built-ins: those only cover `0x20-0x7F`, `0xB0` and `0x2022`, so the air
+  card's `µg/m³` (0xB5 / 0xB3) rendered as garbage. Each generated file is
+  guarded by `LV_FONT_UI_<S>`, which must be `1` in `lv_conf.h`.
+- Everything else (bars, icons, moon, dots, the 555 logo) is still drawn directly
+  with Arduino_GFX into the same buffer; only *text* goes through LVGL.
+- `-DFRAME_DUMP` + `tools/frame_dump.py` streams each screen and rebuilds it as a
+  PNG, which is how the layout is verified without looking at the panel.
 
 ### Blocking fetches never freeze the UI
 

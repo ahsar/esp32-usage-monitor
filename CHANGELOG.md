@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable network poll periods in `data/config.json`
   (`poll_usage_s`, `poll_usage_idle_s`, `poll_weather_s`, `poll_air_s`,
   `poll_moon_s`) with an idle back-off for the usage meter.
+- Anti-aliased text. `src/ui/lvgl_text.*` uses LVGL as an offscreen
+  `lv_canvas` rasteriser over the existing framebuffer, so all card text is now
+  4bpp Montserrat smooth instead of jagged 1-bit u8g2 glyphs. Layout, shapes,
+  animations and the pager are unchanged.
+- Ship our own Montserrat builds (`src/ui/fonts/`, via `lv_font_conv`) so the
+  glyphs the UI actually needs are present: LVGL's built-ins only cover ASCII +
+  `°` + `•`, which left the air card's `µg/m³` rendering as garbage. Dropping
+  their FontAwesome glyphs also keeps the font data about half the size.
+- `tools/frame_dump.py`: rebuild the `-DFRAME_DUMP` screen walk as PNGs for
+  host-side layout checks.
 
 ### Changed
 
@@ -26,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CO5300, so the default 40 MHz is kept.)
 - WiFi: max modem sleep (`WIFI_PS_MAX_MODEM`) and slower weather/air/moon poll
   periods (30 min / 60 min / 12 h) to cut radio wake-ups and heat.
+- Add `lvgl/lvgl` 8.4.0 and configure it as a text rasteriser only
+  (`include/lv_conf.h`); the host `native` env ignores it (`lib_ignore`).
 - Docs: correct the `src/ui/` / `usage_display.h` project-structure entries and
   the test-coverage notes in `README.md` / `AGENTS.md`.
 - Pin all PlatformIO library dependencies to exact versions for reproducible

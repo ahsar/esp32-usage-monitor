@@ -210,7 +210,9 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
 │   ├── api_client.cpp/h     # OpenCode console REST client
 │   ├── weather_client.cpp/h # weather / moon / air quality
 │   ├── usage_display.h      # public UI drawing API (page/card renderers)
-│   ├── ui/                  # UI drawing impl (cards, primitives, icons, theme)
+│   ├── ui/                  # UI drawing impl (cards, primitives, icons,
+│   │   │                    #   lvgl_text, theme)
+│   │   └── fonts/           # own Montserrat builds (lv_font_ui_*.c)
 │   ├── wifi_setup.cpp/h     # WiFi setup UI
 │   ├── parse/               # header-only payload parsers (usage/weather/moon/air)
 │   ├── util/                # dependency-free helpers (host-unit-tested)
@@ -232,7 +234,8 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
 ├── test/
 │   └── test_util/           # host unit tests (pio test -e native)
 ├── tools/
-│   └── authorize.py         # OAuth device-flow authoriser / --check
+│   ├── authorize.py         # OAuth device-flow authoriser / --check
+│   └── frame_dump.py        # rebuild -DFRAME_DUMP screen dumps as PNGs
 └── platformio.ini           # PlatformIO config
 ```
 
