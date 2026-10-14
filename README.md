@@ -297,11 +297,6 @@ CI runs that plus `pio run -e esp32-usage-monitor` on every push and PR.
   anchors, text rendering — live in [`AGENTS.md`](AGENTS.md); the change history
   is in [`CHANGELOG.md`](CHANGELOG.md).
 
-## Related
-
-- A Windows floating usage widget: <https://github.com/2700zc/TokenHub> — ready to
-  use once configured
-
 ## License
 
 MIT
