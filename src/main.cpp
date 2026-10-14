@@ -5,6 +5,7 @@
 #include "token_store.h"
 #include "weather_client.h"
 #include "usage_display.h"
+#include "ui/lvgl_text.h"
 #include "ui_compose.h"
 #include "frame_dump.h"
 #include "wifi_setup.h"
@@ -266,6 +267,7 @@ void setup() {
     Serial.printf("ESP32 Usage Monitor fw %s\n", FW_VERSION);
 
     hwInit();
+    lvglTextInit();   // LVGL canvas over the framebuffer, for AA text
 
     spr.fillScreen(0x0000);
     spr.drawRoundRect(SAFE_L, SAFE_T, SAFE_W, SAFE_H, 8, 0xFFFF);

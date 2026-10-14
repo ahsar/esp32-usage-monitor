@@ -2,7 +2,7 @@
 // Internal contract between the UI translation units (primitives / icons /
 // cards). Not a public header — consumers include "usage_display.h" instead.
 #include <stdint.h>
-#include <U8g2lib.h>
+#include <lvgl.h>
 #include "hw/display.h"
 #include "ui_model.h"
 
@@ -16,18 +16,19 @@ extern int g_ox, g_oy;
 #define X(v) ((v) + g_ox)
 #define Y(v) ((v) + g_oy)
 
-// Fonts (selected per supersample factor in primitives.cpp).
-extern const uint8_t* F_BIG;
-extern const uint8_t* F_MED;
-extern const uint8_t* F_HEAD;
-extern const uint8_t* F_BODY;
-extern const uint8_t* F_SMALL;
+// Text fonts: LVGL Montserrat (4bpp anti-aliased), selected per supersample
+// factor in primitives.cpp and rasterised via ui/lvgl_text.{h,cpp}.
+extern const lv_font_t* F_BIG;
+extern const lv_font_t* F_MED;
+extern const lv_font_t* F_HEAD;
+extern const lv_font_t* F_BODY;
+extern const lv_font_t* F_SMALL;
 
 // primitives.cpp
-void textAt(const uint8_t* f, uint16_t color, int x, int baseline, const char* s);
-int  textW(const uint8_t* f, const char* s);
-void textRight(const uint8_t* f, uint16_t color, int xRight, int baseline, const char* s);
-void textCenter(const uint8_t* f, uint16_t color, int cx, int baseline, const char* s);
+void textAt(const lv_font_t* f, uint16_t color, int x, int baseline, const char* s);
+int  textW(const lv_font_t* f, const char* s);
+void textRight(const lv_font_t* f, uint16_t color, int xRight, int baseline, const char* s);
+void textCenter(const lv_font_t* f, uint16_t color, int cx, int baseline, const char* s);
 void roundBar(int x, int y, int w, int h, int pct, uint16_t fill);
 void cardBg();
 void statusBar(const char* title);

@@ -1,5 +1,6 @@
 // UI primitives: fonts, text helpers, bars, chrome (status bar + dots).
 #include "ui/ui_internal.h"
+#include "ui/lvgl_text.h"
 #include "usage_display.h"
 #include "ui/theme.h"
 #include <cstdio>
@@ -12,20 +13,21 @@ using namespace ui_theme;
 // ---------------------------------------------------------------------------
 
 #if BOARD_DISPLAY_UI_SCALE > 1
-// Supersampled canvas (see ScaledCanvas): the logical layout is scaled ×2, so
-// fonts are bumped to ~2× size. Rendered natively at this size they stay crisp
-// on the 314-PPI panel instead of being block-upscaled from a 184×224 raster.
-const uint8_t* F_BIG   = u8g2_font_logisoso54_tf;
-const uint8_t* F_MED   = u8g2_font_logisoso42_tf;
-const uint8_t* F_HEAD  = u8g2_font_helvB24_tf;
-const uint8_t* F_BODY  = u8g2_font_helvB18_tf;
-const uint8_t* F_SMALL = u8g2_font_helvB14_tf;
+// Supersampled canvas (368×448): Montserrat at roughly 2× the logical sizes.
+// These are 4bpp anti-aliased, so glyph edges are smooth instead of the jagged
+// 1-bit u8g2 ones. Regenerated locally to include µ/³ (see include/lv_conf.h).
+const lv_font_t* F_BIG   = &lv_font_ui_48;
+const lv_font_t* F_MED   = &lv_font_ui_40;
+const lv_font_t* F_HEAD  = &lv_font_ui_24;
+const lv_font_t* F_BODY  = &lv_font_ui_18;
+const lv_font_t* F_SMALL = &lv_font_ui_14;
 #else
-const uint8_t* F_BIG   = u8g2_font_logisoso28_tf;
-const uint8_t* F_MED   = u8g2_font_logisoso22_tf;
-const uint8_t* F_HEAD  = u8g2_font_helvB12_tf;
-const uint8_t* F_BODY  = u8g2_font_helvB10_tf;
-const uint8_t* F_SMALL = u8g2_font_helvB08_tf;
+// Native 184×224 canvas (no supersampling).
+const lv_font_t* F_BIG   = &lv_font_ui_28;
+const lv_font_t* F_MED   = &lv_font_ui_22;
+const lv_font_t* F_HEAD  = &lv_font_ui_12;
+const lv_font_t* F_BODY  = &lv_font_ui_10;
+const lv_font_t* F_SMALL = &lv_font_ui_8;
 #endif
 
 int g_ox = 0, g_oy = 0;
@@ -33,38 +35,31 @@ int g_ox = 0, g_oy = 0;
 UiEnv g_env;
 
 // ---------------------------------------------------------------------------
-// Text helpers
+// Text helpers (rasterised by LVGL into the canvas)
+//
+// The UI is authored on the logical grid but the canvas is UI_SCALE× bigger
+// (and the LVGL fonts are already sized for the canvas), so positions must be
+// scaled to canvas pixels here — textW()/textRight()/textCenter() keep working
+// in logical units so callers and the icon code stay unchanged.
 // ---------------------------------------------------------------------------
 
-void textAt(const uint8_t* f, uint16_t color, int x, int baseline, const char* s) {
-  spr.setFont(f);
-  spr.setTextColor(color);
-  spr.setCursor(X(x), Y(baseline));
-  spr.print(s);
+static inline int cx(int logicalX) { return X(logicalX) * UI_SCALE; }
+static inline int cy(int logicalY) { return Y(logicalY) * UI_SCALE; }
+
+void textAt(const lv_font_t* f, uint16_t color, int x, int baseline, const char* s) {
+  lvglDrawText(f, color, cx(x), cy(baseline), s);
 }
 
-int textW(const uint8_t* f, const char* s) {
-  spr.setFont(f);
-  int16_t x1, y1;
-  uint16_t w, h;
-  spr.getTextBounds(s, 0, 0, &x1, &y1, &w, &h);
-  return (int)w;
+int textW(const lv_font_t* f, const char* s) {
+  return lvglTextWidth(f, s) / UI_SCALE;   // logical px
 }
 
-void textRight(const uint8_t* f, uint16_t color, int xRight, int baseline, const char* s) {
-  spr.setFont(f);
-  spr.setTextColor(color);
-  int w = textW(f, s);
-  spr.setCursor(X(xRight) - w, Y(baseline));
-  spr.print(s);
+void textRight(const lv_font_t* f, uint16_t color, int xRight, int baseline, const char* s) {
+  lvglDrawText(f, color, cx(xRight) - lvglTextWidth(f, s), cy(baseline), s);
 }
 
-void textCenter(const uint8_t* f, uint16_t color, int cx, int baseline, const char* s) {
-  spr.setFont(f);
-  spr.setTextColor(color);
-  int w = textW(f, s);
-  spr.setCursor(X(cx) - w / 2, Y(baseline));
-  spr.print(s);
+void textCenter(const lv_font_t* f, uint16_t color, int cxLogical, int baseline, const char* s) {
+  lvglDrawText(f, color, cx(cxLogical) - lvglTextWidth(f, s) / 2, cy(baseline), s);
 }
 
 // ---------------------------------------------------------------------------

@@ -351,8 +351,5 @@ void usageDisplayDrawThinking(uint32_t elapsedMs) {
     spr.draw16bitRGBBitmap(HW_W / 2 - s_img555W / 2, SAFE_T + 40,
                            s_img555, s_img555W, s_img555H);
   }
-  spr.setFont(F_HEAD);
-  spr.setTextColor(COL_TEXT);
-  spr.setCursor(HW_W / 2 - 26, SAFE_T + 150);
-  spr.print("Thinking...");
+  textCenter(F_HEAD, COL_TEXT, HW_W / 2, SAFE_T + 150, "Thinking...");
 }
