@@ -60,32 +60,36 @@ from <https://github.com/jason2866/mklittlefs/releases> (asset
 | `src/ui_model.h` | Neutral UI enums (`UiPage`, `UiWeatherCard`) + `UiEnv`, shared by pager/UI |
 | `src/frame_dump.{h,cpp}` | `-DFRAME_DUMP` screen walker (streams raw canvases over USB CDC) |
 | `src/pager.{h,cpp}` | Two-axis page/weather-card gesture + animation state machine |
-| `src/status_server.{h,cpp}` | HTTP status server (`?state=running\|done\|failed`) |
+| `src/status_server.{h,cpp}` | HTTP status server (`?state=running\|waiting\|done\|failed`) |
 | `src/clock_sync.{h,cpp}` | NTP bootstrap + RTC resync scheduling |
-| `src/easter_egg.{h,cpp}` | Shake detection + 555 audio playback |
+| `src/gestures.{h,cpp}` | Single IMU sampling point: shake / double-tap / pickup / face-down / rotate |
+| `src/easter_egg.{h,cpp}` | 555 audio playback (shake detection lives in `gestures.cpp`) |
+| `src/usage_history.{h,cpp}` | RAM ring of rolling-window spend samples (trend page) |
 | `src/storage.{h,cpp}` | LittleFS mount helper (one-shot, format-on-fail) |
 | `src/config.h` | `AppConfig` struct + LittleFS JSON loader (`/config.json`) |
 | `src/token_store.{h,cpp}` | Runtime OAuth tokens persisted to LittleFS (`/tokens.json`) + config fallback init |
 | `src/http_client.{h,cpp}` | Shared blocking HTTPS helper (headers, HTTP/1.0, timeouts) |
+| `src/fetch_task.{h,cpp}` | Background fetch task: job/result queues + rotated-token hand-off |
 | `src/api_client.cpp` | opencode console REST client (`https://opencode.ai/console/api/go/status`) |
 | `src/weather_client.{h,cpp}` | Weather (wttr.in), moon (MET Norway), air quality (waqi) transport |
 | `src/parse/` | Header-only, host-testable payload parsers (usage/moon/air) |
 | `src/usage_display.h` | Public UI drawing API (frame setup, page/card renderers, dots) |
 | `src/ui/` | UI drawing impl (`cards`, `primitives`, `icons`, `lvgl_text`) + shared palette (`theme.h`) |
-| `src/util/` | Dependency-free helpers (time/value/interval, host-unit-tested) |
+| `src/util/` | Dependency-free helpers (time/value/interval/gesture/trend, host-unit-tested) |
 | `src/wifi_setup.cpp` | WiFi config UI (button-based password entry) |
 | `src/hw/` | Drivers: display, input, power, IMU, RTC, net |
 | `src/boards/` | Board-specific pin definitions |
-| `src/voice/` | I2S audio output (ES8311) |
+| `src/voice/` | I2S audio output (ES8311 codec, `chime.*` cue synthesis) |
 | `test/` | Host unit tests (`pio test -e native`) |
-| `tools/` | PC-side Python tools |
+| `tools/` | PC-side Python tools + the OpenCode plugin (`tools/opencode-plugin/`) |
 
 ### UI / navigation
 
-- Horizontal pages: **Weather ↔ Usage ↔ Clock**.
+- Horizontal pages: **Weather ↔ Usage ↔ Trend ↔ Clock**.
 - Weather has vertical cards: **Now → Sun → Air → Moon → Moonrise**.
-- Drag follows the finger and snaps; tap advances; Key1 cycles. Dots: bottom row =
-  pages, right column = weather cards.
+- Drag follows the finger and snaps; tap advances; Key1 cycles; **double-tap
+  also advances**, and **twisting the device left/right steps pages/cards**
+  (`gestures.cpp`). Dots: bottom row = pages, right column = weather cards.
 - All on-screen copy is English. Text is rendered with **LVGL Montserrat** (4bpp
   anti-aliased) via `src/ui/lvgl_text.*`; the old 1-bit u8g2 fonts looked jagged
   on the 314-PPI panel. **u8g2 is no longer a dependency** — every text draw
@@ -93,6 +97,98 @@ from <https://github.com/jason2866/mklittlefs/releases> (asset
   LVGL now.
 - Weather cards reserve the right `WC_R` margin so content never collides with the
   card dots.
+
+### PC bridge, chimes and gestures
+
+The device never talks to OpenCode; OpenCode talks to the device. `status_server`
+is a plain HTTP server on port 80 and `tools/opencode-plugin/` (OpenCode **V2**
+plugin, `session.execution.*` / `permission.asked` events) is the client:
+
+| Request | State | Device |
+|---|---|---|
+| `?state=running` | agent working | "Thinking…" animation, wakes the panel |
+| `?state=waiting` | permission/question | "Needs you" animation + attention chime |
+| `?state=done` / `?state=failed` | finished / errored | rising / falling chime |
+
+`done`/`failed` only chime on a real transition, and never for the Key1 dismiss,
+so hand-dismissing the animation stays silent. Do **not** rely on V1 event names
+(`session.idle`, `session.status`, `permission.updated`) — V2 does not emit them.
+`tools/status-ping.sh` drives the same endpoint by hand, so the firmware path can
+be tested without OpenCode. The device advertises `usage-monitor.local` over
+mDNS (`ESPmDNS`) so the plugin needs no DHCP IP.
+
+**Auth.** Port 80 is reachable by anyone on the LAN, so the endpoint takes an
+HMAC-SHA256 signature over `"<state>|<unixSeconds>"` in `X-Sig` / `X-Ts`
+(`status_server.cpp`), verified in constant time against the `status_key` from
+`config.json`. With the clock NTP-synced, a ±60 s window blocks replay; a bad or
+missing signature gets `401` and changes nothing. The transport stays plain HTTP,
+but the key never goes on the wire (only the signature and the timestamp), so it
+is not leaked by sniffing; what plain HTTP allows is replaying a *captured*
+request inside the 60 s window. TLS (an mbedTLS server on the ESP32) is the
+heavier follow-up if that matters. **With an empty
+`status_key` auth is disabled** and the boot log says so. `tools/status_stub.py`
+is a local stand-in for the endpoint that reimplements the check, so the plugin
+can be exercised without hardware.
+
+**Outbound TLS.** `http_client.cpp` verifies the server chain against the ESP-IDF
+CA bundle (`setCACertBundle` + embedded `x509_crt_bundle`), so an active MitM on
+the LAN cannot impersonate `opencode.ai` with a self-signed cert and lift the
+OAuth tokens. It is the *public* root store, so it also fails closed against a
+corporate interception proxy. Costs ~70 KB of flash. There is no `setInsecure()`
+left — do not reintroduce it.
+
+Because chain verification also checks the certificate's validity dates the
+system clock must be plausible **before the first fetch**. `setup()` calls
+`clockSyncRestoreFromRtc()` (the PCF85063 holds the last NTP-synced time, minus
+the UTC+8 offset the RTC is written with), and the poll schedule is gated on
+`clockSyncValid()` so a blank RTC + blocked NTP shows a clear serial warning
+instead of a burst of failed handshakes. If you change the timezone handling in
+`clock_sync.cpp`, keep `TZ_OFFSET_SEC` consistent with what `hwRtcWrite()` stores.
+
+**No expiry deadline, but a reflash trigger.** The IDF bundle stores *subject
+name + public key* per root (not certificates — `esp_crt_bundle` uses
+`mbedtls_pk_parse_public_key` + `mbedtls_pk_verify_ext`), so the anchors have no
+validity dates and the device keeps working indefinitely while a host's chain
+still terminates at a bundled name with an unchanged key. It breaks only when a
+host moves to a CA older than the frozen bundle, or a CA rotates that root's key
+— an event, not a date. `tools/check-hosts.sh` detects exactly that by reading
+the bundle back out of the built library and checking each host's chain against
+it; the bundle's format is `u16 count` then per entry
+`u16 name_len, u16 key_len, name(DER), key(DER)`.
+
+Chimes are **synthesised at boot** (`src/voice/chime.*`) into a 500 ms PCM buffer
+and streamed from `loop()`; there is no raw file, so activating a chime never
+requires an `uploadfs` (which would erase the device's rotated tokens). Chime and
+easter-egg playback share the ES8311/PA and are mutually exclusive
+(`chimeStop()` before `easterEggStart()`).
+
+`src/gestures.*` is the **only** IMU poll (~33 Hz). It feeds
+`gesture::Engine` (`src/util/gesture_util.h`, host-tested) and latches
+`EV_SHAKE` / `EV_DOUBLE_TAP` / `EV_PICKUP` / `EV_FACE_DOWN|UP` / `EV_ROT_*`;
+`handleGestures()` in `main.cpp` turns them into pager/wake/audio actions.
+Thresholds live at the top of `gesture_util.h`. Notes:
+
+- Shake is `|a|² > 4` for three consecutive samples; a double-tap is two jolts
+  (above `tapMag2`, below the shake threshold) 80–450 ms apart, so the two never
+  collide.
+- Pickup compares the low-passed gravity to a slowly-tracked rest reference. The
+  pickup test is deliberately **outside** the "quiet" branch — a smooth lift
+  keeps `|a| ≈ 1 g` and would otherwise never leave it.
+- Face-down is the one case where the panel is **blanked** rather than dimmed
+  (`hwDisplayBrightnessRaw(0)`), and touch/key no longer wake it; lifting it back
+  restores the level.
+- Gestures are suppressed while the easter egg / thinking animation owns the
+  screen, and `handleGestures()` ignores taps/rotate in that window.
+
+### Trend page
+
+The Trend page (`src/ui/trend.cpp`) plots the rolling (5-hour) meter as cost:
+headline spend, `$/h` burn rate, time-to-limit, a cumulative curve and per-poll
+bars. It reads a **RAM-only** ring (`src/usage_history.*`) that `serviceFetch()`
+appends to on each successful `FETCH_USAGE`; nothing is persisted, so a reboot
+just restarts the history. The pure math lives in `src/util/trend_util.h`
+(microcents → `$`, burn rate, ETA) and is host-tested. `UsageData` carries the
+`usedMicroCents` / `limitMicroCents` fields the console sends per meter.
 
 ### Display power / heat
 
@@ -164,35 +260,59 @@ exposes `lvglDrawText()` / `lvglTextWidth()`.
 ### Blocking fetches never freeze the UI
 
 `loop()` is single-threaded and the network fetches are **blocking** (up to
-8–12 s each, weather retries ×2), so a due fetch used to hold input + rendering
-for seconds — a scroll would freeze mid-swipe. Two things keep the UI alive:
+8–12 s each, weather retries ×2), so they run on their own FreeRTOS task —
+`src/fetch_task.{h,cpp}`. The previous design ran them inline and pumped the UI
+from inside the request (`httpSetUiPump`), but that could only cover the
+response-read loop: `client.connect()` (DNS + TCP + TLS handshake) has no
+callback to pump from, so the loop froze for seconds. It froze *exactly* on
+wake, because `screenWake()` forces a usage fetch the moment a finger lands —
+and after a long idle all four pollers are due back to back.
 
-- `uiFrame(now)` (`main.cpp`) owns activity/idle, Key1, the pager, render and
-  push; `loop()` just calls it. `http_client` is given a `uiPump` hook
-  (`httpSetUiPump`) and calls it every ~16 ms while a request is in flight, so
-  input/animation keep running behind the fetch.
-- The pager runs even while the easter egg / `state=running` animation owns the
-  screen (previously `pagerUpdate()` was skipped entirely, so scrolling was
-  ignored and looked stuck).
+- `loop()` only **schedules** (`fetchTaskStart()`, one job in flight) and
+  **harvests** (`serviceFetch()` → `fetchTaskHarvest()`), copying results into
+  `s_usage/s_weather/...` and bumping `s_dataRev` on the main task. The fetch
+  task never touches UI state, the display or I2C, and runs at the loop task's
+  priority so FreeRTOS time-slices input/render against the TLS handshake.
+- Jobs carry a `FetchSeed` (the data currently on screen) so a failed poll
+  still lands: the fetcher flags weather/moon/air `stale` against real values
+  and `serviceFetch()` republishes them without bumping `s_dataRev` — the same
+  behaviour as the old in-place mutation.
+- The fetch task owns the OAuth `TokenSet` (refresh included). LittleFS is not
+  thread-safe and the easter egg / 555 card read files from `loop()`, so
+  rotated tokens are handed back via `fetchTaskPendingSave()` and written to
+  flash by `serviceFetch()`.
+- `handleHttpStatus()` is now called only from `loop()` (every ~16 ms), i.e.
+  *more* often than the old 100 ms in-request pump.
+- `uiFrame(now)` (`main.cpp`) still owns activity/idle, Key1, the pager, render
+  and push, and runs every iteration; the pager also runs while the easter egg
+  / `state=running` animation owns the screen.
 
-Because the UI is pumped mid-fetch, fetchers must not publish half-updated
-structs: `apiFetchUsage()` parses into a scratch copy and only assigns on
-success.
+Each job logs `fetch <name>: ok/fail in <ms>` — on the old inline design that
+duration was visible UI freeze, now it is only worker time. The first job also
+prints the task's stack headroom (16 KB reserved for mbedTLS).
 
 ### Network polling / power
 
 Poll periods live in `data/config.json` (`poll_usage_s`, `poll_usage_idle_s`,
 `poll_weather_s`, `poll_air_s`, `poll_moon_s`) and are applied to the `Interval`s
 in `setup()`. Defaults: usage 60 s, weather 30 min, air 60 min, moon 12 h.
+Two feature toggles live there too: `chime` (completion cues) and
+`imu_gestures` (shake / double-tap / pickup / face-down / rotate), both default
+`true`. `status_key` is the HMAC secret for the status endpoint (empty =
+auth off). Changing `status_key` needs an `uploadfs` — run
+`python3 tools/authorize.py` first, because `uploadfs` erases the device's
+rotated tokens.
 
 - **Idle backoff.** When the device has been untouched for `IDLE_NET_MS` (30 s),
   the usage poll stretches to `poll_usage_idle_s` (180 s) — the meter only matters
   while someone is looking. Any activity resets it; `screenWake()` also forces one
   usage fetch if the meter has gone >30 s stale (rate-limited so a chatty status
   webhook can't spam fetches).
-- **Coalescing is a no-op.** The `else if` chain runs at most one fetch per loop
-  iteration; adjacent due timers are only one `delay(16)` apart, so the radio
-  never sleeps between them anyway. Keeping the chain keeps input latency bounded.
+- **One job in flight.** The `else if` chain picks the most overdue poller and
+  hands it to the fetch task; `serviceFetch()` harvests the result before the
+  next job is scheduled, so a burst of due timers (all four after a long idle)
+  drains one at a time. A timer is only marked run when `fetchTaskStart()`
+  accepts the job, so a busy worker just retries a later iteration.
 
 ### WiFi scan
 
@@ -226,10 +346,9 @@ skip straight to the network list.
 
 > **⚠️ Throughput note.** Large responses (e.g. wttr.in `format=j1`, ~39 KB) transfer
 > at only ~1-3 KB/s on this device, which looks like sender-side pacing. Keep network
-> payloads small and prefer the one-line endpoints. `handleHttpStatus()` is pumped
-> every 100 ms during a fetch (and the UI via `uiPump()` every ~16 ms), and reads
-> drain the TLS buffer in an inner loop (calling `available()` per chunk cripples
-> throughput).
+> payloads small and prefer the one-line endpoints. `handleHttpStatus()` runs from
+> `loop()` every ~16 ms (the fetch task never calls it), and reads drain the TLS
+> buffer in an inner loop (calling `available()` per chunk cripples throughput).
 
 ### Debug: frame dump
 
@@ -243,7 +362,13 @@ PLATFORMIO_BUILD_FLAGS='-DFRAME_DUMP' pio run -e esp32-usage-monitor -t upload
 
 ## PC-side tools
 
-- `tools/authorize.py` — opencode console device-flow authoriser + `--check`  
+- `tools/authorize.py` — opencode console device-flow authoriser + `--check`
+- `tools/opencode-plugin/` — OpenCode V2 plugin that drives the status endpoint
+- `tools/status-ping.sh` — signed status ping, for testing the device by hand
+- `tools/status_stub.py` — local stand-in for the status endpoint (tests the plugin + HMAC)
+- `tools/check-hosts.sh` — verify the firmware's CA bundle still covers every host it talks to
+  (see "Outbound TLS": reads the bundle out of the *built* library, so a CA switch shows up
+  here instead of as a silently STALE panel). Exits non-zero when a host needs a firmware update.
 
 ## Tests / CI
 

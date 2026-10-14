@@ -200,9 +200,11 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
 ├── src/
 │   ├── main.cpp             # setup/loop, network polling, render dispatch
 │   ├── pager.cpp/h          # page + weather-card gesture/animation machine
-│   ├── status_server.cpp/h  # HTTP status server (?state=running|done|failed)
+│   ├── status_server.cpp/h  # HTTP status server (?state=running|waiting|done|failed)
 │   ├── clock_sync.cpp/h     # NTP bootstrap + RTC resync scheduling
-│   ├── easter_egg.cpp/h     # shake detection + 555 audio playback
+│   ├── gestures.cpp/h       # IMU gestures (shake/tap/pickup/face-down/rotate)
+│   ├── easter_egg.cpp/h     # 555 audio playback
+│   ├── usage_history.cpp/h  # RAM ring of spend samples (trend page)
 │   ├── storage.cpp/h        # LittleFS mount helper (one-shot, format-on-fail)
 │   ├── config.h             # config struct + LittleFS JSON loader
 │   ├── token_store.cpp/h    # OAuth tokens persisted to LittleFS
@@ -218,8 +220,10 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
 │   ├── util/                # dependency-free helpers (host-unit-tested)
 │   │   ├── time_util.h      # epoch / ISO / HTTP-date parsing
 │   │   ├── value_util.h     # weather-icon kind, moon phase, AQI label
+│   │   ├── gesture_util.h   # IMU gesture classifier (shake/tap/pickup/…)
+│   │   ├── trend_util.h     # cost / burn-rate / ETA math
 │   │   └── interval.h       # periodic scheduling helper
-│   ├── voice/               # I2S audio (ES8311, easter-egg playback)
+│   ├── voice/               # I2S audio (ES8311, chimes, easter-egg playback)
 │   ├── boards/              # per-board pin definitions
 │   └── hw/                  # hardware driver layer
 │       ├── display.cpp/h    # AMOLED display driver + touch coord mapping
@@ -235,6 +239,10 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
 │   └── test_util/           # host unit tests (pio test -e native)
 ├── tools/
 │   ├── authorize.py         # OAuth device-flow authoriser / --check
+│   ├── status-ping.sh       # ping the device's status server by hand (signed)
+│   ├── status_stub.py       # local stand-in for the status endpoint (tests)
+│   ├── check-hosts.sh       # verify the firmware CA bundle still covers all hosts
+│   ├── opencode-plugin/     # OpenCode V2 plugin → device status webhook
 │   └── frame_dump.py        # rebuild -DFRAME_DUMP screen dumps as PNGs
 └── platformio.ini           # PlatformIO config
 ```

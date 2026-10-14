@@ -74,8 +74,16 @@ static void commitAnim() {
 }
 
 void pagerAdvance() {
-  if (s_page == UI_PAGE_WEATHER) s_card = (s_card + 1) % UI_WC_COUNT;
-  else                           s_page = (s_page + 1) % UI_PAGE_COUNT;
+  pagerStep(1);
+}
+
+void pagerStep(int dir) {
+  if (dir == 0) return;
+  if (s_page == UI_PAGE_WEATHER) {
+    s_card = ((s_card + dir) % UI_WC_COUNT + UI_WC_COUNT) % UI_WC_COUNT;
+  } else {
+    s_page = ((s_page + dir) % UI_PAGE_COUNT + UI_PAGE_COUNT) % UI_PAGE_COUNT;
+  }
 }
 
 bool pagerUpdate() {

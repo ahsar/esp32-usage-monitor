@@ -121,6 +121,10 @@ private:
 bool hwDisplayInit();
 void hwDisplayPush();
 void hwDisplayBrightness(uint8_t lvl_0_4);
+// Raw backlight level 0..255, bypassing the BRIGHT_LUT. Used only for the
+// face-down blank (level 0), where the "never blank, stay glanceable" rule
+// doesn't apply because the screen is physically hidden.
+void hwDisplayBrightnessRaw(uint8_t level);
 ScaledCanvas* hwCanvas();
 
 // Shorthand used by the UI translation units to draw on the logical canvas.

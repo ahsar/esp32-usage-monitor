@@ -12,6 +12,8 @@
 #include "interval.h"
 #include "parse/usage_parse.h"
 #include "parse/weather_parse.h"
+#include "util/gesture_util.h"
+#include "util/trend_util.h"
 
 void setUp() {}
 void tearDown() {}
@@ -361,6 +363,130 @@ void test_interval_wrap(void) {
   TEST_ASSERT_TRUE(iv.due(0x00000400u));    // wrapped: 0x500 ms elapsed
 }
 
+// ---- trend_util -----------------------------------------------------------
+
+void test_trend_format_usd(void) {
+  char b[24];
+  trend::formatUsd(b, sizeof(b), 0);                // $0.00
+  TEST_ASSERT_EQUAL_STRING("$0.00", b);
+  trend::formatUsd(b, sizeof(b), 142000000ULL);     // $1.42
+  TEST_ASSERT_EQUAL_STRING("$1.42", b);
+  trend::formatUsd(b, sizeof(b), 12345678900ULL);   // $123.45
+  TEST_ASSERT_EQUAL_STRING("$123.45", b);
+}
+
+void test_trend_burn_and_eta(void) {
+  // $1.00 spent over 2 h = $0.50/h = 50_000_000 microcents/h.
+  TEST_ASSERT_EQUAL_UINT64(50000000ULL, trend::burnPerHour(100000000ULL, 2 * 3600));
+  TEST_ASSERT_EQUAL_UINT64(0ULL, trend::burnPerHour(100000000ULL, 0));
+
+  // At $0.50/h, $1.00 of headroom is 2 h away.
+  TEST_ASSERT_EQUAL_UINT32(7200u, trend::etaSeconds(100000000ULL, 50000000ULL));
+  TEST_ASSERT_EQUAL_UINT32(0u, trend::etaSeconds(100000000ULL, 0));   // unknown rate
+}
+
+void test_trend_format_eta(void) {
+  char b[16];
+  trend::formatEta(b, sizeof(b), 0);
+  TEST_ASSERT_EQUAL_STRING("--", b);
+  trend::formatEta(b, sizeof(b), 45 * 60);
+  TEST_ASSERT_EQUAL_STRING("45m", b);
+  trend::formatEta(b, sizeof(b), 2 * 3600 + 10 * 60);
+  TEST_ASSERT_EQUAL_STRING("2h 10m", b);
+  trend::formatEta(b, sizeof(b), 3 * 86400 + 4 * 3600);
+  TEST_ASSERT_EQUAL_STRING("3d 4h", b);
+}
+
+void test_usage_parse_micro_cents(void) {
+  const char* json =
+      "{\"access\":{\"meters\":{"
+      "\"fiveHour\":{\"usedMicroCents\":\"142000000\",\"limitMicroCents\":\"1000000000\"}}}}";
+  UsageData u;
+  TEST_ASSERT_TRUE(usageParse(json, 0, u));
+  TEST_ASSERT_EQUAL_UINT64(142000000ULL, u.rollingUsedMicroCents);
+  TEST_ASSERT_EQUAL_UINT64(1000000000ULL, u.rollingLimitMicroCents);
+  TEST_ASSERT_EQUAL_UINT64(0ULL, u.weeklyUsedMicroCents);   // absent meter stays 0
+}
+
+// ---- gesture_util ---------------------------------------------------------
+
+static gesture::Sample gs(uint32_t t, float ax, float ay, float az, float gz = 0.0f) {
+  gesture::Sample s = {};
+  s.ax = ax; s.ay = ay; s.az = az; s.gz = gz; s.t = t;
+  return s;
+}
+
+// Feed `n` identical samples starting at `t0`, 30 ms apart. Returns the OR of
+// every event seen.
+static uint8_t gfeed(gesture::Engine& e, uint32_t& t, int n, float ax, float ay, float az) {
+  uint8_t ev = gesture::EV_NONE;
+  for (int i = 0; i < n; i++) {
+    ev |= e.feed(gs(t, ax, ay, az));
+    t += 30;
+  }
+  return ev;
+}
+
+void test_gesture_shake(void) {
+  gesture::Engine e;
+  uint32_t t = 0;
+  gfeed(e, t, 5, 0, 0, 1);            // settle, no events
+  uint8_t ev = gfeed(e, t, 3, 0, 0, 2.2f);   // |a|² = 4.84 > 4.0, three in a row
+  TEST_ASSERT_TRUE(ev & gesture::EV_SHAKE);
+  TEST_ASSERT_FALSE(ev & gesture::EV_DOUBLE_TAP);
+}
+
+void test_gesture_double_tap(void) {
+  gesture::Engine e;
+  uint32_t t = 0;
+  gfeed(e, t, 5, 0, 0, 1);
+  e.feed(gs(t, 0, 0, 1.35f)); t += 100;      // jolt (|a|² ≈ 1.8), not a shake
+  gfeed(e, t, 2, 0, 0, 1);
+  uint8_t ev = e.feed(gs(t, 0, 0, 1.35f));   // second jolt within the window
+  TEST_ASSERT_TRUE(ev & gesture::EV_DOUBLE_TAP);
+}
+
+void test_gesture_face_down_up(void) {
+  gesture::Engine e;
+  uint32_t t = 0;
+  gfeed(e, t, 10, 0, 0, 1);                  // face up
+  TEST_ASSERT_FALSE(e.faceDown());
+  uint8_t ev = gfeed(e, t, 10, 0, 0, -1);    // flip face down
+  TEST_ASSERT_TRUE(ev & gesture::EV_FACE_DOWN);
+  TEST_ASSERT_TRUE(e.faceDown());
+  ev = gfeed(e, t, 10, 0, 0, 1);             // and back up
+  TEST_ASSERT_TRUE(ev & gesture::EV_FACE_UP);
+  TEST_ASSERT_FALSE(e.faceDown());
+}
+
+void test_gesture_pickup(void) {
+  gesture::Engine e;
+  uint32_t t = 0;
+  gfeed(e, t, 80, 0, 0, 1);                  // rest face-up for 2.4 s (> restMs)
+  // Lift to a tilted hold, still ~1 g (so it never leaves "quiet").
+  uint8_t ev = gfeed(e, t, 20, 0.6f, 0, 0.8f);
+  TEST_ASSERT_TRUE(ev & gesture::EV_PICKUP);
+}
+
+void test_gesture_rotate(void) {
+  gesture::Engine e;
+  uint32_t t = 0;
+  gfeed(e, t, 5, 0, 0, 1);                   // settle (also arms the rest timer)
+  uint8_t ev = gesture::EV_NONE;
+  for (int i = 0; i < 20; i++) {             // 120 dps for 600 ms = 72° > 70°
+    ev |= e.feed(gs(t, 0, 0, 1, 120.0f));
+    t += 30;
+  }
+  TEST_ASSERT_TRUE(ev & gesture::EV_ROT_CW);
+}
+
+void test_gesture_no_false_positives(void) {
+  gesture::Engine e;
+  uint32_t t = 0;
+  uint8_t ev = gfeed(e, t, 200, 0, 0, 1);    // 6 s of perfect stillness
+  TEST_ASSERT_EQUAL_UINT8(gesture::EV_NONE, ev);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_civil_epoch_unix_origin);
@@ -402,5 +528,15 @@ int main(int, char**) {
   RUN_TEST(test_air_parse_bad_aqi_and_short_time);
   RUN_TEST(test_interval);
   RUN_TEST(test_interval_wrap);
+  RUN_TEST(test_trend_format_usd);
+  RUN_TEST(test_trend_burn_and_eta);
+  RUN_TEST(test_trend_format_eta);
+  RUN_TEST(test_usage_parse_micro_cents);
+  RUN_TEST(test_gesture_shake);
+  RUN_TEST(test_gesture_double_tap);
+  RUN_TEST(test_gesture_face_down_up);
+  RUN_TEST(test_gesture_pickup);
+  RUN_TEST(test_gesture_rotate);
+  RUN_TEST(test_gesture_no_false_positives);
   return UNITY_END();
 }

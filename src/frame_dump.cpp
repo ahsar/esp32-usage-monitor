@@ -10,7 +10,7 @@ static uint32_t s_dumpIdx = 0;
 static uint32_t s_dumpNext = 0;
 
 void frameDumpTick(uint32_t now, const UiData& d) {
-  if (s_dumpIdx >= 7) return;
+  if (s_dumpIdx >= (uint32_t)(UI_PAGE_COUNT + UI_WC_COUNT - 1)) return;
   if (now < s_dumpNext) return;
   // Wait for real data (or give up after 60s) so the cards aren't placeholders.
   bool ready = d.usage->valid && d.weather->valid && (!d.hasAir || d.air->valid);

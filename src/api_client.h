@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include "token_store.h"
 
+// Per-meter spend, added so the trend page can show cost and its rate rather
+// than just a percentage. Microcents are 1e-6 cents, so $1.00 = 1e8.
 struct UsageData {
   bool valid;
   int rollingPercent;
@@ -11,6 +13,13 @@ struct UsageData {
   uint32_t weeklyResetSec;
   int monthlyPercent;
   uint32_t monthlyResetSec;
+
+  uint64_t rollingUsedMicroCents;
+  uint64_t rollingLimitMicroCents;
+  uint64_t weeklyUsedMicroCents;
+  uint64_t weeklyLimitMicroCents;
+  uint64_t monthlyUsedMicroCents;
+  uint64_t monthlyLimitMicroCents;
 };
 
 // Exchange the stored refresh token for a fresh access token.

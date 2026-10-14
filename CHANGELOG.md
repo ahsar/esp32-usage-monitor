@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PC bridge.** `tools/opencode-plugin/` is an OpenCode V2 plugin that pushes
+  agent activity to the device (`?state=running|waiting|done|failed`), and
+  `tools/status-ping.sh` does the same by hand. Without it nothing ever drove
+  the status server. The device now advertises `usage-monitor.local` over mDNS
+  so the plugin does not need a DHCP IP. The status server gained a `waiting`
+  state (OpenCode's `permission.asked`) rendered as a "Needs you" animation.
+- **Completion chimes.** `src/voice/chime.*` synthesises three short PCM
+  cues at boot (rising = done, falling = failed, double blip = needs you) and
+  streams them through the existing ES8311 path. No raw file, so activating a
+  chime never needs an `uploadfs` (which would erase the rotated tokens).
+- **IMU gestures.** `src/gestures.*` is now the single IMU sampling point
+  (shake detection moved out of `easter_egg.cpp`): double-tap pages, pickup
+  wakes, face-down blanks the panel, and a gyro twist steps pages/cards. The
+  pure classifier lives in `src/util/gesture_util.h` and is host-tested.
+- **Trend page.** A fourth page plots rolling-window spend: current cost,
+  burn rate (`$/h`), time-to-limit, a cumulative curve and per-poll bars, from
+  the RAM-only ring in `src/usage_history.*`. Cost math is in
+  `src/util/trend_util.h` (host-tested); `UsageData` now carries the
+  `*MicroCents` fields.
+- New `config.json` toggles: `chime`, `imu_gestures`.
+- **Status-endpoint HMAC auth.** The port-80 endpoint now requires an
+  HMAC-SHA256 signature (`X-Sig` / `X-Ts`) over `"<state>|<unixSeconds>"`,
+  verified in constant time against `status_key` from `config.json`, with a
+  ±60 s replay window once NTP is up. Bad signatures get `401` and change
+  nothing. Empty key = auth disabled (logged at boot). The plugin signs with
+  `node:crypto`; `tools/status-ping.sh` signs too, and `tools/status_stub.py`
+  is a local stand-in for testing.
+- **Outbound TLS is now verified.** `http_client.cpp` no longer calls
+  `setInsecure()`; it validates the chain against the ESP-IDF CA bundle, so an
+  active MitM on the LAN can no longer impersonate `opencode.ai` and steal the
+  OAuth tokens. Adds ~70 KB of flash. To keep certificate-date checking working,
+  the system clock is now seeded from the PCF85063 at boot
+  (`clockSyncRestoreFromRtc()`) and the poll schedule is gated on
+  `clockSyncValid()`.
+- `tools/check-hosts.sh` — reads the CA bundle back out of the built firmware
+  and checks that every host the device talks to still chains to a bundled
+  anchor, so a CA switch shows up as a failed check instead of a silently STALE
+  panel. Exits non-zero when a firmware update is needed.
+
 - Repository governance: `LICENSE` (MIT), `CONTRIBUTING.md`, issue/PR templates,
   firmware version string (`src/version.h`) printed in the boot log.
 - Configurable network poll periods in `data/config.json`

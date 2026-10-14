@@ -18,6 +18,11 @@ bool hwImuInit() {
   s_qmi.configAccelerometer(SensorQMI8658::ACC_RANGE_4G,
                             SensorQMI8658::ACC_ODR_125Hz);
   s_qmi.enableAccelerometer();
+  // Gyro powers the "rotate to switch" gesture. 512 dps covers a deliberate
+  // wrist twist with headroom; the same 125 Hz ODR as the accelerometer.
+  s_qmi.configGyroscope(SensorQMI8658::GYR_RANGE_512DPS,
+                        SensorQMI8658::GYR_ODR_112_1Hz);
+  s_qmi.enableGyroscope();
   return true;
 }
 
@@ -30,4 +35,13 @@ void hwImuAccel(float* ax, float* ay, float* az) {
   // gives raw d.z ≈ -0.94 on this board, but the original face-down
   // detector wants az < -0.7 for face-DOWN. Flip the sign.
   *az = -d.z;
+}
+
+bool hwImuGyro(float* gx, float* gy, float* gz) {
+  IMUdata d;
+  if (!s_qmi.getGyroscope(d.x, d.y, d.z)) return false;
+  *gx = d.x;
+  *gy = d.y;
+  *gz = d.z;
+  return true;
 }

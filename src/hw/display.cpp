@@ -151,6 +151,10 @@ void hwDisplayBrightness(uint8_t lvl) {
   s_gfx->setBrightness(BRIGHT_LUT[lvl]);
 }
 
+void hwDisplayBrightnessRaw(uint8_t level) {
+  s_gfx->setBrightness(level);
+}
+
 static uint16_t s_lineBuf[LCD_W_PHYS];   // one physical row, internal RAM
 
 // ---------------------------------------------------------------------------

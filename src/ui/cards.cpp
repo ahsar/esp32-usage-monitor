@@ -14,9 +14,6 @@ using namespace ui_theme;
 // Weather cards keep this right margin free for the vertical card dots.
 static const int WC_R = SAFE_R - 12;
 
-// Forward declaration (defined further down with the 555 artwork).
-static void drawLogo555(int cx, int cy);
-
 // ---------------------------------------------------------------------------
 // USAGE card
 // ---------------------------------------------------------------------------
@@ -282,8 +279,6 @@ void uiDrawClock(int ox, int oy) {
   textAt(F_BODY, COL_DIM, SAFE_L, 156, buf);
 
   roundBar(SAFE_L, 160, SAFE_W, 12, g_env.batteryPct, bcol);
-
-  drawLogo555(HW_W / 2, 188);
 }
 
 // ---------------------------------------------------------------------------
@@ -328,11 +323,6 @@ static bool loadImg555() {
   return true;
 }
 
-static void drawLogo555(int cx, int cy) {
-  if (!loadImg555()) return;
-  spr.draw16bitRGBBitmap(cx - s_img555W / 2, cy - s_img555H / 2, s_img555, s_img555W, s_img555H);
-}
-
 void usageDisplayDrawEaster555(uint32_t elapsedMs) {
   if (!loadImg555()) { spr.fillScreen(COL_BG); return; }
   spr.fillScreen(COL_BG);
@@ -352,4 +342,19 @@ void usageDisplayDrawThinking(uint32_t elapsedMs) {
                            s_img555, s_img555W, s_img555H);
   }
   textCenter(F_HEAD, COL_TEXT, HW_W / 2, SAFE_T + 150, "Thinking...");
+}
+
+// Agent is blocked on a permission / question. Distinct from "Thinking...":
+// an amber pulsing ring plus a bang, so a glance tells "it needs you".
+void usageDisplayDrawWaiting(uint32_t elapsedMs) {
+  spr.fillScreen(COL_BG);
+  uint32_t cycle = elapsedMs % 900;
+  bool on = cycle < 500;
+
+  int cx = HW_W / 2, cy = SAFE_T + 72;
+  for (int r = 36; r >= 28; r--) {
+    spr.drawCircle(cx, cy, r, on ? COL_YELLOW : COL_MAROON);
+  }
+  textCenter(F_BIG, on ? COL_YELLOW : COL_ORANGE, cx, cy + 20, "!");
+  textCenter(F_HEAD, COL_TEXT, HW_W / 2, SAFE_T + 168, "Needs you");
 }

@@ -1,4 +1,5 @@
 #include "api_client.h"
+#include "diag.h"
 #include "http_client.h"
 #include "parse/usage_parse.h"
 #include "util/time_util.h"
@@ -42,6 +43,8 @@ static bool parseTokenResponse(const String& body, TokenSet& tokens) {
 bool apiRefreshToken(TokenSet& tokens) {
   if (!tokens.refreshToken[0]) return false;
 
+  diagMark(DIAG_TOKEN_REFRESH, 0);
+
   // refresh_token values are opaque ASCII tokens (no escaping needed).
   char body[768];
   snprintf(body, sizeof(body),
@@ -66,6 +69,7 @@ bool apiRefreshToken(TokenSet& tokens) {
     Serial.printf("refresh failed: HTTP %d\n", res.status);
     return false;
   }
+  diagMark(DIAG_TOKEN_DONE, res.status);
   return parseTokenResponse(res.body, tokens);
 }
 

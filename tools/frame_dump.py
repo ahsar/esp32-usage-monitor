@@ -75,7 +75,7 @@ def main():
     pending = b""
     frames = 0
     deadline = time.time() + 180
-    while frames < 7 and time.time() < deadline:
+    while frames < 8 and time.time() < deadline:
         line = ser.readline()
         if not line:
             continue

@@ -1,11 +1,19 @@
 #include "http_client.h"
+#include "diag.h"
 #include <WiFiClientSecure.h>
 #include <string.h>
 
-extern "C" void handleHttpStatus();
-
-static void (*s_uiPump)() = nullptr;
-void httpSetUiPump(void (*cb)()) { s_uiPump = cb; }
+// The ESP-IDF CA bundle (~130 public roots, compiled into libmbedtls). Using it
+// instead of setInsecure() means the TLS chain is actually verified, so an
+// active MitM on the LAN cannot impersonate opencode.ai with a self-signed
+// certificate and lift the OAuth tokens. The bundle is the IDF default, so
+// there is nothing to embed or rotate here.
+//
+// Verification also checks the certificate's validity dates, so the system
+// clock must be plausible before the first fetch — see clockSyncRestoreFromRtc()
+// (called from setup()) and the clockSyncValid() gate on the poll schedule.
+extern "C" const uint8_t x509_crt_imported_bundle_bin_start[] asm("_binary_x509_crt_bundle_start");
+extern "C" const uint8_t x509_crt_imported_bundle_bin_end[] asm("_binary_x509_crt_bundle_end");
 
 bool httpRequest(const char* host, const char* method, const char* path,
                  const char* extraHeaders, const char* body,
@@ -16,12 +24,23 @@ bool httpRequest(const char* host, const char* method, const char* path,
   res.date   = "";
 
   WiFiClientSecure client;
-  client.setInsecure();
+  client.setCACertBundle(x509_crt_imported_bundle_bin_start,
+                         (size_t)(x509_crt_imported_bundle_bin_end -
+                                  x509_crt_imported_bundle_bin_start));
+  // Bound the TLS handshake: without this the default is 120 s, so a failing
+  // handshake (bad chain, blocked port) wedges the fetch task for two minutes.
+  client.setHandshakeTimeout(15000);
   client.setTimeout(10000);
+  diagMark(DIAG_HTTP_CONNECT, 0);
+  diagMarkHost(host);
   if (!client.connect(host, 443, 10000)) {
-    Serial.printf("http: connect failed %s\n", host);
+    char err[128] = {0};
+    client.lastError(err, sizeof(err));
+    Serial.printf("http: connect failed %s (%s)\n", host, err);
+    diagMark(DIAG_HTTP_CONNECTED, 0xFFFF);
     return false;
   }
+  diagMark(DIAG_HTTP_CONNECTED, millis());
 
   size_t bodyLen = body ? strlen(body) : 0;
 
@@ -45,25 +64,12 @@ bool httpRequest(const char* host, const char* method, const char* path,
   if (body && bodyLen) client.print(body);
 
   uint32_t start = millis();
-  uint32_t lastPoll = 0;
-  uint32_t lastPump = 0;
   uint32_t lastData = millis();
   String raw;
   raw.reserve(maxBody < 4096 ? 4096 : (maxBody > 16384 ? 16384 : maxBody));
   uint8_t chunk[512];
   while (millis() - start < timeoutMs) {
-    uint32_t now = millis();
-    if (now - lastPoll >= 100) {
-      handleHttpStatus();
-      lastPoll = now;
-    }
-    // Keep input/pager/render alive so a scroll or page animation never
-    // freezes behind this (blocking) fetch.
-    if (s_uiPump && now - lastPump >= 16) {
-      s_uiPump();
-      lastPump = millis();
-    }
-
+    diagMark(DIAG_HTTP_READ, raw.length());
     int avail = client.available();
     if (avail > 0) {
       // Drain what is currently buffered. Re-querying available() per chunk is
@@ -87,6 +93,7 @@ bool httpRequest(const char* host, const char* method, const char* path,
     delay(1);
   }
   client.stop();
+  diagMark(DIAG_HTTP_DONE, raw.length());
 
   int hdrEnd = raw.indexOf("\r\n\r\n");
   if (hdrEnd < 0) return false;

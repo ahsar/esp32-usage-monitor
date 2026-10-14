@@ -5,7 +5,7 @@
 // reason about pages and cards without pulling in the whole display stack.
 #include <stdint.h>
 
-enum UiPage { UI_PAGE_WEATHER = 0, UI_PAGE_USAGE = 1, UI_PAGE_CLOCK = 2, UI_PAGE_COUNT = 3 };
+enum UiPage { UI_PAGE_WEATHER = 0, UI_PAGE_USAGE = 1, UI_PAGE_TREND = 2, UI_PAGE_CLOCK = 3, UI_PAGE_COUNT = 4 };
 
 enum UiWeatherCard {
   UI_WC_NOW = 0,

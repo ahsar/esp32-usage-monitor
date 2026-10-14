@@ -10,6 +10,7 @@ static const int PAGE_H = HW_H;
 static void drawPage(int page, int card, int ox, int oy, const UiData& d) {
   switch (page) {
     case UI_PAGE_USAGE: uiDrawUsage(*d.usage, ox, oy); break;
+    case UI_PAGE_TREND: uiDrawTrend(*d.usage, ox, oy); break;
     case UI_PAGE_CLOCK: uiDrawClock(ox, oy); break;
     default:
       uiDrawWeatherCard(card, *d.weather, *d.moon, *d.air, d.hasAir, ox, oy);
