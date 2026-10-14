@@ -1,138 +1,158 @@
 # ESP32-S3 Usage Monitor
 
-Firmware for the Waveshare ESP32-S3-Touch-AMOLED-2.16 board that shows OpenCode
-token usage, weather and a clock.
+A desk display for [OpenCode](https://opencode.ai) usage on a Waveshare
+ESP32-S3-Touch-AMOLED-2.16: your rolling token spend, a trend view, the weather
+and a clock — and the panel reacts while the agent is working.
+
+<p align="center">
+  <img src="docs/screens/usage.png" width="300" alt="Usage page with the 5-hour, weekly and monthly meters">
+</p>
+
+Four pages (Weather · Usage · Trend · Clock) driven by touch, twist or key, five
+weather cards, an OpenCode status bridge with chimes, and a Trend page that plots
+spend rate and time-to-limit.
 
 ## Screens
 
-Three horizontal pages — swipe or tap to switch (Key1 also cycles). The weather
-page has five vertical cards; the right-hand dot column marks the current card and
-the bottom dot row marks the current page (`@` = active).
+<p align="center">
+  <img src="docs/screens/weather-now.png" width="200" alt="Weather page, Now card">
+  <img src="docs/screens/usage.png" width="200" alt="Usage page">
+  <img src="docs/screens/trend.png" width="200" alt="Trend page">
+  <img src="docs/screens/clock.png" width="200" alt="Clock page">
+  <br>
+  <sub><b>Weather</b> (Now card) &nbsp;·&nbsp; <b>Usage</b> &nbsp;·&nbsp; <b>Trend</b> &nbsp;·&nbsp; <b>Clock</b></sub>
+</p>
 
-```
-Weather — Now card
-+--------------------------------------------+
-| * Beijing                             14:23|
-|--------------------------------------------|
-|  \o/   24C                               * |
-|  /|\   Partly Cloudy                     o |
-|                                          o |
-|  Feels                               22C o |
-|  Humidity                            48% o |
-|--------------------------------------------|
-|  Wind                            12 km/h NW|
-|  Precip                              0.0 mm|
-|  Updated 14:20                             |
-|                                            |
-|                   @ o o                    |
-+--------------------------------------------+
-```
+The Weather page holds five vertical cards — swipe up/down to move between them:
 
-```
-Usage
-+--------------------------------------------+
-| * Usage                               14:23|
-|--------------------------------------------|
-|  5-HOUR                                 42%|
-|  ##################........................|
-|                            resets in 3h 12m|
-|  WEEKLY                                 18%|
-|  ########..................................|
-|                             resets in 2d 4h|
-|  MONTHLY                                71%|
-|  ###############################...........|
-|                             resets in 1d 6h|
-|                                            |
-|                   o @ o                    |
-+--------------------------------------------+
-```
+<p align="center">
+  <img src="docs/screens/weather-sun.png" width="200" alt="Weather card: Sun">
+  <img src="docs/screens/weather-air.png" width="200" alt="Weather card: Air">
+  <img src="docs/screens/weather-moon.png" width="200" alt="Weather card: Moon">
+  <img src="docs/screens/weather-moonset.png" width="200" alt="Weather card: Moonrise and Moonset">
+  <br>
+  <sub><b>Sun</b> &nbsp;·&nbsp; <b>Air</b> &nbsp;·&nbsp; <b>Moon</b> &nbsp;·&nbsp; <b>Moonrise</b></sub>
+</p>
 
-```
-Clock
-+--------------------------------------------+
-| * Synced                              14:23|
-|--------------------------------------------|
-|                                            |
-|                   14:23                    |
-|               2026-10-08 Thu               |
-|                                            |
-|--------------------------------------------|
-|  Battery 86%  charging                     |
-|  #####################################.....|
-|                                            |
-|                  [ 555 ]                   |
-|                   o o @                    |
-+--------------------------------------------+
-```
+The bottom dot row marks the current page and the right-hand dot column the
+current weather card. These are real captures from the device — see
+[Notes](#notes) for how to regenerate them.
 
 ## Features
 
-- **Three horizontal pages**: Weather ↔ Usage ↔ Clock, swipe or tap to switch
-- **Vertical weather cards**: Now → Sun → Air → Moon → Moonrise/Moonset
-- Usage shows **5-hour** / **week** / **month** progress bars
-- Countdown to the next reset (days / hours / minutes)
-- Bars turn yellow above 30% and red above 60%
-- Auto refresh: usage every 60 s, weather every 15 min, moon every 6 h, air quality every 30 min
-- Status bar with a connection dot, page title and time (battery and charging state are on the Clock page)
-- **OAuth device flow**: authorise once with `tools/authorize.py`; the refresh token rotates automatically and is persisted to LittleFS
-- WiFi setup UI (scan + on-screen keyboard / button password entry)
-- Shake the device to play the 555 easter egg
-- Configuration stored in the LittleFS filesystem
+- **Four horizontal pages** — Weather ↔ Usage ↔ Trend ↔ Clock: swipe, tap, twist
+  the device, or press Key1.
+- **Five weather cards** — Now → Sun → Air → Moon → Moonrise/Moonset.
+- **Usage meters** — 5-hour rolling / weekly / monthly, each with a reset
+  countdown; the bars go green, yellow above 30% and red above 60%.
+- **Trend page** — 5-hour rolling spend, `$/h` burn rate, estimated time to
+  limit, plus a cumulative spend curve and per-poll bars. The history ring is
+  RAM-only, so it starts empty on every boot and fills as polls land.
+- **Status bridge** — an OpenCode plugin drives the device over HTTP: a
+  "Thinking…" animation while the agent works, "Needs you" plus an attention
+  chime when it asks for permission, and rising / falling chimes when a session
+  succeeds or fails.
+- **Chimes** are synthesised at boot on the ES8311 codec — nothing to upload. The
+  555 easter egg (`data/555_audio.raw`) is the only audio file.
+- **IMU gestures** (QMI8658) — shake plays the 555 easter egg, double-tap
+  advances, twist left/right steps pages or cards, lifting the device wakes it
+  and face-down blanks the panel.
+- **OAuth device flow** — authorise once with `tools/authorize.py`; the refresh
+  token rotates automatically and is persisted to LittleFS.
+- **WiFi setup UI** on first boot — scan, pick a network, type the password with
+  the touch keyboard or the two keys.
+- **Glanceable power** — 30 s without input dims the panel to 50/255 and any
+  touch, key or status event wakes it. It only ever blanks while the device is
+  face-down, and a frame is re-rendered and pushed only when something on it
+  actually changes.
 
 ## Hardware
 
-- **Board**: Waveshare ESP32-S3-Touch-AMOLED-2.16
-- **Display**: 480×480 AMOLED (CO5300 driver)
-- **Touch**: CST9220
-- **PSRAM**: 8 MB | **Flash**: 16 MB (8 MB app partitions)
+- **Board**: Waveshare ESP32-S3-Touch-AMOLED-2.16 — ESP32-S3, 8 MB PSRAM,
+  16 MB flash (an 8 MB partition table: two 3 MB OTA app slots + ~2 MB LittleFS)
+- **Display**: 480×480 rounded-square AMOLED (CO5300, QSPI). The UI is authored
+  on a 184×224 logical grid, rasterised at 2× and blitted as a 368×448 canvas
+  centred in the panel
+- **Touch**: CST9220 · **IMU**: QMI8658 · **RTC**: PCF85063 · **PMU**: AXP2101
+- **Audio**: ES8311 codec + PA (chimes and the easter egg)
+- **Keys**: Key1 (middle, PWR), Key2 (left, IO18), BOOT (right)
 
-## Setup
+The current build targets the 2.16 board (`-DBOARD_WAVESHARE_ESP32S3_TOUCH_AMOLED_2_16`
+in `platformio.ini`); pin maps for the ESP32-S3 AMOLED 1.8 and 1.75c and the
+ESP32-C6 AMOLED 2.16 live in `src/boards/`, though only the 2.16 is wired into
+the build today.
 
-1. Install [PlatformIO](https://platformio.org/)
-2. Clone the repository:
+## Quick start
+
+1. Install [PlatformIO](https://platformio.org/) and clone the repository:
+
    ```bash
    git clone https://github.com/2700zc/esp32-usage-monitor.git
    cd esp32-usage-monitor
    ```
 
-## Configuration
+2. Create your config and fill in `workspace_id`:
 
-Copy the template:
+   ```bash
+   cp data/config.json.example data/config.json
+   ```
 
-```bash
-cp data/config.json.example data/config.json
-```
+3. Authorise the device (OAuth device flow) and flash it:
 
-Fields in `data/config.json`:
+   ```bash
+   python3 tools/authorize.py
+   pio run -e esp32-usage-monitor -t upload -t uploadfs
+   ```
+
+4. On first boot the device opens the WiFi setup UI; after that it goes straight
+   to the desktop and syncs the clock over NTP.
+
+### Configuration
+
+`data/config.json` (gitignored — it holds credentials):
 
 ```json
 {
   "workspace_id": "wrk_XXXXXXXXXXXXXXXXXXXXXXXX",
   "refresh_token": "",
   "org_id": "",
-  "waqi_token": ""
+  "waqi_token": "",
+  "status_key": "",
+
+  "poll_usage_s": 60,
+  "poll_usage_idle_s": 180,
+  "poll_weather_s": 1800,
+  "poll_air_s": 3600,
+  "poll_moon_s": 43200,
+
+  "chime": true,
+  "imu_gestures": true
 }
 ```
 
-| Field | Required | Description |
+| Field | Default | Description |
 |---|---|---|
-| `workspace_id` | ✅ | Your workspace / org id (starts with `wrk_`) |
-| `refresh_token` |  | Written automatically by `tools/authorize.py`; do not fill in by hand |
-| `org_id` |  | Written automatically by the authoriser; falls back to `workspace_id` when empty |
-| `waqi_token` |  | Optional [aqicn.org](https://aqicn.org/data-platform/token/) token, enables the air-quality card |
+| `workspace_id` | — | **Required.** Your workspace / org id (starts with `wrk_`) |
+| `refresh_token` | — | Written by `tools/authorize.py`; do not fill in by hand |
+| `org_id` | — | Written by the authoriser; falls back to `workspace_id` when empty |
+| `waqi_token` | — | Optional [aqicn.org](https://aqicn.org/data-platform/token/) token; enables the Air card |
+| `status_key` | — | Shared secret for the status endpoint (HMAC-SHA256). **Empty disables its auth** |
+| `poll_usage_s` | `60` | Usage poll period (seconds) |
+| `poll_usage_idle_s` | `180` | Usage poll period while the device has been untouched for 30 s |
+| `poll_weather_s` | `1800` | Weather poll period |
+| `poll_air_s` | `3600` | Air-quality poll period |
+| `poll_moon_s` | `43200` | Moon poll period |
+| `chime` | `true` | Play a chime when the agent finishes or needs you |
+| `imu_gestures` | `true` | Shake / double-tap / pickup / face-down / twist |
 
 ### Authorisation (OAuth device flow)
 
 ```bash
-python3 tools/authorize.py
+python3 tools/authorize.py          # open the printed URL, sign in, confirm the code
+python3 tools/authorize.py --check  # refresh and print the current usage (device must be off)
 ```
 
-Open the printed URL, sign in and confirm the device code. The script writes
-`refresh_token` / `org_id` back into `data/config.json`. Then upload the filesystem:
-
-```bash
-pio run -e esp32-usage-monitor -t uploadfs
-```
+The script writes `refresh_token` / `org_id` back into `data/config.json`.
 
 > **⚠️ Token lifecycle**
 > The refresh token is **single-use** and rotates on every refresh; reusing an old
@@ -156,17 +176,11 @@ pio run -e esp32-usage-monitor
 # upload firmware
 pio run -e esp32-usage-monitor -t upload
 
-# upload filesystem (includes config.json)
+# upload filesystem (config.json, easter-egg assets)
 pio run -e esp32-usage-monitor -t uploadfs
 
 # upload both
 pio run -e esp32-usage-monitor -t upload -t uploadfs
-```
-
-OTA (when the device is already on WiFi):
-
-```bash
-pio run -t upload --upload-port <ESP32_IP>
 ```
 
 ### macOS arm64 note
@@ -177,80 +191,88 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
 <https://github.com/jason2866/mklittlefs/releases> and replace
 `~/.platformio/packages/tool-mklittlefs@3.2.0/mklittlefs`.
 
-## Usage
+## Using it
 
-1. On first boot the device opens the WiFi setup UI. Scan, pick a network and enter
-   the password:
-   - **Button A (left)**: short press cycles the character, long press (600 ms) switches the character group (abc/ABC/123/symbols)
-   - **Button B (middle)**: short press types the character, long press (800 ms) connects
-   - The on-screen touch keyboard works too
-2. Once connected the device enters the desktop automatically and syncs NTP
-3. Swipe left/right (or tap) to switch between **Weather / Usage / Clock**; swipe up/down on the weather page to switch cards
-4. Press the leftmost button (Key1) to cycle pages
-5. Long-press the power key to shut down
+- **WiFi setup (first boot).** The device scans and lists networks; tap one to
+  select it, or use the keys. With saved credentials it first gives the connect a
+  30 s grace period — tap or press a key to skip straight to the network list.
+  - **Key1 (middle)**: short press cycles the character, long press (600 ms)
+    switches the character group (`abc` / `ABC` / `123` / symbols)
+  - **Key2 (left)**: short press types the character, long press (800 ms)
+    connects
+  - The on-screen touch keyboard does the same thing directly
+- **Pages.** Swipe left/right (or tap) to move between Weather / Usage / Trend /
+  Clock. On the Weather page, swipe up/down for the five cards. Twisting the
+  device left or right steps one page or card, and a double-tap advances.
+- **Key1** cycles pages, and dismisses the "Thinking…" / "Needs you" animation.
+- **Shake** plays the 555 easter egg; **lifting** the device wakes the panel;
+  **face-down** blanks it until you pick it up.
+- **Power key**: hold ~4 s to shut down.
 
-## Project structure
+## Status bridge (OpenCode → device)
+
+The device runs a small HTTP server on port 80 (advertised over mDNS as
+`usage-monitor.local`); `tools/opencode-plugin/` is its client and pushes the
+agent's state:
+
+| OpenCode V2 event | Request | Device |
+|---|---|---|
+| `session.execution.started` | `?state=running` | "Thinking…" animation, wakes the panel |
+| `permission.asked` | `?state=waiting` | "Needs you" animation + attention chime |
+| `session.execution.succeeded` / `interrupted` | `?state=done` | rising chime |
+| `session.execution.failed` | `?state=failed` | falling chime |
+
+Every request is signed with `HMAC-SHA256(status_key, "<state>|<unixSeconds>")`
+in `X-Sig` / `X-Ts`; a bad or missing signature gets `401` and changes nothing,
+and a ±60 s window blocks replays. See
+[`tools/opencode-plugin/README.md`](tools/opencode-plugin/README.md) for setup,
+and `tools/status-ping.sh` to drive the endpoint by hand.
+
+## Project layout
 
 ```
 ├── data/
 │   ├── config.json          # runtime config (gitignored)
 │   ├── config.json.example  # config template
-│   ├── 555_audio.raw        # shake easter-egg audio
-│   └── 555.raw              # shake easter-egg image
+│   ├── 555_audio.raw        # easter-egg audio
+│   └── 555.raw              # easter-egg artwork
 ├── src/
-│   ├── main.cpp             # setup/loop, network polling, render dispatch
-│   ├── pager.cpp/h          # page + weather-card gesture/animation machine
-│   ├── status_server.cpp/h  # HTTP status server (?state=running|waiting|done|failed)
+│   ├── main.cpp             # setup/loop, poll schedule, render + push
+│   ├── ui_compose.cpp/h     # picks the page/cards to draw for the pager state
+│   ├── ui_model.h           # neutral UiPage / UiWeatherCard enums + UiEnv
+│   ├── pager.cpp/h          # page/card gesture + animation state machine
+│   ├── status_server.cpp/h  # HTTP status endpoint (signed state changes)
 │   ├── clock_sync.cpp/h     # NTP bootstrap + RTC resync scheduling
-│   ├── gestures.cpp/h       # IMU gestures (shake/tap/pickup/face-down/rotate)
-│   ├── easter_egg.cpp/h     # 555 audio playback
-│   ├── usage_history.cpp/h  # RAM ring of spend samples (trend page)
-│   ├── storage.cpp/h        # LittleFS mount helper (one-shot, format-on-fail)
-│   ├── config.h             # config struct + LittleFS JSON loader
+│   ├── gestures.cpp/h       # IMU sampling (shake / tap / pickup / face-down)
+│   ├── easter_egg.cpp/h     # 555 playback
+│   ├── usage_history.cpp/h  # RAM ring of spend samples (Trend page)
+│   ├── storage.cpp/h        # LittleFS mount helper
+│   ├── config.h             # AppConfig + LittleFS JSON loader
 │   ├── token_store.cpp/h    # OAuth tokens persisted to LittleFS
 │   ├── http_client.cpp/h    # shared blocking HTTPS helper
-│   ├── api_client.cpp/h     # OpenCode console REST client
+│   ├── fetch_task.cpp/h     # background fetch worker (job/result queues)
+│   ├── api_client.cpp       # OpenCode console REST client
 │   ├── weather_client.cpp/h # weather / moon / air quality
-│   ├── usage_display.h      # public UI drawing API (page/card renderers)
-│   ├── ui/                  # UI drawing impl (cards, primitives, icons,
-│   │   │                    #   lvgl_text, theme)
-│   │   └── fonts/           # own Montserrat builds (lv_font_ui_*.c)
 │   ├── wifi_setup.cpp/h     # WiFi setup UI
+│   ├── frame_dump.cpp/h     # -DFRAME_DUMP screen walker (screenshot tool)
+│   ├── diag.cpp/h           # boot/fetch freeze diagnostics
+│   ├── usage_display.h      # public UI drawing API
+│   ├── ui/                  # cards, trend, primitives, icons, lvgl_text, theme
+│   │   └── fonts/           # own Montserrat builds (lv_font_ui_*.c)
 │   ├── parse/               # header-only payload parsers (usage/weather/moon/air)
 │   ├── util/                # dependency-free helpers (host-unit-tested)
-│   │   ├── time_util.h      # epoch / ISO / HTTP-date parsing
-│   │   ├── value_util.h     # weather-icon kind, moon phase, AQI label
-│   │   ├── gesture_util.h   # IMU gesture classifier (shake/tap/pickup/…)
-│   │   ├── trend_util.h     # cost / burn-rate / ETA math
-│   │   └── interval.h       # periodic scheduling helper
-│   ├── voice/               # I2S audio (ES8311, chimes, easter-egg playback)
+│   ├── voice/               # I2S audio (ES8311, chimes)
 │   ├── boards/              # per-board pin definitions
-│   └── hw/                  # hardware driver layer
-│       ├── display.cpp/h    # AMOLED display driver + touch coord mapping
-│       ├── input.cpp/h      # button and touch input
-│       ├── power.cpp/h      # power management (AXP2101)
-│       ├── imu.cpp/h        # accelerometer
-│       ├── rtc.cpp/h        # real-time clock
-│       ├── expander.cpp/h   # IO expander
-│       ├── net.cpp/h        # WiFi connection and credentials
-│       ├── pins.h           # pin definitions
-│       └── hw.cpp/h         # hardware init
-├── test/
-│   └── test_util/           # host unit tests (pio test -e native)
-├── tools/
-│   ├── authorize.py         # OAuth device-flow authoriser / --check
-│   ├── status-ping.sh       # ping the device's status server by hand (signed)
-│   ├── status_stub.py       # local stand-in for the status endpoint (tests)
-│   ├── check-hosts.sh       # verify the firmware CA bundle still covers all hosts
-│   ├── opencode-plugin/     # OpenCode V2 plugin → device status webhook
-│   └── frame_dump.py        # rebuild -DFRAME_DUMP screen dumps as PNGs
+│   └── hw/                  # display, input, power, imu, rtc, expander, net
+├── test/test_util/          # host unit tests (pio test -e native)
+├── tools/                   # PC-side scripts + the OpenCode plugin
 └── platformio.ini           # PlatformIO config
 ```
 
 ## Tests
 
-The pure helpers under `src/util/` (epoch/date parsing, weather-icon kind,
-moon phase, AQI label, `Interval`) and the header-only
+The pure helpers under `src/util/` (epoch/date parsing, weather-icon kind, moon
+phase, AQI label, gesture classifier, trend math, `Interval`) and the header-only
 parsers under `src/parse/` (usage meters, wttr one-line, moon/air JSON) are free
 of Arduino dependencies and covered by host unit tests — no hardware needed:
 
@@ -258,15 +280,27 @@ of Arduino dependencies and covered by host unit tests — no hardware needed:
 pio test -e native
 ```
 
+CI runs that plus `pio run -e esp32-usage-monitor` on every push and PR.
+
 ## Notes
 
-- `data/config.json` contains credentials and is excluded by `.gitignore`; it is never committed
-- After editing `config.json`, re-upload the filesystem: `pio run -e esp32-usage-monitor -t uploadfs`
-- Tokens rotate on the device; to re-authorise, run `python3 tools/authorize.py` and then `uploadfs`
-- Weather comes from [wttr.in](https://wttr.in/Beijing) (Beijing), moon data from MET Norway, air quality from waqi
+- `data/config.json` holds credentials and is gitignored; never commit it. After
+  editing it, re-upload the filesystem (`-t uploadfs`).
+- The screenshots above come from the device itself. Build with
+  `PLATFORMIO_BUILD_FLAGS='-DFRAME_DUMP' pio run -e esp32-usage-monitor -t upload`,
+  then `python3 tools/frame_dump.py /dev/cu.usbmodemXXXX docs/screens` walks the
+  pages and rebuilds each raw RGB565 frame as a PNG.
+- Sources: weather from [wttr.in](https://wttr.in/Beijing) (Beijing), moon data
+  from MET Norway, air quality from [waqi](https://aqicn.org) (@3303, US Embassy
+  Beijing).
+- The design notes — token lifecycle, the fetch worker, display power, TLS trust
+  anchors, text rendering — live in [`AGENTS.md`](AGENTS.md); the change history
+  is in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Related
-- A Windows floating usage widget is also available: https://github.com/2700zc/TokenHub — ready to use once configured
+
+- A Windows floating usage widget: <https://github.com/2700zc/TokenHub> — ready to
+  use once configured
 
 ## License
 
