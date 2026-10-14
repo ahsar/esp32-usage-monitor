@@ -88,8 +88,9 @@ from <https://github.com/jason2866/mklittlefs/releases> (asset
   pages, right column = weather cards.
 - All on-screen copy is English. Text is rendered with **LVGL Montserrat** (4bpp
   anti-aliased) via `src/ui/lvgl_text.*`; the old 1-bit u8g2 fonts looked jagged
-  on the 314-PPI panel. u8g2 is still linked for the transient WiFi-setup screen
-  and the `die()`/shutdown messages only.
+  on the 314-PPI panel. **u8g2 is no longer a dependency** — every text draw
+  (cards, WiFi setup, the shutdown banner and the `die()` report) goes through
+  LVGL now.
 - Weather cards reserve the right `WC_R` margin so content never collides with the
   card dots.
 
@@ -150,6 +151,13 @@ exposes `lvglDrawText()` / `lvglTextWidth()`.
   guarded by `LV_FONT_UI_<S>`, which must be `1` in `lv_conf.h`.
 - Everything else (bars, icons, moon, dots, the 555 logo) is still drawn directly
   with Arduino_GFX into the same buffer; only *text* goes through LVGL.
+- `ScaledCanvas` (`hw/display.h`) routes its own `setFont`/`setCursor`/`print`/
+  `printf` through LVGL too, so the WiFi setup screen and the shutdown banner
+  share the same pipeline. Its cursor is a logical baseline and `print()`
+  advances by the rendered width, matching the old u8g2 behaviour.
+- `lvglTextInit()` is called at the end of `hwDisplayInit()` (the framebuffer must
+  exist first), so LVGL is ready for the `die()` report on any failure after the
+  panel is up; before that the canvas is null and `lvglDrawText()` no-ops.
 - `-DFRAME_DUMP` + `tools/frame_dump.py` streams each screen and rebuilds it as a
   PNG, which is how the layout is verified without looking at the panel.
 

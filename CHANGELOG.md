@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`poll_usage_s`, `poll_usage_idle_s`, `poll_weather_s`, `poll_air_s`,
   `poll_moon_s`) with an idle back-off for the usage meter.
 - Anti-aliased text. `src/ui/lvgl_text.*` uses LVGL as an offscreen
-  `lv_canvas` rasteriser over the existing framebuffer, so all card text is now
-  4bpp Montserrat smooth instead of jagged 1-bit u8g2 glyphs. Layout, shapes,
+  `lv_canvas` rasteriser over the existing framebuffer, so all text — the cards,
+  the WiFi setup screen, the shutdown banner and the `die()` report — is 4bpp
+  Montserrat smooth instead of jagged 1-bit u8g2 glyphs. Layout, shapes,
   animations and the pager are unchanged.
 - Ship our own Montserrat builds (`src/ui/fonts/`, via `lv_font_conv`) so the
   glyphs the UI actually needs are present: LVGL's built-ins only cover ASCII +
@@ -38,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   periods (30 min / 60 min / 12 h) to cut radio wake-ups and heat.
 - Add `lvgl/lvgl` 8.4.0 and configure it as a text rasteriser only
   (`include/lv_conf.h`); the host `native` env ignores it (`lib_ignore`).
+- Text now covers the WiFi setup screen, the shutdown banner and the `die()`
+  report as well: `ScaledCanvas`'s `setFont`/`setCursor`/`print`/`printf` are
+  LVGL-based, and `lvglTextInit()` moved into `hwDisplayInit()`. The big display
+  font is 56 px (the clock/temperature).
 - Docs: correct the `src/ui/` / `usage_display.h` project-structure entries and
   the test-coverage notes in `README.md` / `AGENTS.md`.
 - Pin all PlatformIO library dependencies to exact versions for reproducible
@@ -58,6 +63,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `compile_commands.json` is no longer tracked (build artifact).
 - `src/util/dirty_rect.h` and its host tests (dirty-region diffing removed).
+- The `U8g2` dependency (its last users — the WiFi setup screen, the shutdown
+  banner and `die()` — now render through LVGL).
 
 ## [0.1.0] - 2026-10-09
 
