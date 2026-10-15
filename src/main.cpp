@@ -192,7 +192,7 @@ static void audioBootInit() {
 
 // ---- UI service frame -----------------------------------------------------
 
-// One UI frame: activity/idle bookkeeping, Key1 handling, pager, render and
+// One UI frame: activity/idle bookkeeping, key handling, pager, render and
 // panel push. Input must already be up to date for this iteration. It runs
 // once per loop() iteration and never waits on the network any more (fetches
 // live on the background task), so a swipe cannot freeze mid-gesture.
@@ -260,6 +260,24 @@ static void uiFrame(uint32_t now) {
             s_forceRender = true;
         }
     }
+
+    // Side keys: left = previous page, right = next page, always on the
+    // horizontal axis (even on Weather) and clamped at the ends — the button
+    // equivalent of the left/right swipe. A press that only woke the panel is
+    // swallowed by s_swallowKey above, exactly like Key1. Deliberately does not
+    // dismiss the thinking animation (Key1 owns that); it just pages underneath.
+#if BOARD_HAS_KEY2
+    if (hwBtnB().wasPressed && !s_swallowKey) {      // IO18 (left)
+        pagerPageStep(-1);
+        s_forceRender = true;
+    }
+#endif
+#if BOARD_BTN_THIRD
+    if (hwBtnBoot().wasPressed && !s_swallowKey) {   // BOOT (right)
+        pagerPageStep(+1);
+        s_forceRender = true;
+    }
+#endif
 
     // Always advance the gesture machine, even while the thinking animation
     // owns the screen — otherwise scrolling is ignored and looks stuck. The

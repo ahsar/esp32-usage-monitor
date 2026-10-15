@@ -113,7 +113,8 @@ linked deep dive before changing the area.
   `uiFrameKey()` changes; push the whole 368×448 window in one QSPI transaction.
   No dirty rectangles, and don't raise the QSPI clock past the 40 MHz default.
 - **The panel is only dimmed, never blanked** (idle, or otherwise), so it stays
-  glanceable. No IMU/gestures — touch + Key1 only.
+  glanceable. No IMU/gestures — touch + the keys (Key1 cycles; the left/right
+  side keys step the page axis).
 - **Network fetches only run on the fetch task** (`src/fetch_task.*`). `loop()`
   schedules and harvests. Never fetch inline; never touch the display, I2C or
   LittleFS from the fetch task (flash writes come back via

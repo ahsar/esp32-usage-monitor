@@ -4,6 +4,10 @@
 - Weather has vertical cards: **Now → Sun → Air → Moon → Moonrise**.
 - Drag follows the finger and snaps; tap advances; Key1 cycles. Dots: bottom row
   = pages, right column = weather cards.
+- The two side keys (left = IO18, right = BOOT) mirror the horizontal swipe:
+  left = previous page, right = next page, always on the page axis (even on
+  Weather) and clamped at Weather/Clock. Unlike Key1 they are not
+  context-sensitive, and they do not dismiss the thinking animation.
 - Weather cards reserve the right `WC_R` margin so content never collides with the
   card dots.
 
@@ -33,5 +37,6 @@ There is **no IMU/gesture handling**: the QMI8658 is not initialised and
 double-tap, pickup, face-down blanking and gyro page-stepping were removed
 deliberately — the face-down path was the only thing that could blank the panel
 while the firmware kept running, and a false positive was indistinguishable from
-a dead device. Navigation is touch + Key1 only; the panel is only ever dimmed
-(never blanked) when idle.
+a dead device. Navigation is touch + the keys (Key1 cycles; the left/right side
+keys step the page axis); the panel is only ever dimmed (never blanked) when
+idle.

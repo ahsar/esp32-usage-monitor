@@ -86,6 +86,17 @@ void pagerStep(int dir) {
   }
 }
 
+void pagerPageStep(int dir) {
+  if (dir == 0) return;
+  // A press landing on an in-flight commit (swipe or an earlier press) must
+  // finish it first, otherwise the pending change is dropped — same rule as a
+  // new touch in pagerUpdate().
+  if (s_animating) commitAnim();
+  int np = s_page + dir;
+  if (np < 0 || np >= UI_PAGE_COUNT) return;   // clamp, exactly like the swipe
+  startAnim(false, 0.0f, dir > 0 ? -(float)PAGE_W : (float)PAGE_W, dir);
+}
+
 bool pagerUpdate() {
   int  pg0   = s_page;
   int  wc0   = s_card;
