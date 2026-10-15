@@ -55,7 +55,6 @@ void hwInit() {
   hwExpanderResetSequence();
   if (!hwDisplayInit())   die("display");
   if (!hwInputInit())     die("input");
-  if (!hwImuInit())       die("imu");
   if (!hwRtcInit())       die("rtc");
   // audio (hwAudioInit) intentionally skipped — all beeps removed
 

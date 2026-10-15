@@ -12,7 +12,6 @@
 #include "interval.h"
 #include "parse/usage_parse.h"
 #include "parse/weather_parse.h"
-#include "util/gesture_util.h"
 #include "util/trend_util.h"
 
 void setUp() {}
@@ -408,85 +407,6 @@ void test_usage_parse_micro_cents(void) {
   TEST_ASSERT_EQUAL_UINT64(0ULL, u.weeklyUsedMicroCents);   // absent meter stays 0
 }
 
-// ---- gesture_util ---------------------------------------------------------
-
-static gesture::Sample gs(uint32_t t, float ax, float ay, float az, float gz = 0.0f) {
-  gesture::Sample s = {};
-  s.ax = ax; s.ay = ay; s.az = az; s.gz = gz; s.t = t;
-  return s;
-}
-
-// Feed `n` identical samples starting at `t0`, 30 ms apart. Returns the OR of
-// every event seen.
-static uint8_t gfeed(gesture::Engine& e, uint32_t& t, int n, float ax, float ay, float az) {
-  uint8_t ev = gesture::EV_NONE;
-  for (int i = 0; i < n; i++) {
-    ev |= e.feed(gs(t, ax, ay, az));
-    t += 30;
-  }
-  return ev;
-}
-
-void test_gesture_shake(void) {
-  gesture::Engine e;
-  uint32_t t = 0;
-  gfeed(e, t, 5, 0, 0, 1);            // settle, no events
-  uint8_t ev = gfeed(e, t, 3, 0, 0, 2.2f);   // |a|² = 4.84 > 4.0, three in a row
-  TEST_ASSERT_TRUE(ev & gesture::EV_SHAKE);
-  TEST_ASSERT_FALSE(ev & gesture::EV_DOUBLE_TAP);
-}
-
-void test_gesture_double_tap(void) {
-  gesture::Engine e;
-  uint32_t t = 0;
-  gfeed(e, t, 5, 0, 0, 1);
-  e.feed(gs(t, 0, 0, 1.35f)); t += 100;      // jolt (|a|² ≈ 1.8), not a shake
-  gfeed(e, t, 2, 0, 0, 1);
-  uint8_t ev = e.feed(gs(t, 0, 0, 1.35f));   // second jolt within the window
-  TEST_ASSERT_TRUE(ev & gesture::EV_DOUBLE_TAP);
-}
-
-void test_gesture_face_down_up(void) {
-  gesture::Engine e;
-  uint32_t t = 0;
-  gfeed(e, t, 10, 0, 0, 1);                  // face up
-  TEST_ASSERT_FALSE(e.faceDown());
-  uint8_t ev = gfeed(e, t, 10, 0, 0, -1);    // flip face down
-  TEST_ASSERT_TRUE(ev & gesture::EV_FACE_DOWN);
-  TEST_ASSERT_TRUE(e.faceDown());
-  ev = gfeed(e, t, 10, 0, 0, 1);             // and back up
-  TEST_ASSERT_TRUE(ev & gesture::EV_FACE_UP);
-  TEST_ASSERT_FALSE(e.faceDown());
-}
-
-void test_gesture_pickup(void) {
-  gesture::Engine e;
-  uint32_t t = 0;
-  gfeed(e, t, 80, 0, 0, 1);                  // rest face-up for 2.4 s (> restMs)
-  // Lift to a tilted hold, still ~1 g (so it never leaves "quiet").
-  uint8_t ev = gfeed(e, t, 20, 0.6f, 0, 0.8f);
-  TEST_ASSERT_TRUE(ev & gesture::EV_PICKUP);
-}
-
-void test_gesture_rotate(void) {
-  gesture::Engine e;
-  uint32_t t = 0;
-  gfeed(e, t, 5, 0, 0, 1);                   // settle (also arms the rest timer)
-  uint8_t ev = gesture::EV_NONE;
-  for (int i = 0; i < 20; i++) {             // 120 dps for 600 ms = 72° > 70°
-    ev |= e.feed(gs(t, 0, 0, 1, 120.0f));
-    t += 30;
-  }
-  TEST_ASSERT_TRUE(ev & gesture::EV_ROT_CW);
-}
-
-void test_gesture_no_false_positives(void) {
-  gesture::Engine e;
-  uint32_t t = 0;
-  uint8_t ev = gfeed(e, t, 200, 0, 0, 1);    // 6 s of perfect stillness
-  TEST_ASSERT_EQUAL_UINT8(gesture::EV_NONE, ev);
-}
-
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_civil_epoch_unix_origin);
@@ -532,11 +452,5 @@ int main(int, char**) {
   RUN_TEST(test_trend_burn_and_eta);
   RUN_TEST(test_trend_format_eta);
   RUN_TEST(test_usage_parse_micro_cents);
-  RUN_TEST(test_gesture_shake);
-  RUN_TEST(test_gesture_double_tap);
-  RUN_TEST(test_gesture_face_down_up);
-  RUN_TEST(test_gesture_pickup);
-  RUN_TEST(test_gesture_rotate);
-  RUN_TEST(test_gesture_no_false_positives);
   return UNITY_END();
 }

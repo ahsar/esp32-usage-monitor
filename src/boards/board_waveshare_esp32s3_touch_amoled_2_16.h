@@ -53,7 +53,7 @@
 #define BOARD_HAS_PA_CTRL          1
 #define BOARD_HAS_AXP2101          1
 #define BOARD_LCD_RST_VIA_PMU      0   // has its own GPIO reset
-#define BOARD_AXP_PWRON_4S_OFF     1   // PWR key powers off via AXP after 4 s hold
+#define BOARD_AXP_PWRON_4S_OFF     1   // PWR key: tap = power on, hold = power off
 #define BOARD_AXP_ENABLE_AUX_LDOS  0   // DSI_PWR_EN is on VCC3V3 (R17 pull-up), not ALDO2
 #define BOARD_DISPLAY_CO5300       1
 #define BOARD_CO5300_COL_OFFSET    0   // 480×480 panel uses full window; 1.75c sets 6 (round panel)

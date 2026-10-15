@@ -45,10 +45,6 @@
 #define PIN_I2S_DO    23
 #define PIN_PA_CTRL   -1   // No discrete PA enable on 2.16; gated by BOARD_HAS_PA_CTRL=0.
 
-// IMU (QMI8658, polled — INTs reserved but not wired to handlers)
-#define PIN_QMI_INT1  16
-#define PIN_QMI_INT2  17
-
 // Three physical keys
 #define PIN_KEY1      18   // PWR silkscreen. Active-HIGH via BSS138 inverter. Also AXP PWRON.
 #define PIN_KEY2      10   // IO10 silkscreen. Active-low.

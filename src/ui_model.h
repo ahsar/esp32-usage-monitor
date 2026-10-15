@@ -1,5 +1,5 @@
 #pragma once
-// Neutral UI model shared by the gesture layer and the display layer.
+// Neutral UI model shared by the pager and the display layer.
 //
 // Kept free of any drawing / hardware dependency so modules like pager.cpp can
 // reason about pages and cards without pulling in the whole display stack.

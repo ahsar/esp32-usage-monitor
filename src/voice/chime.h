@@ -1,8 +1,8 @@
 #pragma once
 #include <stdint.h>
 
-// Short completion chimes, played through the same ES8311/I2S path as the 555
-// easter egg (voice/i2s_audio.*). The PCM is synthesised at boot — no raw file
+// Short completion chimes, played through the shared ES8311/I2S path
+// (voice/i2s_audio.*). The PCM is synthesised at boot — no raw file
 // on LittleFS — so activating a chime never needs an `uploadfs` (which would
 // erase the device's rotated OAuth tokens).
 //
@@ -26,7 +26,7 @@ void chimePlay(ChimeKind kind);
 // Stream the armed chime out. Call every loop(); cheap when idle.
 void chimeUpdate(uint32_t now);
 
-// True while a chime is being streamed (used to keep it off the easter egg).
+// True while a chime is being streamed (audio is single-owner).
 bool chimeActive();
 
 // Abandon the current chime and mute the PA.

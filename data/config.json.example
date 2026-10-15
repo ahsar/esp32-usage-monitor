@@ -11,6 +11,5 @@
   "poll_air_s": 3600,
   "poll_moon_s": 43200,
 
-  "chime": true,
-  "imu_gestures": true
+  "chime": true
 }

@@ -35,11 +35,19 @@ bool hwPowerInit() {
 #endif
 
 #if BOARD_AXP_PWRON_4S_OFF
-  // 2.16: configure AXP to power off on 4 s PWRON-hold (the PWR key is
-  // the only software-configurable shutdown path on this board).
-  // 0x22 reg: PWRON > OFFLEVEL as POWEROFF source. 0x27 reg: 4s timing.
+  // 2.16: the middle key is wired to AXP PWRON, so holding it is how the device
+  // is powered off. 0x27 packs the three PWRON timers:
+  //   bits [1:0] ONLEVEL  (hold to power ON)    = 0 -> 128 ms
+  //   bits [3:2] OFFLEVEL (hold to hard power OFF) = 3 -> 10 s
+  //   bits [5:4] IRQLEVEL (long-press IRQ)      = 3 -> 2.5 s
+  // OFFLEVEL is deliberately the maximum: the firmware acts on the IRQ at
+  // 2.5 s, and someone holding the key a little too long to switch the board
+  // *on* must not have it hard-cut at the old 4 s. loop() also ignores the IRQ
+  // that belongs to the press which powered the board on (see the PWR arming).
+  // 0x22: bit 1 = PWRON > OFFLEVEL as POWEROFF source; bit 2 = die over-temp
+  // level-2 power-off, kept as a safety net.
   s_pmu.writeRegister(0x22, 0b110);
-  s_pmu.writeRegister(0x27, 0x10);
+  s_pmu.writeRegister(0x27, 0b00111100);   // ON 128 ms / OFF 10 s / IRQ 2.5 s
 #endif
 
   s_pmu.disableIRQ(XPOWERS_AXP2101_ALL_IRQ);

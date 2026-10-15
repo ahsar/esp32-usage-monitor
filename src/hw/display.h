@@ -31,7 +31,7 @@ constexpr int SAFE_H     = HW_H - 2 * SAFE_INSET;
 // every coordinate/size by UI_SCALE, so all existing UI code can keep drawing
 // in 184×224 logical units while the pixels are rasterised at 368×448.
 // Bitmaps are expected to already be pre-scaled by UI_SCALE (only used by the
-// 555 easter-egg artwork), so their width/height are multiplied too.
+// 555 artwork), so their width/height are multiplied too.
 // ---------------------------------------------------------------------------
 class ScaledCanvas {
 public:
@@ -121,10 +121,6 @@ private:
 bool hwDisplayInit();
 void hwDisplayPush();
 void hwDisplayBrightness(uint8_t lvl_0_4);
-// Raw backlight level 0..255, bypassing the BRIGHT_LUT. Used only for the
-// face-down blank (level 0), where the "never blank, stay glanceable" rule
-// doesn't apply because the screen is physically hidden.
-void hwDisplayBrightnessRaw(uint8_t level);
 ScaledCanvas* hwCanvas();
 
 // Shorthand used by the UI translation units to draw on the logical canvas.

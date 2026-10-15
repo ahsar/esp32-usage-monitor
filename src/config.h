@@ -23,7 +23,6 @@ struct AppConfig {
 
   // Feature toggles.
   bool chime;          // play a chime when the agent finishes / needs you
-  bool imu_gestures;   // shake / double-tap / pickup / face-down / rotate
 };
 
 // Fill in every field with a sane default. Called before parsing so a missing
@@ -36,7 +35,6 @@ inline void configDefaults(AppConfig& cfg) {
   cfg.poll_air_s        = 3600;
   cfg.poll_moon_s       = 43200;
   cfg.chime             = true;
-  cfg.imu_gestures      = true;
 }
 
 inline bool loadConfig(AppConfig& cfg) {
@@ -60,6 +58,5 @@ inline bool loadConfig(AppConfig& cfg) {
   cfg.poll_air_s        = doc["poll_air_s"]        | cfg.poll_air_s;
   cfg.poll_moon_s       = doc["poll_moon_s"]       | cfg.poll_moon_s;
   cfg.chime             = doc["chime"]             | cfg.chime;
-  cfg.imu_gestures      = doc["imu_gestures"]      | cfg.imu_gestures;
   return true;
 }

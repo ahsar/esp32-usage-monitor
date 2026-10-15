@@ -29,8 +29,7 @@ void pagerSwallowNextTap();
 // Tap/keyboard advance: next weather card, otherwise next page.
 void pagerAdvance();
 
-// Step by ±1 (wrapping), used by the rotate-to-switch gesture as well as
-// pagerAdvance(). Positive = next.
+// Step by ±1 (wrapping), used by pagerAdvance(). Positive = next.
 void pagerStep(int dir);
 
 // Direct jumps (used by the FRAME_DUMP debug walker).

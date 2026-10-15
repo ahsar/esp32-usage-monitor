@@ -104,8 +104,11 @@ void wifiSetupDraw(WifiState& state) {
     spr.print("Tap to choose another network");
 
     const HwTouch& tp = hwTouch();
-    bool skip = (tp.justPressed && !s_touchUsed)
-                || hwBtnA().wasReleased || hwBtnB().wasPressed;
+    // Key1 is the PWR key on the 2.16 boards, so its release is not a user
+    // gesture here: letting go of the power button must not abort the boot
+    // connect (a scan calls esp_wifi_disconnect() and kills WiFi.begin()).
+    // Skip with a tap or Key2 only.
+    bool skip = (tp.justPressed && !s_touchUsed) || hwBtnB().wasPressed;
     if (skip || millis() - state.connStart >= CONNECT_GRACE_MS) {
       state.step = 0;
       state.scanStart = millis();

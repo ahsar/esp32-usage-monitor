@@ -36,7 +36,7 @@ bool     statusServerThinking();
 // True only in the waiting (needs-you) state.
 bool     statusServerWaiting();
 uint32_t statusServerThinkingSince();
-// Drop back to idle without producing an event (used by Key1 / the easter egg).
+// Drop back to idle without producing an event (used by Key1).
 void     statusServerClearThinking();
 
 // One-shot completion events, consumed by loop() to fire the right chime.

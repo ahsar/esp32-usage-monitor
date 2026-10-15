@@ -282,7 +282,7 @@ void uiDrawClock(int ox, int oy) {
 }
 
 // ---------------------------------------------------------------------------
-// 555 easter-egg artwork
+// 555 artwork (used by the "Thinking..." animation)
 // ---------------------------------------------------------------------------
 
 static uint16_t* s_img555 = nullptr;
@@ -321,16 +321,6 @@ static bool loadImg555() {
   s_img555W = SRC_W;
   s_img555H = SRC_H;
   return true;
-}
-
-void usageDisplayDrawEaster555(uint32_t elapsedMs) {
-  if (!loadImg555()) { spr.fillScreen(COL_BG); return; }
-  spr.fillScreen(COL_BG);
-  uint32_t cycle = elapsedMs % 200;
-  if (cycle < 100) {
-    spr.draw16bitRGBBitmap(HW_W / 2 - s_img555W / 2, HW_H / 2 - s_img555H / 2,
-                           s_img555, s_img555W, s_img555H);
-  }
 }
 
 void usageDisplayDrawThinking(uint32_t elapsedMs) {
