@@ -61,16 +61,27 @@ static void startAnim(bool vertical, float from, float to, int dir) {
 }
 
 static void commitAnim() {
+  // Endless carousel: the ends wrap rather than clamp, matching pagerStep() and
+  // the neighbour ui_compose() draws during the slide.
   if (s_animDir > 0) {
-    if (s_animAxisV) { if (s_card + 1 < UI_WC_COUNT) s_card++; }
-    else             { if (s_page + 1 < UI_PAGE_COUNT) s_page++; }
+    if (s_animAxisV) s_card = uiCardNext(s_card);
+    else             s_page = uiPageNext(s_page);
   } else if (s_animDir < 0) {
-    if (s_animAxisV) { if (s_card > 0) s_card--; }
-    else             { if (s_page > 0) s_page--; }
+    if (s_animAxisV) s_card = uiCardPrev(s_card);
+    else             s_page = uiPagePrev(s_page);
   }
   s_off = 0;
   s_animating = false;
   s_animDir = 0;
+}
+
+// Drag offset for one axis, capped at exactly one page: past the end of the
+// strip the far-end neighbour parks at the edge instead of scrolling away, so
+// the offset can never point at a tile ui_compose() has nothing to draw for.
+static float clampToPage(int delta, int page) {
+  if (delta >  page) return (float)page;
+  if (delta < -page) return (float)-page;
+  return (float)delta;
 }
 
 void pagerAdvance() {
@@ -80,9 +91,9 @@ void pagerAdvance() {
 void pagerStep(int dir) {
   if (dir == 0) return;
   if (s_page == UI_PAGE_WEATHER) {
-    s_card = ((s_card + dir) % UI_WC_COUNT + UI_WC_COUNT) % UI_WC_COUNT;
+    s_card = (dir > 0) ? uiCardNext(s_card) : uiCardPrev(s_card);
   } else {
-    s_page = ((s_page + dir) % UI_PAGE_COUNT + UI_PAGE_COUNT) % UI_PAGE_COUNT;
+    s_page = (dir > 0) ? uiPageNext(s_page) : uiPagePrev(s_page);
   }
 }
 
@@ -92,8 +103,8 @@ void pagerPageStep(int dir) {
   // finish it first, otherwise the pending change is dropped — same rule as a
   // new touch in pagerUpdate().
   if (s_animating) commitAnim();
-  int np = s_page + dir;
-  if (np < 0 || np >= UI_PAGE_COUNT) return;   // clamp, exactly like the swipe
+  // No bounds check: the page axis is an endless carousel, so the last page
+  // steps into the first (and vice versa) exactly like the swipe does.
   startAnim(false, 0.0f, dir > 0 ? -(float)PAGE_W : (float)PAGE_W, dir);
 }
 
@@ -129,14 +140,13 @@ bool pagerUpdate() {
       s_dragAxis = (abs(dy) > abs(dx)) ? 2 : 1;
     if (s_dragAxis != 0) s_swallowTouch = false;   // real drag → not a wake tap
 
+    // Neither axis resists at its ends any more: the strip is endless, so a
+    // drag past the last page keeps following the finger and ui_compose()
+    // paints the wrapped neighbour into the gap (see clampToPage for the cap).
     if (s_dragAxis == 1) {
-      s_off = dx;
-      bool canPrev = s_page > 0, canNext = s_page + 1 < UI_PAGE_COUNT;
-      if ((s_off > 0 && !canPrev) || (s_off < 0 && !canNext)) s_off /= 3.0f;
+      s_off = clampToPage(dx, PAGE_W);
     } else if (s_dragAxis == 2 && s_page == UI_PAGE_WEATHER) {
-      s_off = dy;
-      bool canPrev = s_card > 0, canNext = s_card + 1 < UI_WC_COUNT;
-      if ((s_off > 0 && !canPrev) || (s_off < 0 && !canNext)) s_off /= 3.0f;
+      s_off = clampToPage(dy, PAGE_H);
     } else {
       s_off = 0;
     }
@@ -161,12 +171,8 @@ bool pagerUpdate() {
       dir = -1;
     }
 
-    if (dir != 0) {
-      bool can = vertical ? (dir > 0 ? s_card + 1 < UI_WC_COUNT : s_card > 0)
-                          : (dir > 0 ? s_page + 1 < UI_PAGE_COUNT : s_page > 0);
-      if (!can) dir = 0;
-    }
-
+    // No "no neighbour" cancellation: both axes wrap, so a swipe past either
+    // end commits to the far-end page/card like any other swipe.
     float size = vertical ? PAGE_H : PAGE_W;
     float target = (dir > 0) ? -size : (dir < 0 ? size : 0.0f);
     startAnim(vertical, s_off, target, dir);

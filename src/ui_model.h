@@ -16,6 +16,16 @@ enum UiWeatherCard {
   UI_WC_COUNT
 };
 
+// Both axes are endless carousels: stepping past either end wraps to the far
+// end instead of clamping, so the gesture machine, the commit animation and the
+// two-tile composition all agree on which neighbour sits next to the current
+// page/card. Shared here (rather than duplicated in pager/ui_compose) so the
+// three call sites cannot drift.
+inline int uiPageNext(int page) { return (page + 1) % UI_PAGE_COUNT; }
+inline int uiPagePrev(int page) { return (page + UI_PAGE_COUNT - 1) % UI_PAGE_COUNT; }
+inline int uiCardNext(int card) { return (card + 1) % UI_WC_COUNT; }
+inline int uiCardPrev(int card) { return (card + UI_WC_COUNT - 1) % UI_WC_COUNT; }
+
 // Shared, per-frame UI context (status bar + clock page).
 struct UiEnv {
   bool online;

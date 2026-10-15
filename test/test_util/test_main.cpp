@@ -13,6 +13,7 @@
 #include "parse/usage_parse.h"
 #include "parse/weather_parse.h"
 #include "util/trend_util.h"
+#include "ui_model.h"
 
 void setUp() {}
 void tearDown() {}
@@ -407,6 +408,25 @@ void test_usage_parse_micro_cents(void) {
   TEST_ASSERT_EQUAL_UINT64(0ULL, u.weeklyUsedMicroCents);   // absent meter stays 0
 }
 
+// ---- ui_model wrap helpers ------------------------------------------------
+
+void test_ui_model_page_wrap(void) {
+  // Endless carousel: stepping past either end lands on the far end, and the
+  // pager's commit animation + ui_compose's neighbour tile both use these, so
+  // they must agree with each other.
+  TEST_ASSERT_EQUAL_INT(1, uiPageNext(0));
+  TEST_ASSERT_EQUAL_INT(0, uiPageNext(UI_PAGE_COUNT - 1));
+  TEST_ASSERT_EQUAL_INT(UI_PAGE_COUNT - 1, uiPagePrev(0));
+  TEST_ASSERT_EQUAL_INT(0, uiPagePrev(1));
+}
+
+void test_ui_model_card_wrap(void) {
+  TEST_ASSERT_EQUAL_INT(1, uiCardNext(0));
+  TEST_ASSERT_EQUAL_INT(0, uiCardNext(UI_WC_COUNT - 1));
+  TEST_ASSERT_EQUAL_INT(UI_WC_COUNT - 1, uiCardPrev(0));
+  TEST_ASSERT_EQUAL_INT(0, uiCardPrev(1));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_civil_epoch_unix_origin);
@@ -452,5 +472,7 @@ int main(int, char**) {
   RUN_TEST(test_trend_burn_and_eta);
   RUN_TEST(test_trend_format_eta);
   RUN_TEST(test_usage_parse_micro_cents);
+  RUN_TEST(test_ui_model_page_wrap);
+  RUN_TEST(test_ui_model_card_wrap);
   return UNITY_END();
 }

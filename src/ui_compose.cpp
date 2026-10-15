@@ -28,14 +28,17 @@ void uiRender(const UiData& d) {
 
   if (vaxis && page == UI_PAGE_WEATHER) {
     uiDrawWeatherCard(card, *d.weather, *d.moon, *d.air, d.hasAir, 0, off);
-    if (off < 0 && card + 1 < UI_WC_COUNT)
-      uiDrawWeatherCard(card + 1, *d.weather, *d.moon, *d.air, d.hasAir, 0, off + PAGE_H);
-    else if (off > 0 && card - 1 >= 0)
-      uiDrawWeatherCard(card - 1, *d.weather, *d.moon, *d.air, d.hasAir, 0, off - PAGE_H);
+    // Endless carousel: the neighbour in the gap wraps at the ends, so the tile
+    // is always drawn (no bounds test) — it is what makes Clock↔Weather and
+    // Moonrise↔Now feel continuous mid-drag.
+    if (off < 0)
+      uiDrawWeatherCard(uiCardNext(card), *d.weather, *d.moon, *d.air, d.hasAir, 0, off + PAGE_H);
+    else if (off > 0)
+      uiDrawWeatherCard(uiCardPrev(card), *d.weather, *d.moon, *d.air, d.hasAir, 0, off - PAGE_H);
   } else {
     drawPage(page, card, off, 0, d);
-    if (off < 0 && page + 1 < UI_PAGE_COUNT) drawPage(page + 1, card, off + PAGE_W, 0, d);
-    else if (off > 0 && page - 1 >= 0) drawPage(page - 1, card, off - PAGE_W, 0, d);
+    if (off < 0)      drawPage(uiPageNext(page), card, off + PAGE_W, 0, d);
+    else if (off > 0) drawPage(uiPagePrev(page), card, off - PAGE_W, 0, d);
   }
 
   uiDrawPageDots(page);

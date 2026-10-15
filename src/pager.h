@@ -33,8 +33,10 @@ void pagerAdvance();
 void pagerStep(int dir);
 
 // Horizontal page step for the left/right side keys: moves the page axis only
-// (even on the Weather page, unlike pagerStep) and clamps at Weather/Clock,
-// mirroring the horizontal swipe including its slide animation.
+// (even on the Weather page, unlike pagerStep). The axis is an endless
+// carousel, so it wraps at the ends exactly like the horizontal swipe, and it
+// mirrors the swipe's slide animation. Positive = content slides left / next
+// page enters from the right.
 void pagerPageStep(int dir);
 
 // Direct jumps (used by the FRAME_DUMP debug walker).

@@ -269,20 +269,23 @@ static void uiFrame(uint32_t now) {
         }
     }
 
-    // Side keys: left = previous page, right = next page, always on the
-    // horizontal axis (even on Weather) and clamped at the ends — the button
-    // equivalent of the left/right swipe. A press that only woke the panel is
-    // swallowed by s_swallowKey above, exactly like Key1. Deliberately does not
-    // dismiss the thinking animation (Key1 owns that); it just pages underneath.
+    // Side keys: each one pushes the content the same way the key itself sits,
+    // so left = content slides left (the page to the right comes in) and right =
+    // content slides right (the page to the left comes in). Always on the
+    // horizontal axis (even on Weather), and the axis is an endless carousel —
+    // the button equivalent of the matching left/right swipe. A press that only
+    // woke the panel is swallowed by s_swallowKey above, exactly like Key1.
+    // Deliberately does not dismiss the thinking animation (Key1 owns that); it
+    // just pages underneath.
 #if BOARD_HAS_KEY2
-    if (hwBtnB().wasPressed && !s_swallowKey) {      // IO18 (left)
-        pagerPageStep(-1);
+    if (hwBtnB().wasPressed && !s_swallowKey) {      // IO18 (left) → next page
+        pagerPageStep(+1);
         s_forceRender = true;
     }
 #endif
 #if BOARD_BTN_THIRD
-    if (hwBtnBoot().wasPressed && !s_swallowKey) {   // BOOT (right)
-        pagerPageStep(+1);
+    if (hwBtnBoot().wasPressed && !s_swallowKey) {   // BOOT (right) → previous page
+        pagerPageStep(-1);
         s_forceRender = true;
     }
 #endif

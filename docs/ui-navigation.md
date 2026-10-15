@@ -2,12 +2,18 @@
 
 - Horizontal pages: **Weather ↔ Usage ↔ Trend ↔ Clock**.
 - Weather has vertical cards: **Now → Sun → Air → Moon → Moonrise**.
+- Both axes are **endless carousels**: dragging past the last page/card keeps
+  following the finger and brings in the far end (Clock ↔ Weather, Moonrise ↔
+  Now), and releasing commits the wrap. There is no end-of-strip resistance and
+  no snapping back at the ends.
 - Drag follows the finger and snaps; tap advances; Key1 cycles. Dots: bottom row
   = pages, right column = weather cards.
-- The two side keys (left = IO18, right = BOOT) mirror the horizontal swipe:
-  left = previous page, right = next page, always on the page axis (even on
-  Weather) and clamped at Weather/Clock. Unlike Key1 they are not
-  context-sensitive, and they do not dismiss the thinking animation.
+- The two side keys (left = IO18, right = BOOT) mirror the horizontal swipe and
+  **push the content the way the key sits**: left = content slides left / next
+  page enters from the right, right = content slides right / previous page
+  enters from the left. They are always on the page axis (even on Weather) and,
+  like the swipe, wrap at the ends. Unlike Key1 they are not context-sensitive,
+  and they do not dismiss the thinking animation.
 - Weather cards reserve the right `WC_R` margin so content never collides with the
   card dots.
 
