@@ -1,0 +1,6 @@
+# Search-noise exclusions (ripgrep / ag / fd honour this file; git does not).
+#
+# fonts/ is ~1.6 MB / 29k lines of single-glyph tables — machine-generated, never
+# read by hand, and pure noise in every repo-wide search. They are still built
+# and committed; only searching skips them.
+fonts/

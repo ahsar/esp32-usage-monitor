@@ -27,16 +27,18 @@
 #define LV_USE_ASSERT_MALLOC 0
 #define LV_USE_ASSERT_STYLE 0
 
-/* Fonts. We ship our own Montserrat (src/ui/fonts/lv_font_ui_*.c) instead of
+/* Fonts. We ship our own Montserrat (fonts/lv_font_ui_*.c) instead of
    LVGL's built-ins because the built-ins only cover 0x20-0x7F, 0xB0 and 0x2022
    — the air card needs the micro sign (µ, 0xB5) and superscript three (³, 0xB3),
    which rendered as garbage. Dropping their FontAwesome glyphs also makes the
    font data about half the size.
 
+   The files live in fonts/ (not src/) and are compiled by tools/build_fonts.py.
+
    Regenerate (from the lvgl package's scripts/built_in_font directory) with:
      npx lv_font_conv@1.5.3 --no-compress --no-prefilter --bpp 4 --size <S> \
        --font Montserrat-Medium.ttf -r 0x20-0x7F,0xB0,0xB3,0xB5,0x2022 \
-       --format lvgl -o src/ui/fonts/lv_font_ui_<S>.c --force-fast-kern-format
+       --format lvgl -o fonts/lv_font_ui_<S>.c --force-fast-kern-format
    then set LV_FONT_UI_<S> 1 below (the generated file is guarded by it). */
 #define LV_FONT_MONTSERRAT_8  0
 #define LV_FONT_MONTSERRAT_10 0
