@@ -104,6 +104,17 @@ PollerOutcome pollerResult(FetchJob job, bool ok, bool transportOk, uint32_t now
   uint32_t cap = (job == FETCH_USAGE) ? g_cfg.backoffUsageMs : g_cfg.backoffOtherMs;
   if (cool > cap) cool = cap;
   s_cooldownUntil[job] = now + cool;
+  // Re-arm the job's own timer too. The cooldown above is what should pace a
+  // retry, but due() also fires on the interval — and for weather/moon/air that
+  // interval (30 min / 12 h / 60 min) is far longer than anything this ladder
+  // can produce, so without this the backoff is dead code and one failed poll
+  // costs a whole interval of missing data while the usage meter (60 s) repairs
+  // itself in a minute. That asymmetry is exactly what a 2026-10-15 report of
+  // "no weather, opencode fine" turned out to be: a single transient failure on
+  // the post-association burst, 30 minutes to recover, and a reboot (which runs
+  // pollerForceAll()) as the only fast fix. The cooldown still gates the retry,
+  // so this cannot turn into a hot loop.
+  intervalFor(job)->forcePending();
   return { cool, streak };
 }
 

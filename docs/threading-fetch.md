@@ -1,7 +1,8 @@
 # Blocking fetches never freeze the UI
 
 `loop()` is single-threaded and the network fetches are **blocking** (up to
-8–12 s each, weather retries ×2), so they run on their own FreeRTOS task —
+8–12 s each, wttr.in and MET Norway retried up to ×3), so they run on their own
+FreeRTOS task —
 `src/fetch_task.{h,cpp}`. The previous design ran them inline and pumped the UI
 from inside the request (`httpSetUiPump`), but that could only cover the
 response-read loop: `client.connect()` (DNS + TCP + TLS handshake) has no
@@ -52,8 +53,11 @@ The policy lives in `src/poller.cpp` (host-tested — see `test/test_poller/`);
 `main.cpp` only acts on it.
 
 - **Per-job cooldown.** A failed fetch backs its host off (exponential from
-  60 s, capped at 2 min for usage and 30 min for weather/moon/air), so a
-  blocked or erroring endpoint stops taking the single job slot every cycle.
+  60 s, capped at 2 min for usage and 16 min for weather/moon/air) *and* re-arms
+  that job's own timer, so the cooldown — not the interval — is what paces the
+  retry. That agreement is load-bearing for the long-interval jobs: weather polls
+  every 30 min and air every 60, so with the timer left alone the backoff was
+  dead code and a single failure cost a whole interval of missing data.
 - **Wedge watchdog.** A job older than `JOB_DEADLINE_MS` (4 min) means the
   worker is stuck inside an SDK call no timeout covers, so `fetchTaskRestart()`
   recreates the worker (its tokens survive — they are file-scope statics) and

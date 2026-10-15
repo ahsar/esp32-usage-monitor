@@ -163,6 +163,36 @@ void test_success_clears_backoff(void) {
   TEST_ASSERT_FALSE(pollerCoolingDown(FETCH_WEATHER, 0));
 }
 
+// A failed poll re-arms its own timer, so the *cooldown* paces the retry rather
+// than the interval. Weather is the case that matters: its interval is 30 min
+// and its first cooldown 60 s, so before the re-arm one blip meant 30 minutes
+// with no weather while the usage meter (60 s) repaired itself in a minute.
+void test_failure_rearms_timer(void) {
+  FetchJob job;
+  // Boot burst: usage, then weather, both armed for their normal intervals.
+  TEST_ASSERT_TRUE(pollerSelect(0, true, true, &job));
+  TEST_ASSERT_EQUAL(FETCH_USAGE, job);
+  pollerStarted(job, 0);
+  TEST_ASSERT_TRUE(pollerSelect(0, true, true, &job));
+  TEST_ASSERT_EQUAL(FETCH_WEATHER, job);
+  pollerStarted(job, 0);
+
+  pollerResult(FETCH_WEATHER, false, true, 1000);   // fails at t=1 s
+  TEST_ASSERT_TRUE(pollerCoolingDown(FETCH_WEATHER, 1000));
+
+  // Still inside the cooldown, so the re-armed timer must not actually run
+  // (moon/air are pending and take the slot instead).
+  TEST_ASSERT_TRUE(pollerSelect(60000, false, true, &job));
+  TEST_ASSERT_EQUAL(FETCH_MOON, job);
+
+  // One minute later the cooldown is spent: weather is back, 60 s after the
+  // failure — not 30 minutes, and without any key press or reconnect. (Without
+  // the re-arm this returns FETCH_MOON too, because the interval alone would
+  // keep weather out of rotation until t=1800 s.)
+  TEST_ASSERT_TRUE(pollerSelect(61000, false, true, &job));
+  TEST_ASSERT_EQUAL(FETCH_WEATHER, job);
+}
+
 void test_pause_for(void) {
   pollerPauseFor(FETCH_MOON, 1000, 5000);
   TEST_ASSERT_TRUE(pollerCoolingDown(FETCH_MOON, 1000));
@@ -276,6 +306,7 @@ int main(int argc, char** argv) {
   RUN_TEST(test_backoff_other_ladder);
   RUN_TEST(test_cooldown_blocks_then_expires);
   RUN_TEST(test_success_clears_backoff);
+  RUN_TEST(test_failure_rearms_timer);
   RUN_TEST(test_pause_for);
   RUN_TEST(test_pause_all_blocks_every_job);
   RUN_TEST(test_pause_all_zero_clears);

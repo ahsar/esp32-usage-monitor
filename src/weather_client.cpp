@@ -24,9 +24,16 @@ static const char* WAQI_ID   = "@3303";
 // timeout is ample and keeps the worst-case blocking of the main loop bounded.
 static const uint32_t NET_TIMEOUT_MS = 8000;
 static const size_t   NET_MAX_BODY   = 4096;
-// One attempt per poll: a failed job is backed off by the scheduler
-// (main.cpp), and retrying here only keeps the single job slot busy longer.
-static const int      NET_ATTEMPTS   = 1;
+// wttr.in and MET Norway get three attempts; waqi (apiFetchAir) gets one. The
+// two small ones fail in the cheap, transient way — an empty/error body under
+// load, a 503 burst — and a retry costs ~3 s, while missing them costs a whole
+// poll result. The bound still holds: worst case per attempt is DNS 8 s +
+// connect/handshake 40 s + read 8 s, so three attempts is ~170 s, the same order
+// as the usage poll that refreshes its token twice, which is what
+// JOB_DEADLINE_MS (240 s) is already sized for. waqi relies on the scheduler
+// instead: a failure re-arms its timer with a cooldown (see pollerResult), and
+// retrying here would only keep the single job slot busy longer.
+static const int      NET_ATTEMPTS_SMALL = 3;
 
 // ---------------------------------------------------------------------------
 // weather (wttr.in one-line format)
@@ -35,8 +42,8 @@ static const int      NET_ATTEMPTS   = 1;
 bool apiFetchWeather(WeatherData& out) {
   bool hadData = out.valid;
 
-  for (int attempt = 0; attempt < NET_ATTEMPTS; attempt++) {
-    if (attempt) delay(200);
+  for (int attempt = 0; attempt < NET_ATTEMPTS_SMALL; attempt++) {
+    if (attempt) delay(200u * attempt);
 
     HttpResponse res;
     if (!httpRequest(WTTR_HOST, "GET", WTTR_PATH, nullptr, nullptr, res, true,
@@ -72,8 +79,8 @@ bool apiFetchWeather(WeatherData& out) {
 bool apiFetchMoon(MoonData& out) {
   bool hadData = out.valid;
 
-  for (int attempt = 0; attempt < NET_ATTEMPTS; attempt++) {
-    if (attempt) delay(200);
+  for (int attempt = 0; attempt < NET_ATTEMPTS_SMALL; attempt++) {
+    if (attempt) delay(200u * attempt);
 
     HttpResponse res;
     if (!httpRequest(MOON_HOST, "GET", MOON_PATH, nullptr, nullptr, res, true,

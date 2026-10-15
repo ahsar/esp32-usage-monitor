@@ -53,6 +53,10 @@ struct PollerOutcome {
 // when the fetch died on the path (DNS/TCP/TLS/read — see httpTransportFailed())
 // rather than getting an answer it didn't like; it feeds the roaming trigger
 // below and never the backoff, which does not care why the job failed.
+//
+// A failure also re-arms the job's timer, so the cooldown — not the (much
+// longer) interval — paces the retry: one blip costs a minute of weather, not
+// half an hour. The cooldown is unchanged and still gates the retry.
 PollerOutcome pollerResult(FetchJob job, bool ok, bool transportOk, uint32_t now);
 
 // AP re-selection ("roaming"), asked for when the path has been dead for

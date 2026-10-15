@@ -63,6 +63,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Default unchanged: that sample found no correlation between rssi and failures,
   and the failures it did find were an AP that never completes a connect.
 
+### Fixed
+
+- **A failed weather poll no longer costs 30 minutes.** `pollerResult()` applied
+  only a cooldown and never re-armed the job's own timer, so the gap between
+  attempts was `max(cooldown, interval)`. Since the weather/air/moon intervals
+  (30 min / 60 min / 12 h) dwarf anything the backoff ladder can produce, the
+  ladder was dead code for every job but the 60 s usage meter: one transient
+  failure on the burst that follows association meant 30 minutes of "no weather"
+  while opencode's meters repaired themselves in a minute, and the only fast fix
+  was a reconnect (which runs `pollerForceAll()`). A failure now re-arms the
+  timer, so the cooldown paces the retry — 60 s after the first failure,
+  doubling to a 16 min ceiling — and the cooldown still gates it, so this cannot
+  hot-loop (`test_failure_rearms_timer`). wttr.in and MET Norway also get three
+  attempts per poll instead of one, to absorb the cheap transient kind (a 503
+  burst, an empty body); that is bounded at ~170 s against the 240 s watchdog
+  deadline, the same order as the usage poll that refreshes its token twice.
+
 ## [0.3.0] - 2026-10-15
 
 ### Added

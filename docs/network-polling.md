@@ -27,6 +27,17 @@ The schedule and the failure policy are **pure logic in `src/poller.{h,cpp}`**
   just retries a later iteration. A worker that stops making progress is
   restarted by the watchdog instead of freezing every poller — see
   [threading-fetch.md](threading-fetch.md).
+- **A failure retries on the backoff, not on the interval.** `pollerResult()`
+  sets the cooldown *and* re-arms that job's timer, so the next attempt is 60 s
+  out (doubling to a 16 min ceiling) rather than one interval out. The two have
+  to agree because the intervals differ by two orders of magnitude: without the
+  re-arm a single blip cost 30 minutes of missing weather, 60 minutes of air and
+  12 h of moon, while the 60 s usage meter repaired itself in a minute — the
+  report that motivated it was "weather is gone, opencode is fine", and the only
+  fast fix was a reconnect (`pollerForceAll()`). wttr.in and MET Norway also
+  retry three times *inside* the job, since their failures are the cheap
+  transient kind (a 503 burst, an empty body); the cooldown still gates every
+  one of those, so a dead endpoint cannot hot-loop.
 - **AP re-selection (roaming).** Offices put many APs on one SSID, and an ESP32
   has no 802.11k/v/r: it stays on the BSSID it picked until the link dies. The
   failure this exists for is an AP that *keeps* the link alive and carries
