@@ -5,19 +5,29 @@
 #include <sys/time.h>
 #include <time.h>
 
-// The NTP/display timezone installed by configTime() below. The RTC is written
-// in local (Beijing) wall time, so seeding the system clock from it has to
-// subtract this to get UTC epoch seconds.
-static const int TZ_OFFSET_SEC = 8 * 3600;
+// The NTP/display timezone, in seconds. Set from config (clockSyncSetOffset())
+// before the first sync. The RTC is written in local wall time, so seeding the
+// system clock from it has to subtract this to get UTC epoch seconds.
+static int s_tzOffsetSec = 8 * 3600;
 
 static bool     s_started = false;
 static bool     s_valid   = false;   // plausible wall clock (RTC or NTP)
 static bool     s_ntp     = false;   // NTP has answered at least once
 static uint32_t s_lastSync = 0;
 
+void clockSyncSetOffset(int tzOffsetMin) {
+  const int MAX = 16 * 60;   // widest real-world zone
+  if (tzOffsetMin > MAX)  tzOffsetMin = MAX;
+  if (tzOffsetMin < -MAX) tzOffsetMin = -MAX;
+  s_tzOffsetSec = tzOffsetMin * 60;
+  // configTime() was already installed from the previous value; re-issuing it on
+  // the next doSync() keeps TZ and the RTC restore in step.
+  s_started = false;
+}
+
 static void doSync() {
   if (!s_started) {
-    configTime(TZ_OFFSET_SEC, 0, "ntp.aliyun.com", "pool.ntp.org");
+    configTime(s_tzOffsetSec, 0, "ntp.aliyun.com", "pool.ntp.org");
     s_started = true;
   }
   time_t ts = time(nullptr);
@@ -42,7 +52,7 @@ void clockSyncRestoreFromRtc() {
   uint32_t e = civilToEpoch(t.Y, t.Mo, t.D, t.H, t.M, t.S);
   if (e < CLOCK_VALID_MIN) return;   // unset / dead backup battery
 
-  e -= (uint32_t)TZ_OFFSET_SEC;
+  e -= (uint32_t)s_tzOffsetSec;
   struct timeval tv = { (time_t)e, 0 };
   settimeofday(&tv, nullptr);
   s_valid = true;

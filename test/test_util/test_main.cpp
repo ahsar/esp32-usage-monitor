@@ -10,6 +10,7 @@
 #include "time_util.h"
 #include "value_util.h"
 #include "interval.h"
+#include "util/loc_util.h"
 #include "parse/usage_parse.h"
 #include "parse/weather_parse.h"
 #include "util/trend_util.h"
@@ -108,6 +109,88 @@ void test_aqi_category(void) {
   TEST_ASSERT_EQUAL_STRING("Unhealthy", aqiCategory(175));
   TEST_ASSERT_EQUAL_STRING("Very Unhealthy", aqiCategory(250));
   TEST_ASSERT_EQUAL_STRING("Hazardous", aqiCategory(400));
+}
+
+// ---- loc_util -------------------------------------------------------------
+
+void test_url_encode(void) {
+  char b[64];
+  TEST_ASSERT_TRUE(urlEncode("Beijing", b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("Beijing", b);
+  TEST_ASSERT_TRUE(urlEncode("New York", b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("New%20York", b);
+  TEST_ASSERT_TRUE(urlEncode("a/b?c=1", b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("a%2Fb%3Fc%3D1", b);
+  TEST_ASSERT_TRUE(urlEncode("", b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("", b);
+}
+
+void test_url_encode_rejects_overflow(void) {
+  char small[4];
+  TEST_ASSERT_FALSE(urlEncode("Beijing", small, sizeof(small)));
+}
+
+void test_tz_offset_query(void) {
+  char b[16];
+  TEST_ASSERT_TRUE(formatTzOffsetQuery(480, b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("%2B08:00", b);      // '+' must be encoded
+  TEST_ASSERT_TRUE(formatTzOffsetQuery(90, b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("%2B01:30", b);      // half-hour zone
+  TEST_ASSERT_TRUE(formatTzOffsetQuery(0, b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("%2B00:00", b);      // UTC is not "-00:00"
+  TEST_ASSERT_TRUE(formatTzOffsetQuery(-330, b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("-05:30", b);
+  TEST_ASSERT_FALSE(formatTzOffsetQuery(480, b, 8));   // buffer too small
+}
+
+void test_tz_offset_query_clamps(void) {
+  char b[16];
+  TEST_ASSERT_TRUE(formatTzOffsetQuery(9999, b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("%2B16:00", b);
+  TEST_ASSERT_TRUE(formatTzOffsetQuery(-9999, b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("-16:00", b);
+}
+
+void test_wttr_one_line_path(void) {
+  char b[160];
+  TEST_ASSERT_TRUE(wttrOneLinePath("Beijing", b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("/Beijing?m&format=%l|%C|%t|%f|%h|%w|%p|%S|%s", b);
+  TEST_ASSERT_TRUE(wttrOneLinePath("New York", b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("/New%20York?m&format=%l|%C|%t|%f|%h|%w|%p|%S|%s", b);
+}
+
+void test_wttr_path_rejects_bad_input(void) {
+  char b[160];
+  TEST_ASSERT_FALSE(wttrOneLinePath("", b, sizeof(b)));
+  TEST_ASSERT_FALSE(wttrOneLinePath(nullptr, b, sizeof(b)));
+  char small[16];
+  TEST_ASSERT_FALSE(wttrOneLinePath("Beijing", small, sizeof(small)));
+}
+
+void test_wttr_path_worst_case_place(void) {
+  // The largest place AppConfig allows (place[48] -> 47 chars) with every
+  // character needing escaping is the worst case the path buffers must hold.
+  char place[48];
+  for (int i = 0; i < 47; i++) place[i] = ' ';
+  place[47] = '\0';
+
+  char b[192];
+  TEST_ASSERT_TRUE(wttrOneLinePath(place, b, sizeof(b)));
+  TEST_ASSERT_EQUAL_INT(178, (int)strlen(b));   // 1 + 47*3 + 10 + 26
+  TEST_ASSERT_EQUAL_INT(0, strncmp(b, "/%20%20%20", 10));
+  TEST_ASSERT_EQUAL_STRING("?m&format=%l|%C|%t|%f|%h|%w|%p|%S|%s", b + 142);
+}
+
+void test_moon_api_path(void) {
+  char b[160];
+  TEST_ASSERT_TRUE(moonApiPath(39.9042, 116.4074, 480, b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING(
+      "/weatherapi/sunrise/3.0/moon?lat=39.9042&lon=116.4074&offset=%2B08:00", b);
+  TEST_ASSERT_TRUE(moonApiPath(40.7128, -74.0060, -300, b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING(
+      "/weatherapi/sunrise/3.0/moon?lat=40.7128&lon=-74.0060&offset=-05:00", b);
+  char small[16];
+  TEST_ASSERT_FALSE(moonApiPath(0, 0, 0, small, sizeof(small)));
 }
 
 // ---- usageParse -----------------------------------------------------------
@@ -444,6 +527,14 @@ int main(int, char**) {
   RUN_TEST(test_kind_from_text_null_is_cloudy);
   RUN_TEST(test_phase_name);
   RUN_TEST(test_aqi_category);
+  RUN_TEST(test_url_encode);
+  RUN_TEST(test_url_encode_rejects_overflow);
+  RUN_TEST(test_tz_offset_query);
+  RUN_TEST(test_tz_offset_query_clamps);
+  RUN_TEST(test_wttr_one_line_path);
+  RUN_TEST(test_wttr_path_rejects_bad_input);
+  RUN_TEST(test_wttr_path_worst_case_place);
+  RUN_TEST(test_moon_api_path);
   RUN_TEST(test_usage_parse);
   RUN_TEST(test_usage_parse_clamps_and_zero_limit);
   RUN_TEST(test_usage_parse_bad_input);

@@ -1,24 +1,36 @@
 #include "weather_client.h"
 #include "http_client.h"
 #include "parse/weather_parse.h"
+#include "util/loc_util.h"
 #include <Arduino.h>
 #include <string.h>
 
-// Beijing — matches the user's fixed location.
+// Location. main.cpp pushes config.json's values here (weatherSetLocation())
+// right after loadConfig(); until then these are the historical hard-coded
+// Beijing values, so a config without a location block behaves as before.
+static char  s_place[48]      = "Beijing";
+static float s_lat            = 39.9042f;
+static float s_lon            = 116.4074f;
+static int   s_tzOffsetMin    = 480;          // UTC+8
+static char  s_waqiStation[24] = "@3303";     // Beijing US Embassy, aqicn.org
+
+void weatherSetLocation(const char* place, float lat, float lon, int tzOffsetMin,
+                        const char* waqiStation) {
+  if (place && place[0]) strlcpy(s_place, place, sizeof(s_place));
+  if (waqiStation && waqiStation[0])
+    strlcpy(s_waqiStation, waqiStation, sizeof(s_waqiStation));
+  s_lat         = lat;
+  s_lon         = lon;
+  s_tzOffsetMin = tzOffsetMin;
+}
+
 static const char* WTTR_HOST = "wttr.in";
-// One-line format: location | condition | temp | feels | humidity | wind |
-//                  precip | sunrise | sunset
-static const char* WTTR_PATH = "/Beijing?m&format=%l|%C|%t|%f|%h|%w|%p|%S|%s";
 static const char* WTTR_UA   = "curl/8.4.0";
 
 static const char* MOON_HOST = "api.met.no";
-static const char* MOON_PATH =
-    "/weatherapi/sunrise/3.0/moon?lat=39.9042&lon=116.4074&offset=%2B08:00";
 static const char* MOON_UA   = "esp32-usage-monitor/1.0";
 
 static const char* WAQI_HOST = "api.waqi.info";
-// Beijing US Embassy monitoring station on aqicn.org.
-static const char* WAQI_ID   = "@3303";
 
 // These endpoints are small (one-line ~120 B, moon ~580 B), so an 8 s socket
 // timeout is ample and keeps the worst-case blocking of the main loop bounded.
@@ -42,11 +54,19 @@ static const int      NET_ATTEMPTS_SMALL = 3;
 bool apiFetchWeather(WeatherData& out) {
   bool hadData = out.valid;
 
+  // Built per call (a few µs) rather than cached, so a location change is picked
+  // up without another module needing to invalidate anything.
+  char path[192];
+  if (!wttrOneLinePath(s_place, path, sizeof(path))) {
+    Serial.println("weather: bad place in config");
+    return false;
+  }
+
   for (int attempt = 0; attempt < NET_ATTEMPTS_SMALL; attempt++) {
     if (attempt) delay(200u * attempt);
 
     HttpResponse res;
-    if (!httpRequest(WTTR_HOST, "GET", WTTR_PATH, nullptr, nullptr, res, true,
+    if (!httpRequest(WTTR_HOST, "GET", path, nullptr, nullptr, res, true,
                      NET_MAX_BODY, NET_TIMEOUT_MS, WTTR_UA)) {
       Serial.println("weather: request failed");
       continue;
@@ -79,11 +99,17 @@ bool apiFetchWeather(WeatherData& out) {
 bool apiFetchMoon(MoonData& out) {
   bool hadData = out.valid;
 
+  char path[160];
+  if (!moonApiPath(s_lat, s_lon, s_tzOffsetMin, path, sizeof(path))) {
+    Serial.println("moon: bad location in config");
+    return false;
+  }
+
   for (int attempt = 0; attempt < NET_ATTEMPTS_SMALL; attempt++) {
     if (attempt) delay(200u * attempt);
 
     HttpResponse res;
-    if (!httpRequest(MOON_HOST, "GET", MOON_PATH, nullptr, nullptr, res, true,
+    if (!httpRequest(MOON_HOST, "GET", path, nullptr, nullptr, res, true,
                      NET_MAX_BODY, NET_TIMEOUT_MS, MOON_UA)) {
       Serial.println("moon: request failed");
       continue;
@@ -116,7 +142,7 @@ bool apiFetchAir(AirData& out, const char* token) {
   if (!token || !token[0]) return false;
 
   String path = "/feed/";
-  path += WAQI_ID;
+  path += s_waqiStation;
   path += "/?token=";
   path += token;
 

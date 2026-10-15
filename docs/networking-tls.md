@@ -40,11 +40,14 @@ it; the bundle's format is `u16 count` then per entry
   device fall back to it.
 - Usage meters: `access.meters.{fiveHour,week,month}` with string
   `usedMicroCents` / `limitMicroCents`; percent = used/limit*100.
-- Weather: `wttr.in/Beijing?m&format=...` (one-line, ~120 B) — **must** send a
-  `curl/...` User-Agent, and HTTP/1.0 avoids chunked encoding.
-- Moon: `api.met.no/weatherapi/sunrise/3.0/moon` (~580 B) → moonrise/moonset/phase.
-- Air: `api.waqi.info/feed/@3303/?token=<waqi_token>` (@3303 = Beijing US Embassy).
-  PM2.5 is sometimes not reported; the card falls back to PM10.
+- Weather: `wttr.in/<place>?m&format=...` (one-line, ~120 B) — **must** send a
+  `curl/...` User-Agent, and HTTP/1.0 avoids chunked encoding. `<place>` is the
+  config `place` (default Beijing), percent-encoded.
+- Moon: `api.met.no/weatherapi/sunrise/3.0/moon?lat=..&lon=..&offset=..` (~580 B)
+  → moonrise/moonset/phase. Coordinates and offset come from config.
+- Air: `api.waqi.info/feed/<waqi_station>/?token=<waqi_token>` (`@3303` = Beijing
+  US Embassy by default). PM2.5 is sometimes not reported; the card falls back to
+  PM10.
 
 > **⚠️ Throughput note.** Large responses (e.g. wttr.in `format=j1`, ~39 KB) transfer
 > at only ~1-3 KB/s on this device, which looks like sender-side pacing. Keep network

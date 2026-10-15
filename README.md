@@ -115,6 +115,13 @@ the build today.
   "status_key": "",
   "ota_password": "",
 
+  "place": "Beijing",
+  "lat": 39.9042,
+  "lon": 116.4074,
+  "tz_offset_min": 480,
+  "waqi_station": "@3303",
+  "air_label": "",
+
   "poll_usage_s": 60,
   "poll_usage_idle_s": 180,
   "poll_weather_s": 1800,
@@ -133,12 +140,23 @@ the build today.
 | `waqi_token` | — | Optional [aqicn.org](https://aqicn.org/data-platform/token/) token; enables the Air card |
 | `status_key` | — | Shared secret for the status endpoint (HMAC-SHA256). **Empty disables its auth** |
 | `ota_password` | — | **Required (≥ 12 chars)** for the wireless update endpoint; empty/short disables OTA |
+| `place` | `Beijing` | City shown in the status bar and queried on wttr.in (spaces are URL-encoded) |
+| `lat` / `lon` | `39.9042` / `116.4074` | Coordinates the moonrise/moonset are computed for (MET Norway) |
+| `tz_offset_min` | `480` | Minutes east of UTC (`480` = UTC+8, `-300` = UTC−5). Drives NTP and the RTC's wall time |
+| `waqi_station` | `@3303` | aqicn.org station id the Air card reads |
+| `air_label` | `place` | Air card subtitle (the monitoring station); empty = use `place` |
 | `poll_usage_s` | `60` | Usage poll period (seconds) |
 | `poll_usage_idle_s` | `180` | Usage poll period while the device has been untouched for 30 s |
 | `poll_weather_s` | `1800` | Weather poll period |
 | `poll_air_s` | `3600` | Air-quality poll period |
 | `poll_moon_s` | `43200` | Moon poll period |
 | `chime` | `true` | Play a chime when the agent finishes or needs you |
+
+The location block is optional: leave it out and the device keeps the defaults
+above. Changing `tz_offset_min` needs a note of its own — the PCF85063 stores
+*local* wall time, so the first boot after the change reads the old offset's time
+with the new offset and can be off by the difference until NTP answers (the
+firmware retries every 5 s until it does, then hourly).
 
 ### Authorisation (OAuth device flow)
 
@@ -342,9 +360,10 @@ CI runs that plus `pio run -e esp32-usage-monitor` on every push and PR.
   `PLATFORMIO_BUILD_FLAGS='-DFRAME_DUMP' pio run -e esp32-usage-monitor -t upload`,
   then `python3 tools/frame_dump.py /dev/cu.usbmodemXXXX docs/screens` walks the
   pages and rebuilds each raw RGB565 frame as a PNG.
-- Sources: weather from [wttr.in](https://wttr.in/Beijing) (Beijing), moon data
-  from MET Norway, air quality from [waqi](https://aqicn.org) (@3303, US Embassy
-  Beijing).
+- Sources: weather from [wttr.in](https://wttr.in/Beijing) (the config `place`,
+  Beijing by default), moon data from MET Norway (config `lat`/`lon`), air quality
+  from [waqi](https://aqicn.org) (config `waqi_station`, the US Embassy monitoring
+  station in Beijing by default).
 - The design notes — token lifecycle, the fetch worker, display power, TLS trust
   anchors, text rendering — live in [`AGENTS.md`](AGENTS.md); the change history
   is in [`CHANGELOG.md`](CHANGELOG.md).

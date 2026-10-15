@@ -6,6 +6,13 @@
   "status_key": "",
   "ota_password": "",
 
+  "place": "Beijing",
+  "lat": 39.9042,
+  "lon": 116.4074,
+  "tz_offset_min": 480,
+  "waqi_station": "@3303",
+  "air_label": "",
+
   "poll_usage_s": 60,
   "poll_usage_idle_s": 180,
   "poll_weather_s": 1800,

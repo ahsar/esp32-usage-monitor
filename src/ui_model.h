@@ -35,5 +35,6 @@ struct UiEnv {
   int  batteryPct;
   bool charging;
   bool usbPresent;
-  const char* city;
+  const char* city;        // status-bar title on the Weather page
+  const char* airLabel;    // Air card subtitle (the monitoring station)
 };

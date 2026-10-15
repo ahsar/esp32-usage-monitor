@@ -85,10 +85,10 @@ x86_64-only binary and needs an arm64 replacement) is in the README,
 | `src/fetch_task.{h,cpp}` | Background FreeRTOS worker: job/result queues, token hand-off. Threading rules in the header. |
 | `src/status_server.{h,cpp}` | HTTP status endpoint (`?state=…`), HMAC auth, chime events. |
 | `src/api_client.{h,cpp}` | opencode console REST client (usage + token refresh). |
-| `src/weather_client.{h,cpp}` | Weather (wttr.in), moon (MET Norway), air (waqi) transport. |
+| `src/weather_client.{h,cpp}` | Weather (wttr.in), moon (MET Norway), air (waqi) transport. Location comes from `weatherSetLocation()`. |
 | `src/http_client.{h,cpp}` | Shared **blocking** HTTPS helper: DNS/handshake/read deadlines, CA-bundle verification. |
 | `src/parse/` | Header-only, host-testable payload parsers (usage/wttr/moon/air). Pure functions — test them here. |
-| `src/util/` | Dependency-free helpers (time/value/interval/trend), host-unit-tested. |
+| `src/util/` | Dependency-free helpers (time/value/interval/trend/loc), host-unit-tested. |
 | `src/config.h` | `AppConfig` + LittleFS JSON loader (`/config.json`). Add a config field here. |
 | `src/storage.{h,cpp}` | One-shot LittleFS mount helper. |
 | `src/token_store.{h,cpp}` | OAuth tokens in `/tokens.json` + config fallback. |
@@ -129,8 +129,10 @@ linked deep dive before changing the area.
 - **Chain-verify outbound TLS** against the ESP-IDF CA bundle. There is no
   `setInsecure()` — do not reintroduce it.
 - **A plausible clock is required before the first fetch** (cert validity dates).
-  Keep the poll schedule gated on `clockSyncValid()`, and keep `TZ_OFFSET_SEC`
-  consistent with what `hwRtcWrite()` stores.
+  Keep the poll schedule gated on `clockSyncValid()`, and keep the offset passed to
+  `clockSyncSetOffset()` (config `tz_offset_min`) consistent with what
+  `hwRtcWrite()` stores — the RTC holds *local* wall time, so the two halves have
+  to agree or the boot seed is off by the difference until NTP corrects it.
 - **Radio: `MIN_MODEM` while idle, awake for each fetch, `WIFI_POWER_11dBm`.**
   `MAX_MODEM` was measured out — every poll timed out. The knobs are
   `APP_WIFI_TX_DBM` and `netRadioWake()`/`netRadioRest()`; re-measure

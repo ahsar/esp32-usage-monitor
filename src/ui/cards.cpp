@@ -70,7 +70,7 @@ void uiDrawUsage(const UsageData& data, int ox, int oy) {
 // ---------------------------------------------------------------------------
 
 static void wcNow(const WeatherData& w) {
-  statusBar(g_env.city && g_env.city[0] ? g_env.city : "Beijing");
+  statusBar(g_env.city && g_env.city[0] ? g_env.city : "Weather");
 
   if (!w.valid) {
     textCenter(F_HEAD, COL_MUTED, HW_W / 2, 110, "no weather data");
@@ -170,7 +170,8 @@ static void wcAir(const AirData& a, bool hasToken) {
 
   uint16_t col = aqiColor(a.aqi);
 
-  textCenter(F_SMALL, COL_MUTED, HW_W / 2, 54, "US Embassy Beijing");
+  if (g_env.airLabel && g_env.airLabel[0])
+    textCenter(F_SMALL, COL_MUTED, HW_W / 2, 54, g_env.airLabel);
 
   char buf[24];
   if (a.aqi >= 0) snprintf(buf, sizeof(buf), "%d", a.aqi);

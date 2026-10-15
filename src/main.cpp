@@ -4,6 +4,7 @@
 #include "fetch_task.h"
 #include "http_client.h"
 #include "token_store.h"
+#include "weather_client.h"
 #include "usage_display.h"
 #include "ui/lvgl_text.h"
 #include "ui_compose.h"
@@ -149,7 +150,8 @@ static void refreshEnv(uint32_t now) {
     s_env.batteryPct = bat.pct;
     s_env.charging = bat.charging;
     s_env.usbPresent = bat.usbPresent;
-    s_env.city = "Beijing";
+    s_env.city     = s_cfg.place;
+    s_env.airLabel = s_cfg.air_label[0] ? s_cfg.air_label : s_cfg.place;
     diagSetNet(s_env.online, (int)WiFi.status(), (int)WiFi.RSSI());
     uiSetEnv(s_env);
 }
@@ -418,10 +420,6 @@ void setup() {
     Serial.printf("ESP32 Usage Monitor fw %s\n", FW_VERSION);
 
     hwInit();
-    // Seed the system clock from the PCF85063 before anything does TLS: the
-    // certificate-date check needs a plausible wall clock, and NTP may be
-    // blocked on this network.
-    clockSyncRestoreFromRtc();
 
     spr.fillScreen(0x0000);
     spr.drawRoundRect(SAFE_L, SAFE_T, SAFE_W, SAFE_H, 8, 0xFFFF);
@@ -430,6 +428,17 @@ void setup() {
 
     storageMount();
     loadConfig(s_cfg);
+    // Location and timezone come from config, so they have to land before the
+    // fetch task starts (the request paths) and before the RTC seeds the system
+    // clock (the UTC offset the RTC's wall time is interpreted with).
+    weatherSetLocation(s_cfg.place, s_cfg.lat, s_cfg.lon, s_cfg.tz_offset_min,
+                       s_cfg.waqi_station);
+    clockSyncSetOffset(s_cfg.tz_offset_min);
+    // Seed the system clock from the PCF85063 before anything does TLS: the
+    // certificate-date check needs a plausible wall clock, and NTP may be
+    // blocked on this network.
+    clockSyncRestoreFromRtc();
+
     s_chimeEnabled = s_cfg.chime;
     // Token store + the background fetch task. Every HTTPS fetch — including
     // the blocking TLS connect and any token refresh — runs there, so loop()
@@ -438,6 +447,10 @@ void setup() {
     if (!s_cfg.waqi_token[0]) {
         Serial.println("No waqi_token; air quality card will be empty");
     }
+    Serial.printf("loc: %s %.4f,%.4f tz=%+dmin station=%s air=%s\n",
+                  s_cfg.place, (double)s_cfg.lat, (double)s_cfg.lon,
+                  s_cfg.tz_offset_min, s_cfg.waqi_station,
+                  s_cfg.air_label[0] ? s_cfg.air_label : s_cfg.place);
 
     // Poll periods + failure policy from config (loadConfig() already filled
     // sane defaults). The constants at the top of this file cover the

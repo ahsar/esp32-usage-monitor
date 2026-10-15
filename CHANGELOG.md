@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The location is config, not code.** `place`, `lat`/`lon`, `tz_offset_min`,
+  `waqi_station` and `air_label` now come from `config.json` instead of being
+  written into the firmware: `place` is both the wttr.in query and the status-bar
+  title, `lat`/`lon`/`tz_offset_min` are what the MET Norway request and the
+  PCF85063 wall time are built from, and `waqi_station` (+ `air_label`) selects
+  the aqicn.org feed the Air card reads. The defaults are the values the firmware
+  used to hard-code (Beijing, 39.9042/116.4074, UTC+8, `@3303`), so an existing
+  `config.json` without the block behaves exactly as before. The request paths
+  that carry them are built by a new host-tested `src/util/loc_util.h`
+  (percent-encoding, the `%2B08:00` offset form, and the two API paths), with
+  tests in `test/test_util`. `clockSyncSetOffset()` now installs the timezone, and
+  the RTC seed moved *after* `loadConfig()` so the boot clock is interpreted with
+  the configured offset rather than the compiled-in one.
 - **`uploadfs` guard (`tools/uploadfs_guard.py`).** `uploadfs` erases LittleFS,
   `/tokens.json` with it, so the rebooted device falls back to the `refresh_token`
   in `data/config.json` — which is only still usable if the device has *not*
