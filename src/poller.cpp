@@ -21,6 +21,12 @@ uint32_t s_failStreak[FETCH_AIR + 1];
 uint32_t s_cooldownUntil[FETCH_AIR + 1];
 uint32_t s_wedgeCount = 0;
 
+// Transport health (see pollerRoamDue()). Deliberately separate from the
+// per-job backoff: it answers "is this AP carrying anything at all", which is
+// the same question whichever job happened to be the one that failed.
+uint32_t s_transportFails = 0;
+uint32_t s_roamCooldownUntil = 0;
+
 Interval* intervalFor(FetchJob job) {
   switch (job) {
     case FETCH_WEATHER: return &s_ivWeather;
@@ -45,6 +51,8 @@ void pollerInit(const PollerConfig& cfg) {
     s_cooldownUntil[j] = 0;
   }
   s_wedgeCount = 0;
+  s_transportFails = 0;
+  s_roamCooldownUntil = 0;
 }
 
 void pollerSetUsageIdle(bool idle) {
@@ -80,13 +88,15 @@ bool pollerSelect(uint32_t now, bool tokensValid, bool hasAirToken, FetchJob* ou
 
 void pollerStarted(FetchJob job, uint32_t now) { intervalFor(job)->ran(now); }
 
-PollerOutcome pollerResult(FetchJob job, bool ok, uint32_t now) {
+PollerOutcome pollerResult(FetchJob job, bool ok, bool transportOk, uint32_t now) {
   if (ok) {
     s_failStreak[job]    = 0;
     s_cooldownUntil[job] = 0;
     s_wedgeCount         = 0;
+    s_transportFails     = 0;   // a server answered: the AP is carrying traffic
     return { 0, 0 };
   }
+  if (!transportOk) s_transportFails++;
   // Exponential backoff from base, ×16 once the streak passes 5, capped per
   // job so a dead endpoint stops taking the single fetch slot every cycle.
   uint32_t streak = ++s_failStreak[job];
@@ -95,6 +105,17 @@ PollerOutcome pollerResult(FetchJob job, bool ok, uint32_t now) {
   if (cool > cap) cool = cap;
   s_cooldownUntil[job] = now + cool;
   return { cool, streak };
+}
+
+// See poller.h. `>=` on a wrapped millis() difference, like pollerCoolingDown().
+bool pollerRoamDue(uint32_t now) {
+  if (s_transportFails < g_cfg.roamFails) return false;
+  return (int32_t)(s_roamCooldownUntil - now) <= 0;
+}
+
+void pollerRoamAttempted(uint32_t now) {
+  s_transportFails    = 0;   // rebuilt by the next run of failures, if any
+  s_roamCooldownUntil = now + g_cfg.roamCooldownMs;
 }
 
 void pollerForceAll() {

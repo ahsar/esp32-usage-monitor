@@ -2,6 +2,7 @@
 #include "storage.h"
 #include "diag.h"
 #include "fetch_task.h"
+#include "http_client.h"
 #include "token_store.h"
 #include "usage_display.h"
 #include "ui/lvgl_text.h"
@@ -77,6 +78,13 @@ static const uint32_t BACKOFF_USAGE_MS = 120000;    // the meter matters most
 static const uint32_t BACKOFF_OTHER_MS = 1800000;   // weather/moon/air: 30 min
 static const uint32_t WEDGE_PAUSE_MS   = 300000;    // 5 min after a wedge
 static const uint32_t WEDGE_PAUSE_MAX_MS = 1800000; // …30 min if it recurs
+// AP re-selection (roaming): after this many consecutive fetches that died on
+// the path with no success in between, scan and re-associate. Three is ~90 s of
+// a dead path at the observed 30 s handshake cap, which is fast enough to matter
+// and slow enough not to thrash a link that is merely having a bad minute; the
+// cooldown then bounds how often even a hopeless re-scan can happen.
+static const uint32_t ROAM_FAILS       = 3;
+static const uint32_t ROAM_COOLDOWN_MS = 180000;
 
 // The wedge recovery ladder: recreate the worker, then keep that host out of
 // rotation for a while. Repeated wedges (the restarted worker gets stuck too)
@@ -142,7 +150,7 @@ static void refreshEnv(uint32_t now) {
     s_env.charging = bat.charging;
     s_env.usbPresent = bat.usbPresent;
     s_env.city = "Beijing";
-    diagSetNet(s_env.online, (int)WiFi.status());
+    diagSetNet(s_env.online, (int)WiFi.status(), (int)WiFi.RSSI());
     uiSetEnv(s_env);
 }
 
@@ -354,7 +362,7 @@ static void serviceFetch() {
     }
     // Back the host off instead of retrying it every cycle: a blocked or
     // erroring endpoint must not keep occupying the single job slot.
-    PollerOutcome oc = pollerResult(res.job, res.ok, millis());
+    PollerOutcome oc = pollerResult(res.job, res.ok, !httpTransportFailed(), millis());
     if (!res.ok) {
         Serial.printf("fetch %s failed x%u; retry in %lus\n",
                       fetchJobName(res.job), (unsigned)oc.streak,
@@ -439,6 +447,7 @@ void setup() {
         (uint32_t)s_cfg.poll_air_s        * 1000u,
         BACKOFF_BASE_MS, BACKOFF_USAGE_MS, BACKOFF_OTHER_MS,
         JOB_DEADLINE_MS, WEDGE_PAUSE_MS, WEDGE_PAUSE_MAX_MS,
+        ROAM_FAILS, ROAM_COOLDOWN_MS,
     });
     Serial.printf("poll: usage %us (idle %us) weather %us air %us moon %us\n",
                   (unsigned)s_cfg.poll_usage_s, (unsigned)s_cfg.poll_usage_idle_s,
@@ -474,8 +483,9 @@ void setup() {
     // MAX_MODEM once connected.
     WiFi.setSleep(APP_WIFI_PS_BOOT);
     // Desk device sits close to the AP; 11 dBm (~13 mW) is plenty and cuts
-    // radio heat vs. the ~19.5 dBm default (~89 mW). Bump if signal is weak.
-    WiFi.setTxPower(WIFI_POWER_11dBm);
+    // radio heat vs. the ~19.5 dBm default (~89 mW). Bump if signal is weak —
+    // APP_WIFI_TX_DBM in hw/net.h says how, and why "weak" is the uplink.
+    WiFi.setTxPower(APP_WIFI_TX_DBM);
     delay(300);
     if (hasCreds) {
         WiFi.begin(savedSSID, savedPass);
@@ -554,7 +564,7 @@ void loop() {
 
     if (s_wifi.open && WiFi.status() == WL_CONNECTED) {
         WiFi.setSleep(APP_WIFI_PS);
-        WiFi.setTxPower(WIFI_POWER_11dBm);
+        WiFi.setTxPower(APP_WIFI_TX_DBM);
         clockSyncUpdate(now, true);
         statusServerBegin();
         // mDNS so the host plugin can use a stable name instead of a DHCP IP.
@@ -572,8 +582,12 @@ void loop() {
         pollerForceAll();
         s_lastActivity = millis();   // don't idle-out the instant setup closes
         diagMark(DIAG_WIFI_CONNECTED, 0);
-        Serial.printf("diag: ip=%s rssi=%d\n",
-                      WiFi.localIP().toString().c_str(), (int)WiFi.RSSI());
+        // BSSID at boot only: it is the one datum that says whether the device
+        // picked a different AP since last time (roaming / band steering), which
+        // a changing rssi alone cannot distinguish from a fading link.
+        Serial.printf("diag: ip=%s rssi=%d bssid=%s\n",
+                      WiFi.localIP().toString().c_str(), (int)WiFi.RSSI(),
+                      WiFi.BSSIDstr().c_str());
         Serial.println("WiFi connected (auto)");
     }
 
@@ -599,6 +613,17 @@ void loop() {
                 s_lastClockWarn = now;
                 Serial.println("poll: no valid clock yet; holding off TLS fetches");
             }
+        }
+        // An AP that associates and then carries nothing cannot be fixed from
+        // here, and the ESP32 has no 802.11k/v/r to fall back on: after
+        // ROAM_FAILS consecutive dead-path fetches, re-run AP selection. Not
+        // while a fetch is in flight — the scan would disrupt it — and
+        // pollerRoamAttempted() is called whether or not the station moved, so a
+        // hopeless scan cannot become one scan per loop iteration.
+        if (WiFi.status() == WL_CONNECTED && !fetchTaskBusy() && !otaActive() &&
+            pollerRoamDue(now)) {
+            netRoam();
+            pollerRoamAttempted(now);
         }
         if (WiFi.status() == WL_CONNECTED && clockSyncValid() && !fetchTaskBusy() && !otaActive()) {
             // Idle backoff: the usage meter only matters while someone is

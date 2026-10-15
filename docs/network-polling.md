@@ -27,6 +27,32 @@ The schedule and the failure policy are **pure logic in `src/poller.{h,cpp}`**
   just retries a later iteration. A worker that stops making progress is
   restarted by the watchdog instead of freezing every poller — see
   [threading-fetch.md](threading-fetch.md).
+- **AP re-selection (roaming).** Offices put many APs on one SSID, and an ESP32
+  has no 802.11k/v/r: it stays on the BSSID it picked until the link dies. The
+  failure this exists for is an AP that *keeps* the link alive and carries
+  nothing — measured on 2026-10-15, a distant AP where every fetch sat in the TLS
+  handshake until the 30 s cap while `online=1 wifi=3` and the rssi stayed inside
+  the good AP's band (see [power.md](power.md)). So the trigger is transport
+  health, not rssi: `serviceFetch()` passes `!httpTransportFailed()` into
+  `pollerResult()`, and `ROAM_FAILS` (3) consecutive dead-path fetches **with no
+  success in between** — a 5xx proves the AP is carrying traffic, so it does not
+  count — make `pollerRoamDue()` true. `loop()` then calls `netRoam()`, which
+  scans while associated and re-associates pinned to the strongest *other* BSSID
+  of our SSID (`WiFi.begin(ssid, pass, channel, bssid)`), falling back to
+  un-pinned selection if that AP has vanished. `pollerRoamAttempted()` clears the
+  streak and holds the next attempt off for `ROAM_COOLDOWN_MS` (3 min) whether or
+  not the station moved, so a scan that finds nothing better cannot turn into a
+  scan per iteration. The whole trip costs loop() ~2-8 s (scan + reassociation);
+  it only runs while the fetch worker is idle. The accepted false positive is a
+  *WAN* outage: every host fails for a reason no AP can fix, so the station may
+  hop once per cooldown until the upstream returns — a few seconds of disruption
+  each time, bounded by the cooldown, and cheaper than guessing.
+
+  Verified against that AP on 2026-10-15: three fetches died at the 30 s cap
+  (`opencode.ai`, `wttr.in`, `api.met.no`), `netRoam()` fired, re-associated in
+  **656 ms** to a third BSSID on the same SSID, and the next two fetches
+  succeeded — air at +10 s, usage at +87 s. The same board had previously sat on
+  that AP for a 4.5-minute sample without ever leaving it.
 
 # WiFi scan
 

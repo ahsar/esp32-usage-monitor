@@ -18,14 +18,50 @@
 #define APP_WIFI_PS_BOOT WIFI_PS_MIN_MODEM
 #define APP_WIFI_PS      WIFI_PS_MIN_MODEM
 
+// Radio policy for the one moment the link is actually used. MIN_MODEM still
+// sleeps the station between DTIM beacons, and that wake-up wait is paid on
+// every round trip of a TLS handshake, so a fetch runs with power save off and
+// the radio returns to APP_WIFI_PS when the job is done — the same shape as
+// netScan()'s "power save off for the duration of the scan" and the OTA
+// transfer window. Measured on the 2026-10-15 congested-AP sample and the
+// gradient it extends: docs/power.md.
+void netRadioWake();
+void netRadioRest();
+
+// Station TX power. 11 dBm (~13 mW) is plenty for a desk device next to the AP
+// and cuts radio heat against the ~19.5 dBm default (~89 mW) — but that tuning
+// does not survive a move to another AP, and the rssi above only describes the
+// *downlink*. It is the uplink the AP has to hear, and a bursty TLS handshake
+// that loses segments waits out TCP retransmit backoff (1+2+4+8…), which is how
+// a handshake ends up in the 15-30 s band and then hits the cap. Override per
+// site rather than by eye, and measure both arms with tools/link_probe.py:
+//
+//   PLATFORMIO_BUILD_FLAGS='-DAPP_WIFI_TX_DBM=WIFI_POWER_19_5dBm' \
+//     pio run -e esp32-ota -t upload --upload-port <ip>
+#ifndef APP_WIFI_TX_DBM
+#define APP_WIFI_TX_DBM WIFI_POWER_11dBm
+#endif
+
 struct NetScanResult {
   char ssid[33];
   int32_t rssi;
   uint8_t encryption;
+  uint8_t bssid[6];   // filled by netScan(); this is what netRoam() pins
+  uint8_t channel;    // …on the channel it was heard on
 };
 
 int  netScan(NetScanResult* out, int max);
 bool netConnect(const char* ssid, const char* pass);
+
+// Re-select an AP after the path has been dead for several fetches in a row
+// (pollerRoamDue()). Scans while associated and re-associates pinned to the
+// strongest BSSID of our own SSID that is not the one we are on — "not the one
+// we are on" rather than "stronger than the one we are on", because the AP that
+// motivated this associates fine and then carries nothing, with an rssi inside
+// the good AP's band. Returns true when the station was moved; a scan that
+// finds nothing better is a no-op, and the policy's cooldown stops it from
+// being retried every iteration.
+bool netRoam();
 IPAddress netIP();
 void netSaveCred(const char* ssid, const char* pass);
 bool netLoadCred(char* ssid, size_t ssidLen, char* pass, size_t passLen);

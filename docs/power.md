@@ -37,13 +37,31 @@ Idle also dims the panel but **never blanks it** (so it stays glanceable):
   is dropped as soon as the gesture locks an axis, `pager.cpp`).
 - Pager/key/wake/data events set `s_forceRender`, so a swipe/tap never freezes on
   a mid-transition frame.
-- Radio: TX power is capped at `WIFI_POWER_11dBm`. Power save is `MIN_MODEM`
-  (`APP_WIFI_PS_BOOT` and `APP_WIFI_PS` in `hw/net.h`) — both while associating
-  and afterwards. `MAX_MODEM` (radio dozing between beacons) was tried for idle
-  power and measured out: at the same spot minutes apart, MIN_MODEM gave TLS
-  handshakes of 2.2-4.4 s and all four pollers succeeded, MAX_MODEM gave
-  4.5-31.7 s and every poll timed out. Re-measure `http: … tls=…` before
-  switching back.
+- Radio. TX power is `APP_WIFI_TX_DBM` (`hw/net.h`; default `WIFI_POWER_11dBm`
+  ≈ 13 mW, against ~89 mW at the 19.5 dBm maximum). It is a *site* knob: the AP
+  is the one that has to hear the device, and the rssi the device prints only
+  describes the downlink. Power save is `MIN_MODEM` while idle
+  (`APP_WIFI_PS_BOOT` / `APP_WIFI_PS`), and the station is taken out of modem
+  sleep for the duration of a fetch (`netRadioWake()` / `netRadioRest()`) — the
+  same shape as `netScan()` and the OTA transfer window. `MAX_MODEM` (radio
+  dozing between beacons) was tried for idle power and measured out: at the same
+  spot minutes apart, MIN_MODEM gave TLS handshakes of 2.2-4.4 s and all four
+  pollers succeeded, MAX_MODEM gave 4.5-31.7 s and every poll timed out.
+  Re-measure `http: … tls=…` before switching back.
+- What that measurement looks like: `tools/link_probe.py --cycles` resets the
+  board once per sample, and since boot forces all four pollers that buys four
+  jobs plus an `rssi=`/`bssid=` line per boot. A 2026-10-15 run on a congested AP
+  found the dropouts were **not** the radio. The same SSID carries two BSSIDs,
+  and on `4C:D0:DD:14:7C:50` the device associated fine (`online=1 wifi=3`, DHCP
+  leased, rssi -66…-73) but never completed a TCP/TLS connect: the usage job sat
+  in `fbc=http-connect` until the 30 s cap, so the pollers queued behind it never
+  ran and the panel simply went stale. It stuck to that AP for 10/10 cycles,
+  while the `E4:DC:CC:FF:62:B0` cycles in the same window fetched all four jobs
+  in 3-4 s. Read the boot line's `bssid=` before blaming the firmware. On the
+  good AP that sample measured opencode.ai `tls` at a 3043 ms median with 3/26
+  attempts failing (18.6 s EOF; 11.6 s with zero response bytes) against 2159 ms
+  and 0/24 with the radio awake for the fetch window — one arm each, at different
+  times, so re-measure rather than trust it.
 
 Tunables live at the top of `src/main.cpp` (search `IDLE_DIM_MS` /
 `IDLE_NET_MS`) and in `data/config.json` (the `poll_*` fields). The fetch

@@ -30,3 +30,12 @@ bool httpRequest(const char* host, const char* method, const char* path,
                  HttpResponse& res, bool http10 = false, size_t maxBody = 20000,
                  uint32_t timeoutMs = 25000,
                  const char* userAgent = "esp32-usage-monitor");
+
+// True when the *last* httpRequest() failed at the transport layer (DNS, the
+// TCP/TLS connect, or "no response headers at all") instead of getting an HTTP
+// status back. Nothing about the server is known in that case, but it does say
+// the path carried nothing: the poller policy uses it to tell "this AP is dead"
+// (re-select an AP) from "the server said no" (a 5xx proves the link works, and
+// roaming would be pointless). Reset at the top of every request, so it always
+// describes the most recent one.
+bool httpTransportFailed();

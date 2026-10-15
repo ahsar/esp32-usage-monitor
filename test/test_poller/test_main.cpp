@@ -21,6 +21,8 @@ static PollerConfig testCfg() {
       /* jobDeadlineMs    */ 240000,
       /* wedgePauseMs     */ 300000,
       /* wedgePauseMaxMs  */ 1800000,
+      /* roamFails        */ 3,
+      /* roamCooldownMs   */ 180000,
   };
 }
 
@@ -118,13 +120,13 @@ void test_force_usage_if_stale_is_rate_limited(void) {
 // ---- backoff / cooldown ---------------------------------------------------
 
 void test_backoff_usage_cap(void) {
-  PollerOutcome oc = pollerResult(FETCH_USAGE, false, 1000);
+  PollerOutcome oc = pollerResult(FETCH_USAGE, false, true, 1000);
   TEST_ASSERT_EQUAL_UINT32(60000, oc.cooldownMs);
   TEST_ASSERT_EQUAL_UINT32(1, oc.streak);
 
-  oc = pollerResult(FETCH_USAGE, false, 1000);
+  oc = pollerResult(FETCH_USAGE, false, true, 1000);
   TEST_ASSERT_EQUAL_UINT32(120000, oc.cooldownMs);   // 2× base, at the cap
-  oc = pollerResult(FETCH_USAGE, false, 1000);
+  oc = pollerResult(FETCH_USAGE, false, true, 1000);
   TEST_ASSERT_EQUAL_UINT32(120000, oc.cooldownMs);   // stays capped
   TEST_ASSERT_EQUAL_UINT32(3, oc.streak);
 }
@@ -132,14 +134,14 @@ void test_backoff_usage_cap(void) {
 void test_backoff_other_ladder(void) {
   const uint32_t expect[] = { 60000, 120000, 240000, 480000, 960000, 960000, 960000 };
   for (int i = 0; i < 7; i++) {
-    PollerOutcome oc = pollerResult(FETCH_WEATHER, false, 0);
+    PollerOutcome oc = pollerResult(FETCH_WEATHER, false, true, 0);
     TEST_ASSERT_EQUAL_UINT32(expect[i], oc.cooldownMs);
     TEST_ASSERT_EQUAL_UINT32((uint32_t)(i + 1), oc.streak);
   }
 }
 
 void test_cooldown_blocks_then_expires(void) {
-  pollerResult(FETCH_USAGE, false, 0);   // backed off until 60000
+  pollerResult(FETCH_USAGE, false, true, 0);   // backed off until 60000
   TEST_ASSERT_TRUE(pollerCoolingDown(FETCH_USAGE, 0));
 
   FetchJob job;
@@ -152,10 +154,10 @@ void test_cooldown_blocks_then_expires(void) {
 }
 
 void test_success_clears_backoff(void) {
-  pollerResult(FETCH_WEATHER, false, 0);
+  pollerResult(FETCH_WEATHER, false, true, 0);
   TEST_ASSERT_TRUE(pollerCoolingDown(FETCH_WEATHER, 0));
 
-  PollerOutcome oc = pollerResult(FETCH_WEATHER, true, 0);
+  PollerOutcome oc = pollerResult(FETCH_WEATHER, true, true, 0);
   TEST_ASSERT_EQUAL_UINT32(0, oc.cooldownMs);
   TEST_ASSERT_EQUAL_UINT32(0, oc.streak);
   TEST_ASSERT_FALSE(pollerCoolingDown(FETCH_WEATHER, 0));
@@ -216,8 +218,46 @@ void test_wedge_ladder_stretches(void) {
 
 void test_wedge_ladder_resets_on_success(void) {
   TEST_ASSERT_EQUAL_UINT32(300000, pollerWedgePauseMs());
-  pollerResult(FETCH_USAGE, true, 0);
+  pollerResult(FETCH_USAGE, true, true, 0);
   TEST_ASSERT_EQUAL_UINT32(300000, pollerWedgePauseMs());
+}
+
+// ---- AP re-selection (roaming) ---------------------------------------------
+
+void test_roam_needs_consecutive_transport_failures(void) {
+  TEST_ASSERT_FALSE(pollerRoamDue(0));
+  pollerResult(FETCH_USAGE, false, false, 0);      // died on the path
+  TEST_ASSERT_FALSE(pollerRoamDue(0));
+  pollerResult(FETCH_USAGE, false, false, 0);
+  TEST_ASSERT_FALSE(pollerRoamDue(0));             // 2 < roamFails
+  pollerResult(FETCH_USAGE, false, false, 0);
+  TEST_ASSERT_TRUE(pollerRoamDue(0));
+}
+
+void test_roam_ignores_server_side_failures(void) {
+  // A 5xx proves the AP carried the request and brought an answer back, so it
+  // must not move the station however often it repeats.
+  for (int i = 0; i < 4; ++i) pollerResult(FETCH_USAGE, false, true, 0);
+  TEST_ASSERT_FALSE(pollerRoamDue(0));
+}
+
+void test_roam_success_resets_streak(void) {
+  pollerResult(FETCH_USAGE, false, false, 0);
+  pollerResult(FETCH_USAGE, false, false, 0);
+  pollerResult(FETCH_USAGE, false, false, 0);
+  TEST_ASSERT_TRUE(pollerRoamDue(0));
+  pollerResult(FETCH_WEATHER, true, true, 0);      // any job's success counts
+  TEST_ASSERT_FALSE(pollerRoamDue(0));
+}
+
+void test_roam_cooldown_bounds_attempts(void) {
+  for (int i = 0; i < 3; ++i) pollerResult(FETCH_USAGE, false, false, 0);
+  TEST_ASSERT_TRUE(pollerRoamDue(0));
+  pollerRoamAttempted(0);                          // scanned, spent the streak
+  TEST_ASSERT_FALSE(pollerRoamDue(0));
+  for (int i = 0; i < 3; ++i) pollerResult(FETCH_USAGE, false, false, 0);
+  TEST_ASSERT_FALSE(pollerRoamDue(1000));           // still cooling down
+  TEST_ASSERT_TRUE(pollerRoamDue(180000));
 }
 
 // ---------------------------------------------------------------------------
@@ -242,5 +282,9 @@ int main(int argc, char** argv) {
   RUN_TEST(test_wedge_deadline);
   RUN_TEST(test_wedge_ladder_stretches);
   RUN_TEST(test_wedge_ladder_resets_on_success);
+  RUN_TEST(test_roam_needs_consecutive_transport_failures);
+  RUN_TEST(test_roam_ignores_server_side_failures);
+  RUN_TEST(test_roam_success_resets_streak);
+  RUN_TEST(test_roam_cooldown_bounds_attempts);
   return UNITY_END();
 }

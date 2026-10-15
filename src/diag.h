@@ -42,7 +42,7 @@ void diagMark(DiagCode code, uint32_t arg);   // cheap: two 32-bit RTC stores
 void diagMarkHost(const char* host);          // remember which endpoint is in flight
 void diagLoopTick(uint32_t now, uint32_t iter);
 void diagPushMs(uint32_t ms);                 // render+push duration of one frame
-void diagSetNet(bool online, int wifiStatus);
+void diagSetNet(bool online, int wifiStatus, int rssi);
 
 // Where the worker currently is: its own phase breadcrumb (the main loop's
 // diagMark calls do not overwrite it) plus the host of the request in flight.

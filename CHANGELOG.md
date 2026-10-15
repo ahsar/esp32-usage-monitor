@@ -25,6 +25,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-flash, and running the script bare answers the same question without
   uploading. It cannot know about tokens pushed before it existed, so the very
   first upload of an already-claimed config still needs `authorize.py`.
+- **Radio diagnostics and a link probe.** `diagSetNet()` now carries the RSSI, so
+  every periodic line ends in `rssi=`, and the boot line prints `bssid=` beside
+  the IP — the two numbers that separate "the link is fading" from "we are on a
+  different AP". `tools/link_probe.py` samples the USB serial and reports
+  attempts, per-host `tls=` spread, failures, rssi range, fetches per boot and a
+  per-AP split; `--cycles` resets the board once per sample (boot forces all four
+  pollers) to buy a failure rate in minutes rather than one attempt a minute. It
+  reports its own blind spots too: windows that roamed between APs, and reset
+  windows that censor attempts slower than the window. It paid for itself on the
+  first run: the "stale panel" episodes turned out to be an AP the device
+  associates with and then cannot pass TCP/TLS through, not a firmware fault —
+  see `docs/power.md` for how to read the `bssid=` that proves it.
+- **AP re-selection (roaming).** An ESP32 has no 802.11k/v/r, so it stays on
+  whichever BSSID it picked until the link dies — which is how a distant office
+  AP that associates and then carries nothing can strand the device for hours
+  with a stale panel. After `ROAM_FAILS` (3) consecutive fetches that died on the
+  path with no success in between, `loop()` scans and re-associates pinned to the
+  strongest *other* BSSID of our own SSID (`netRoam()`, falling back to un-pinned
+  selection if that AP has vanished), then holds off for `ROAM_COOLDOWN_MS`
+  (3 min) whether or not it moved. The trigger is transport health and
+  deliberately not rssi — the dead AP in that sample sits inside the good AP's
+  band — and a 5xx does not count towards it, because it proves the AP carried
+  the request. The policy is host-tested alongside the backoff ladder.
+
+### Changed
+
+- **The station is awake for the duration of each fetch**
+  (`netRadioWake()`/`netRadioRest()`, `hw/net.cpp`). `MIN_MODEM` still sleeps
+  between DTIM beacons and that wait is paid on every round trip of a TLS
+  handshake; the radio does not sleep for the ~5 s a fetch actually uses the
+  link. Measured on one AP: opencode.ai `tls` median 3043 ms → 2159 ms and 3/26
+  failed → 0/24. One arm each and at different times, so treat it as
+  re-measure-me rather than proven (docs/power.md).
+- **`APP_WIFI_TX_DBM`** replaces the inline `WIFI_POWER_11dBm`, so a weak-signal
+  site can raise TX power from `platformio.ini` instead of editing `main.cpp`.
+  Default unchanged: that sample found no correlation between rssi and failures,
+  and the failures it did find were an AP that never completes a connect.
 
 ## [0.3.0] - 2026-10-15
 

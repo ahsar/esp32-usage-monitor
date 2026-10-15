@@ -26,6 +26,11 @@ static const uint32_t DNS_TIMEOUT_MS = 8000;
 // TLS handshake cap — the setter takes SECONDS (see the note in httpRequest()).
 static const uint32_t HANDSHAKE_TIMEOUT_S = 30;
 
+// See http_client.h: "the path carried nothing" flag for the last request.
+static bool s_transportFailed = false;
+
+bool httpTransportFailed() { return s_transportFailed; }
+
 struct DnsCtx {
   char              host[80];
   IPAddress         ip;
@@ -89,6 +94,7 @@ bool httpRequest(const char* host, const char* method, const char* path,
   res.status = 0;
   res.body   = "";
   res.date   = "";
+  s_transportFailed = false;
 
   WiFiClientSecure client;
   client.setCACertBundle(x509_crt_imported_bundle_bin_start,
@@ -119,6 +125,7 @@ bool httpRequest(const char* host, const char* method, const char* path,
     Serial.printf("http: %s dns failed/timed out after %lums\n", host,
                   (unsigned long)(millis() - tDns));
     diagMark(DIAG_HTTP_CONNECT, 0xFFFF);
+    s_transportFailed = true;
     return false;
   }
   uint32_t dnsMs = millis() - tDns;
@@ -133,6 +140,7 @@ bool httpRequest(const char* host, const char* method, const char* path,
                   host, ip.toString().c_str(), (unsigned long)dnsMs,
                   (unsigned long)(millis() - tConn), err);
     diagMark(DIAG_HTTP_CONNECTED, 0xFFFF);
+    s_transportFailed = true;
     return false;
   }
   uint32_t connMs = millis() - tConn;
@@ -199,6 +207,7 @@ bool httpRequest(const char* host, const char* method, const char* path,
                   host, ip.toString().c_str(), (unsigned long)dnsMs,
                   (unsigned long)connMs, (unsigned long)readMs,
                   (unsigned)raw.length());
+    s_transportFailed = true;
     return false;
   }
 

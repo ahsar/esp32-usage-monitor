@@ -26,6 +26,9 @@ struct DiagState {
   uint32_t online;
   uint32_t wifiStatus;
   char     host[12];      // endpoint of the in-flight HTTP request
+  // Appended, not inserted: the fields above must keep their offsets so the
+  // previous-run summary stays readable across a firmware change.
+  int32_t  rssi;          // last STA RSSI in dBm (0 when the STA is down)
 };
 
 static RTC_NOINIT_ATTR DiagState s_d;
@@ -135,9 +138,10 @@ void diagPushMs(uint32_t ms) {
   if (ms > s_d.pushMax) s_d.pushMax = ms;
 }
 
-void diagSetNet(bool online, int wifiStatus) {
+void diagSetNet(bool online, int wifiStatus, int rssi) {
   s_d.online     = online ? 1u : 0u;
   s_d.wifiStatus = (uint32_t)wifiStatus;
+  s_d.rssi       = rssi;
 }
 
 static void stallCb(void*) {
@@ -230,7 +234,7 @@ void diagLoopTick(uint32_t now, uint32_t iter) {
     s_periodic = now;
     Serial.printf("diag: t=%us iter=%u maxIterGap=%ums pushMax=%ums busy=%d "
                   "job=%s age=%lums fbc=%s host=%s jobsQ=%u resQ=%u heap=%u "
-                  "psram=%u online=%u wifi=%u\n",
+                  "psram=%u online=%u wifi=%u rssi=%d\n",
                   (unsigned)(now / 1000), (unsigned)iter,
                   (unsigned)s_iterMaxGap, (unsigned)s_d.pushMax,
                   fetchTaskBusy() ? 1 : 0, fetchJobName(fetchTaskCurrentJob()),
@@ -240,7 +244,8 @@ void diagLoopTick(uint32_t now, uint32_t iter) {
                   (unsigned)fetchTaskPendingResults(),
                   (unsigned)esp_get_free_heap_size(),
                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-                  (unsigned)s_d.online, (unsigned)s_d.wifiStatus);
+                  (unsigned)s_d.online, (unsigned)s_d.wifiStatus,
+                  (int)s_d.rssi);
     s_iterMaxGap = 0;
   }
 }

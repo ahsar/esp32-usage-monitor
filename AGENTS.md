@@ -74,7 +74,7 @@ x86_64-only binary and needs an arm64 replacement) is in the README,
 | Path | Role — touch it when… |
 |---|---|
 | `src/main.cpp` | Entrypoint: `setup()`/`loop()` wiring, `uiFrame` render gate + idle/dim, power-off, chime dispatch, WiFi/mDNS bring-up. **Tunables live at the top.** |
-| `src/poller.{h,cpp}` | Poll schedule + exponential backoff + wedge ladder. **Pure & host-tested** — change here, not in `main.cpp`, for anything about *when/what* to fetch. |
+| `src/poller.{h,cpp}` | Poll schedule + exponential backoff + wedge ladder + AP re-selection trigger. **Pure & host-tested** — change here, not in `main.cpp`, for anything about *when/what* to fetch. |
 | `src/data_types.h` | Shared PODs (`UsageData`, `WeatherData`, `MoonData`, `AirData`) + `FetchJob`. Add a payload field here. |
 | `src/ui_model.h` | Neutral UI enums (`UiPage`, `UiWeatherCard`) + `UiEnv`. Add a page/card here. |
 | `src/ui_compose.{h,cpp}` | Picks page/card(s) for the pager state incl. the two-tile swipe transition. |
@@ -131,11 +131,21 @@ linked deep dive before changing the area.
 - **A plausible clock is required before the first fetch** (cert validity dates).
   Keep the poll schedule gated on `clockSyncValid()`, and keep `TZ_OFFSET_SEC`
   consistent with what `hwRtcWrite()` stores.
-- **Radio: `MIN_MODEM` + `WIFI_POWER_11dBm`.** `MAX_MODEM` was measured out —
-  every poll timed out. Re-measure `http: … tls=…` before changing.
+- **Radio: `MIN_MODEM` while idle, awake for each fetch, `WIFI_POWER_11dBm`.**
+  `MAX_MODEM` was measured out — every poll timed out. The knobs are
+  `APP_WIFI_TX_DBM` and `netRadioWake()`/`netRadioRest()`; re-measure
+  `http: … tls=…` with `tools/link_probe.py` before changing either, and read the
+  boot line's `bssid=` first — a stale panel is at least as likely to be the AP
+  as the firmware (docs/power.md).
 - **One fetch job in flight.** A poller timer is only marked run once
   `fetchTaskStart()` accepts it. Keep the poll policy in `src/poller.cpp` and
   keep `test/test_poller` green.
+- **Roaming keys on transport health, not rssi.** The trigger is `ROAM_FAILS`
+  consecutive fetches that died on the path with no success in between
+  (`httpTransportFailed()`), and the actor is `netRoam()` pinning a *different*
+  BSSID of our own SSID. Do not add an rssi threshold to it: in the sample that
+  motivated it the dead AP measured inside the good AP's band, and the whole
+  point is that rssi cannot tell them apart. See docs/network-polling.md.
 - **The boot PWRON press must not power the board off.** `loop()` consumes the
   AXP IRQ the boot press latched and only acts on a fresh one.
 - **`uploadfs` erases the device's rotated tokens.** Run `authorize.py` first
@@ -166,6 +176,9 @@ Read the relevant one before changing that area:
 ## PC-side tools
 
 - `tools/authorize.py` — opencode console device-flow authoriser + `--check`
+- `tools/link_probe.py` — sample the USB serial and report link health (attempts,
+  per-host `tls=`, failures, rssi, per-AP split); `--cycles` resets the board per
+  sample to get a failure rate in minutes
 - `tools/uploadfs_guard.py` — `uploadfs` pre/post hook that refuses to flash a
   `config.json` token the device has already rotated away (run it bare to ask the
   same question by hand); see the token-lifecycle warning above

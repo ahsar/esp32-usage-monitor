@@ -1,6 +1,7 @@
 #include "fetch_task.h"
 #include "api_client.h"
 #include "diag.h"
+#include "hw/net.h"
 #include "token_store.h"
 #include "weather_client.h"
 #include <Arduino.h>
@@ -74,6 +75,8 @@ static void runJob(const FetchJobMsg& m) {
 
   diagMark(DIAG_FETCH_JOB, (uint32_t)m.job);
   uint32_t t0 = millis();
+  // No modem sleep for the duration of the job: see netRadioWake().
+  netRadioWake();
   switch (m.job) {
     case FETCH_USAGE:
       r.ok = apiFetchUsage(r.usage, s_tokens);
@@ -84,6 +87,7 @@ static void runJob(const FetchJobMsg& m) {
     case FETCH_MOON:    r.ok = apiFetchMoon(r.moon); break;
     case FETCH_AIR:     r.ok = apiFetchAir(r.air, s_waqi); break;
   }
+  netRadioRest();
   // The duration makes the old failure mode visible: a fetch that used to
   // stall loop() for this long is now invisible to the UI.
   Serial.printf("fetch %s: %s in %lums (stackHWM=%u)\n", fetchJobName(m.job),

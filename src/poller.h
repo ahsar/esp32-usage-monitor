@@ -22,6 +22,8 @@ struct PollerConfig {
   uint32_t jobDeadlineMs;   // wedged-worker threshold
   uint32_t wedgePauseMs;    // pause after the first wedge
   uint32_t wedgePauseMaxMs; // …and after any later one
+  uint32_t roamFails;       // consecutive transport failures → re-select the AP
+  uint32_t roamCooldownMs;  // minimum gap between AP re-selections
 };
 
 // Apply the periods + policy numbers. Call once from setup().
@@ -47,8 +49,24 @@ struct PollerOutcome {
   uint32_t streak;       // consecutive failures (0 on success)
 };
 
-// Apply the failure/backoff policy to a harvested job.
-PollerOutcome pollerResult(FetchJob job, bool ok, uint32_t now);
+// Apply the failure/backoff policy to a harvested job. `transportOk` is false
+// when the fetch died on the path (DNS/TCP/TLS/read — see httpTransportFailed())
+// rather than getting an answer it didn't like; it feeds the roaming trigger
+// below and never the backoff, which does not care why the job failed.
+PollerOutcome pollerResult(FetchJob job, bool ok, bool transportOk, uint32_t now);
+
+// AP re-selection ("roaming"), asked for when the path has been dead for
+// `roamFails` consecutive fetches with no success in between. An AP that
+// associates and then carries nothing is the failure this exists for, and it is
+// deliberately *not* rssi-based: in the 2026-10-15 sample the dead AP and the
+// good one sat in the same rssi band (-66…-73 against -59…-69), so a threshold
+// would have kept the dead one. A success — any answer from a server — clears
+// the streak, because it proves the AP is carrying traffic. `now` must come from
+// the same clock as the cooldown; loop() calls pollerRoamAttempted() whether or
+// not the actor managed to move the station, so a hopeless scan cannot turn into
+// a scan per loop iteration.
+bool pollerRoamDue(uint32_t now);
+void pollerRoamAttempted(uint32_t now);
 
 // Force every poller due now (used right after WiFi associates).
 void pollerForceAll();

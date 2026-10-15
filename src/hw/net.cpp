@@ -10,6 +10,12 @@ static Preferences _prefs;
 // plenty for nearby APs and roughly halves the sweep.
 static const uint32_t SCAN_MS_PER_CHAN = 150;
 
+// netRoam(): an AP below this cannot carry a TLS handshake anyway, so it is not
+// worth leaving a working association for. Not a *roaming threshold* — see
+// netRoam() for why rssi does not choose the APs here.
+static const int32_t ROAM_MIN_RSSI = -80;
+static const int   ROAM_MAX_APS   = 8;
+
 int netScan(NetScanResult* out, int max) {
   // Fast scan. The old implementation power-cycled the radio
   // (WIFI_OFF → WIFI_STA) up to three times, and each cycle re-runs WiFi
@@ -66,6 +72,9 @@ int netScan(NetScanResult* out, int max) {
     out[i].ssid[32] = 0;
     out[i].rssi = WiFi.RSSI(i);
     out[i].encryption = WiFi.encryptionType(i);
+    memset(out[i].bssid, 0, sizeof(out[i].bssid));
+    WiFi.BSSID(i, out[i].bssid);
+    out[i].channel = (uint8_t)WiFi.channel(i);
   }
 
   WiFi.scanDelete();          // free internal scan cache (copies done)
@@ -91,6 +100,94 @@ bool netConnect(const char* ssid, const char* pass) {
 IPAddress netIP() {
   return WiFi.localIP();
 }
+
+static String bssidStr(const uint8_t* b) {
+  char s[18];
+  snprintf(s, sizeof(s), "%02X:%02X:%02X:%02X:%02X:%02X",
+           b[0], b[1], b[2], b[3], b[4], b[5]);
+  return String(s);
+}
+
+bool netRoam() {
+  char ssid[WIFI_SSID_MAX + 1], pass[WIFI_PASS_MAX + 1];
+  if (!netLoadCred(ssid, sizeof(ssid), pass, sizeof(pass))) return false;
+
+  uint8_t cur[6] = {0};
+  WiFi.BSSID(cur);
+
+  // Scan while associated: the driver hops channels and comes back, so the link
+  // — and with it the mDNS/OTA/status servers — survives a roam that finds
+  // nothing worth moving to.
+  WiFi.setSleep(WIFI_PS_NONE);        // as netScan(): the sweep is the point
+  NetScanResult cand[ROAM_MAX_APS];
+  int seen = 0, found = 0;
+  int n = WiFi.scanNetworks(false /*async*/, false /*show_hidden*/,
+                            false /*passive*/, SCAN_MS_PER_CHAN);
+  for (int i = 0; i < n; ++i) {
+    seen++;
+    if (WiFi.SSID(i) != ssid) continue;
+    uint8_t bssid[6] = {0};
+    if (!WiFi.BSSID(i, bssid)) continue;
+    if (memcmp(bssid, cur, 6) == 0) continue;      // the one we are leaving
+    if (WiFi.RSSI(i) < ROAM_MIN_RSSI) continue;
+    if (found >= ROAM_MAX_APS) continue;
+    NetScanResult& c = cand[found++];
+    strncpy(c.ssid, ssid, sizeof(c.ssid) - 1);
+    c.ssid[sizeof(c.ssid) - 1] = 0;
+    memcpy(c.bssid, bssid, 6);
+    c.rssi = WiFi.RSSI(i);
+    c.channel = (uint8_t)WiFi.channel(i);
+  }
+  WiFi.scanDelete();
+
+  int best = -1;
+  for (int i = 0; i < found; ++i) {
+    if (best < 0 || cand[i].rssi > cand[best].rssi) best = i;
+  }
+  if (best < 0) {
+    WiFi.setSleep(APP_WIFI_PS);
+    // Distinguish the two: a scan that never ran would otherwise read exactly
+    // like "this SSID has no other AP", and that is a silent no-op roam.
+    if (n < 0) {
+      Serial.println("wifi: roam: scan failed, staying put");
+    } else {
+      Serial.printf("wifi: roam: no other AP for \"%s\" (%d seen)\n", ssid, seen);
+    }
+    return false;
+  }
+
+  Serial.printf("wifi: roam -> %s ch%u rssi=%d (leaving %s rssi=%d)\n",
+                bssidStr(cand[best].bssid).c_str(), (unsigned)cand[best].channel,
+                (int)cand[best].rssi, bssidStr(cur).c_str(), (int)WiFi.RSSI());
+
+  uint32_t t0 = millis();
+  WiFi.begin(ssid, pass, cand[best].channel, cand[best].bssid);
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 8000) delay(100);
+  if (WiFi.status() != WL_CONNECTED) {
+    // The AP we aimed at is gone, which a scan taken seconds ago cannot rule
+    // out. Fall back to un-pinned selection rather than sitting disconnected.
+    Serial.println("wifi: roam: pinned AP did not answer, retrying un-pinned");
+    WiFi.begin(ssid, pass);
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) delay(100);
+  }
+  // main.cpp's connect-once block has already run, so a roam restores the radio
+  // policy itself.
+  WiFi.setSleep(APP_WIFI_PS);
+  WiFi.setTxPower(APP_WIFI_TX_DBM);
+
+  bool ok = WiFi.status() == WL_CONNECTED;
+  uint8_t now[6] = {0};
+  WiFi.BSSID(now);
+  Serial.printf("wifi: roam %s in %lums (rssi=%d bssid=%s)\n",
+                ok ? "ok" : "FAILED", (unsigned long)(millis() - t0),
+                (int)WiFi.RSSI(), bssidStr(now).c_str());
+  return ok;
+}
+
+// See the note in hw/net.h: the station stays awake for the duration of a
+// fetch, because a handshake pays the DTIM wake-up wait on every round trip.
+void netRadioWake() { WiFi.setSleep(WIFI_PS_NONE); }
+void netRadioRest() { WiFi.setSleep(APP_WIFI_PS); }
 
 void netSaveCred(const char* ssid, const char* pass) {
   _prefs.begin("buddy", false);
