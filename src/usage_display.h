@@ -1,7 +1,6 @@
 #pragma once
 #include <stdint.h>
-#include "api_client.h"
-#include "weather_client.h"
+#include "data_types.h"
 #include "ui_model.h"
 
 void uiBeginFrame();
@@ -20,4 +19,3 @@ void uiDrawCardDots(int activeCard, int count);
 
 void usageDisplayDrawThinking(uint32_t elapsedMs);
 void usageDisplayDrawWaiting(uint32_t elapsedMs);
-void usageDisplayDrawEaster555(uint32_t elapsedMs);

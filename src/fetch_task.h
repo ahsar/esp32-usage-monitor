@@ -16,16 +16,9 @@
 //     through another, so at most one fetch is ever in flight and no payload
 //     is shared between the tasks while it runs.
 #include <stdint.h>
-#include "api_client.h"
-#include "weather_client.h"
 #include "config.h"
-
-enum FetchJob : uint8_t {
-  FETCH_USAGE = 1,
-  FETCH_WEATHER,
-  FETCH_MOON,
-  FETCH_AIR,
-};
+#include "data_types.h"
+#include "token_store.h"
 
 // The caller's current data for a job. Seeds the fetch so a failed poll still
 // marks weather/moon/air `stale` against what is actually on screen — the
@@ -91,7 +84,7 @@ uint32_t fetchTaskPendingJobs();
 uint32_t fetchTaskPendingResults();
 
 // Rotated-token hand-off: the worker never writes to LittleFS (loop() reads
-// files from it — easter-egg audio, the 555 card — and LittleFS is not
-// thread-safe). Non-null = persist this snapshot, then call fetchTaskSaveDone().
+// files from it — the 555 artwork — and LittleFS is not thread-safe). Non-null
+// = persist this snapshot, then call fetchTaskSaveDone().
 const TokenSet* fetchTaskPendingSave();
 void fetchTaskSaveDone();

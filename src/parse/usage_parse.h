@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ArduinoJson.h>
-#include "api_client.h"
+#include "data_types.h"
 #include "util/time_util.h"
 
 namespace usage_parse_detail {

@@ -9,7 +9,7 @@
 #include <string.h>
 #include <math.h>
 #include <ArduinoJson.h>
-#include "weather_client.h"
+#include "data_types.h"
 #include "util/time_util.h"
 #include "util/value_util.h"
 
