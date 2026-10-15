@@ -4,6 +4,7 @@
   "org_id": "",
   "waqi_token": "",
   "status_key": "",
+  "ota_password": "",
 
   "poll_usage_s": 60,
   "poll_usage_idle_s": 180,

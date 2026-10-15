@@ -168,6 +168,39 @@ void test_pause_for(void) {
   TEST_ASSERT_FALSE(pollerCoolingDown(FETCH_MOON, 6000));
 }
 
+// pollerPauseAll() is the OTA gate: nothing may poll while a transfer owns the
+// radio, including the forced paths (the cooldown is what pollerSelect() reads).
+void test_pause_all_blocks_every_job(void) {
+  pollerPauseAll(1000, 60000);
+
+  FetchJob job;
+  TEST_ASSERT_FALSE(pollerSelect(1000, true, true, &job));
+  TEST_ASSERT_TRUE(pollerCoolingDown(FETCH_USAGE, 1000));
+  TEST_ASSERT_TRUE(pollerCoolingDown(FETCH_WEATHER, 1000));
+  TEST_ASSERT_TRUE(pollerCoolingDown(FETCH_MOON, 1000));
+  TEST_ASSERT_TRUE(pollerCoolingDown(FETCH_AIR, 1000));
+
+  // A forced poller stays blocked: forcePending() arms a timer, it does not
+  // clear the cooldown.
+  pollerForceAll();
+  pollerForceUsageIfStale(1000, 0);
+  TEST_ASSERT_FALSE(pollerSelect(1000, true, true, &job));
+
+  // …and the pause expires on schedule.
+  TEST_ASSERT_TRUE(pollerSelect(61000, true, true, &job));
+  TEST_ASSERT_EQUAL(FETCH_USAGE, job);
+}
+
+void test_pause_all_zero_clears(void) {
+  pollerPauseAll(1000, 60000);
+  FetchJob job;
+  TEST_ASSERT_FALSE(pollerSelect(1000, true, true, &job));
+
+  pollerPauseAll(1000, 0);   // transfer ended (or failed) → back in rotation
+  TEST_ASSERT_TRUE(pollerSelect(1000, true, true, &job));
+  TEST_ASSERT_EQUAL(FETCH_USAGE, job);
+}
+
 // ---- wedge ladder ---------------------------------------------------------
 
 void test_wedge_deadline(void) {
@@ -204,6 +237,8 @@ int main(int argc, char** argv) {
   RUN_TEST(test_cooldown_blocks_then_expires);
   RUN_TEST(test_success_clears_backoff);
   RUN_TEST(test_pause_for);
+  RUN_TEST(test_pause_all_blocks_every_job);
+  RUN_TEST(test_pause_all_zero_clears);
   RUN_TEST(test_wedge_deadline);
   RUN_TEST(test_wedge_ladder_stretches);
   RUN_TEST(test_wedge_ladder_resets_on_success);

@@ -348,3 +348,19 @@ void usageDisplayDrawWaiting(uint32_t elapsedMs) {
   textCenter(F_BIG, on ? COL_YELLOW : COL_ORANGE, cx, cy + 20, "!");
   textCenter(F_HEAD, COL_TEXT, HW_W / 2, SAFE_T + 168, "Needs you");
 }
+
+// Firmware update in flight. Painted from the OTA progress callback (loop() is
+// blocked inside the receive loop), and never dismissed: a successful push
+// reboots straight from here. Deliberately text-only + one bar, so a redraw
+// between flash writes stays cheap.
+void usageDisplayDrawOta(uint32_t pct) {
+  spr.fillScreen(COL_BG);
+  textCenter(F_HEAD, COL_TEXT, HW_W / 2, SAFE_T + 56, "Updating");
+
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%u%%", (unsigned)pct);
+  textCenter(F_BIG, COL_GREEN, HW_W / 2, SAFE_T + 112, buf);
+
+  roundBar(SAFE_L, SAFE_T + 140, SAFE_W, 14, (int)pct, COL_GREEN);
+  textCenter(F_SMALL, COL_MUTED, HW_W / 2, SAFE_T + 186, "keep power on");
+}

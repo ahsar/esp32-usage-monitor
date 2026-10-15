@@ -12,6 +12,9 @@ struct AppConfig {
   char waqi_token[64];
   // Shared secret for the HTTP status endpoint (HMAC-SHA256). Empty = no auth.
   char status_key[80];
+  // Password for the ArduinoOTA endpoint (see ota.h). Required: shorter than 12
+  // characters disables the endpoint (fail closed), it is never "no auth".
+  char ota_password[64];
 
   // Network poll periods (seconds). `*_idle` is used while the device has been
   // untouched for a while, to cut radio wake-ups when nobody is looking.
@@ -52,6 +55,7 @@ inline bool loadConfig(AppConfig& cfg) {
   strlcpy(cfg.org_id,        doc["org_id"]        | "", sizeof(cfg.org_id));
   strlcpy(cfg.waqi_token,    doc["waqi_token"]    | "", sizeof(cfg.waqi_token));
   strlcpy(cfg.status_key,    doc["status_key"]    | "", sizeof(cfg.status_key));
+  strlcpy(cfg.ota_password,  doc["ota_password"]  | "", sizeof(cfg.ota_password));
   cfg.poll_usage_s      = doc["poll_usage_s"]      | cfg.poll_usage_s;
   cfg.poll_usage_idle_s = doc["poll_usage_idle_s"] | cfg.poll_usage_idle_s;
   cfg.poll_weather_s    = doc["poll_weather_s"]    | cfg.poll_weather_s;

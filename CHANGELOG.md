@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Wireless firmware update (OTA).** The build already had the two-slot
+  partition table, but nothing to receive an image on it. `src/ota.{h,cpp}` now
+  runs an ArduinoOTA server, so `pio run -e esp32-ota -t upload
+  --upload-port <ip>` replaces the app over WiFi — LittleFS (config + the rotated
+  OAuth tokens) is untouched, which is the whole point: unlike `uploadfs`, an OTA
+  needs no `authorize.py` and cannot invalidate the device's token. The default
+  env keeps using USB (`upload_protocol` only changes in `[env:esp32-ota]`).
+  Because `ArduinoOTA::handle()` blocks `loop()` for the entire transfer, the
+  pollers are paused for its duration (new `pollerPauseAll()`, host-tested) so
+  the fetch worker cannot fight the push for the radio, the panel is painted from
+  the progress callback (`Updating …%`), the radio is raised to `WIFI_PS_NONE`
+  for the transfer only, and pending state — a refresh token that rotated
+  mid-transfer — is flushed before the reboot. The progress repaint is throttled
+  to one frame per percent: `onProgress` fires per ~1 KB chunk, so repainting
+  every chunk meant ~1600 full-frame QSPI pushes per update. The receive loop
+  also waits 10 s for the next chunk instead of the 1 s default — a weak link
+  drops a segment, TCP backs off, the host blocks in `sendall`, and the default
+  timeout aborted transfers that were still perfectly healthy.
+- `ota_password` in `config.json` — **required**, at least 12 characters, or the
+  OTA server does not start (an unauthenticated firmware-write endpoint on the
+  LAN is not a default). espota gets the same secret via `OTA_AUTH`, which
+  `tools/ota.sh` (also `--gen-password`) fills in from `config.json`.
+
 ### Fixed
 
 - **A blocked host could stop every poller for hours.** `setHandshakeTimeout()`

@@ -113,6 +113,7 @@ the build today.
   "org_id": "",
   "waqi_token": "",
   "status_key": "",
+  "ota_password": "",
 
   "poll_usage_s": 60,
   "poll_usage_idle_s": 180,
@@ -131,6 +132,7 @@ the build today.
 | `org_id` | — | Written by the authoriser; falls back to `workspace_id` when empty |
 | `waqi_token` | — | Optional [aqicn.org](https://aqicn.org/data-platform/token/) token; enables the Air card |
 | `status_key` | — | Shared secret for the status endpoint (HMAC-SHA256). **Empty disables its auth** |
+| `ota_password` | — | **Required (≥ 12 chars)** for the wireless update endpoint; empty/short disables OTA |
 | `poll_usage_s` | `60` | Usage poll period (seconds) |
 | `poll_usage_idle_s` | `180` | Usage poll period while the device has been untouched for 30 s |
 | `poll_weather_s` | `1800` | Weather poll period |
@@ -175,6 +177,56 @@ pio run -e esp32-usage-monitor -t uploadfs
 # upload both
 pio run -e esp32-usage-monitor -t upload -t uploadfs
 ```
+
+### Wireless update (OTA)
+
+The partition table has two 3 MB app slots (see [Hardware](#hardware)), so
+firmware can be pushed over WiFi once the device is running this build. Only the
+*app* is replaced — LittleFS is untouched, so an OTA keeps `config.json` and the
+rotated OAuth tokens (no `authorize.py`, no re-auth).
+
+```bash
+# enable the WiFi path once over USB (no filesystem change → tokens survive)
+pio run -e esp32-usage-monitor -t upload
+
+# from then on, over the air
+tools/ota.sh 192.168.1.42
+```
+
+`tools/ota.sh` reads `ota_password` from `data/config.json`, hands it to espota
+and retries (the transfer is link-bound). `pio run -e esp32-ota -t upload
+--upload-port <ip>` works too, but then espota needs the same secret in the
+`OTA_AUTH` environment variable. The default env keeps using USB on purpose. The
+IP is in the boot log (`diag: ip=…`) and the device also answers to
+`usage-monitor.local`. While a transfer runs the panel shows `Updating …%` and
+polling is paused; on success the device reboots into the new slot by itself.
+
+The endpoint is **password-only**: `ota_password` must be at least 12 characters
+or the device does not start the OTA server at all (`ota: DISABLED …` in the boot
+log). A generated secret is 32 characters:
+
+```bash
+tools/ota.sh --gen-password   # writes data/config.json, then uploadfs as printed
+```
+
+The first `-e esp32-ota` run compiles into its own build directory
+(`.pio/build/esp32-ota`), so it takes a full build before the upload starts — not
+a hang. The transfer itself is the slow part: espota acks every 1 KB chunk, so
+Nagle + delayed-ACK caps it around 20 KB/s on a quiet link (~80 s) and packet
+loss drags it down much further (measured: 5 KB/s and a 5-minute transfer over a
+link losing 24% of its packets). A failed transfer is safe (see below) — just run
+the command again.
+
+Only the app can go over the air: the filesystem and the partition table still
+need USB (`-t uploadfs` cannot be combined with `esp32-ota`).
+
+espota takes the password as a command-line argument, so it is briefly visible in
+the local process list — a detail of PlatformIO's espota integration, not of the
+device.
+
+A failed transfer changes nothing — the running app stays in flash and polling
+resumes (the log says `ota: FAILED (…)`). There is no automatic rollback, so an
+image that crashes on boot has to be recovered over USB.
 
 ### macOS arm64 note
 

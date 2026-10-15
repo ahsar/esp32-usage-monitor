@@ -60,6 +60,12 @@ void pollerForceUsageIfStale(uint32_t now, uint32_t staleMs);
 // Keep a poller out of rotation for `ms` (wedge recovery / backoff).
 void pollerPauseFor(FetchJob job, uint32_t now, uint32_t ms);
 
+// Keep *every* poller out of rotation for `ms`; `ms == 0` clears the pause.
+// Used while an OTA owns the radio (see ota.h): it goes through the same
+// cooldown gate as a backoff, so it also covers the forced paths
+// (pollerForceAll(), pollerForceUsageIfStale()) without the callers knowing.
+void pollerPauseAll(uint32_t now, uint32_t ms);
+
 // True when a job this old is stuck inside an SDK call no timeout covers.
 bool pollerJobWedged(uint32_t ageMs);
 

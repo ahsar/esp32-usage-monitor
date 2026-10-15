@@ -19,3 +19,9 @@ void uiDrawCardDots(int activeCard, int count);
 
 void usageDisplayDrawThinking(uint32_t elapsedMs);
 void usageDisplayDrawWaiting(uint32_t elapsedMs);
+
+// Firmware update in flight (ArduinoOTA). The device reboots on success, so
+// this screen is never dismissed by the UI: it is painted from the OTA progress
+// callback because loop() is blocked inside the receive loop for the whole
+// transfer. Keep it cheap — it redraws between flash writes.
+void usageDisplayDrawOta(uint32_t pct);

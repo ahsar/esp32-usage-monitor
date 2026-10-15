@@ -1,6 +1,7 @@
 // TEMPORARY diagnostics for the boot/fetch freeze. See diag.h.
 #include "diag.h"
 #include "fetch_task.h"
+#include "ota.h"
 #include <Arduino.h>
 #include <esp_attr.h>
 #include <esp_heap_caps.h>
@@ -76,6 +77,9 @@ const char* diagCodeName(uint32_t c) {
     case DIAG_TOKEN_REFRESH:  return "token-refresh";
     case DIAG_TOKEN_DONE:     return "token-done";
     case DIAG_WIFI_CONNECTED: return "wifi-connected";
+    case DIAG_OTA_START:      return "ota-start";
+    case DIAG_OTA_DONE:       return "ota-done";
+    case DIAG_OTA_ERROR:      return "ota-error";
     default:                  return "?";
   }
 }
@@ -144,6 +148,10 @@ static void stallCb(void*) {
   if (s_inStall && (uint32_t)(now - s_lastReport) < 1000) return;
   if (!s_inStall) { s_inStall = true; s_d.stallCnt++; }
   if (gap > s_d.stallMax) s_d.stallMax = gap;
+  // An OTA blocks loop() for the whole transfer by design (ArduinoOTA runs the
+  // receive + flash-write loop inside handle()), and it lasts minutes — record
+  // it in stallMax but don't report a stall once a second for its duration.
+  if (otaActive()) return;
   s_lastReport = now;
 
   emit("diag: STALL %ums bc=%s(%u) host=%s iter=%u busy=%d jobsQ=%u resQ=%u "

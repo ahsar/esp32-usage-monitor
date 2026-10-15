@@ -116,6 +116,10 @@ void pollerPauseFor(FetchJob job, uint32_t now, uint32_t ms) {
   s_cooldownUntil[job] = now + ms;
 }
 
+void pollerPauseAll(uint32_t now, uint32_t ms) {
+  for (int j = 1; j <= FETCH_AIR; ++j) s_cooldownUntil[j] = now + ms;
+}
+
 bool pollerJobWedged(uint32_t ageMs) { return ageMs >= g_cfg.jobDeadlineMs; }
 
 uint32_t pollerWedgePauseMs() {

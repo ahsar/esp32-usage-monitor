@@ -10,6 +10,7 @@
 #include "wifi_setup.h"
 #include "pager.h"
 #include "status_server.h"
+#include "ota.h"
 #include "clock_sync.h"
 #include "usage_history.h"
 #include "poller.h"
@@ -356,6 +357,31 @@ static void serviceFetch() {
     }
 }
 
+// ---- OTA (wireless firmware update; see ota.h) ------------------------------
+// Both callbacks run from inside ArduinoOTA's blocking receive loop, which owns
+// loop() for the whole transfer — so this is the only code that can touch the
+// panel (or flush anything) while an update is in flight.
+static void otaDrawProgress(uint32_t pct) {
+    usageDisplayDrawOta(pct);
+    diagMark(DIAG_UI_PUSH, 0xFFFFFFFCu);
+    hwDisplayPush();
+}
+
+static void otaStopped(bool ok) {
+    if (ok) {
+        // The reboot follows immediately. serviceFetch() starts with the token
+        // hand-off, which is the point: a refresh token that rotated during the
+        // transfer would otherwise die with the reboot and the next use of the
+        // stale one revokes the whole family (see AGENTS.md).
+        serviceFetch();
+        return;
+    }
+    // Nothing was written and the device keeps running, so drop the progress
+    // screen: force a repaint of the page underneath on the next iteration.
+    s_frameKeyValid = false;
+    s_forceRender   = true;
+}
+
 void setup() {
     Serial.begin(115200);
     delay(100);
@@ -411,6 +437,11 @@ void setup() {
     }
     statusServerSetWakeCallback(screenWake);
 
+    // Wireless update path (ArduinoOTA). Wired up in setup() so the endpoints
+    // exist before WiFi associates; the server itself starts on connect below.
+    otaSetProgressCallback(otaDrawProgress);
+    otaSetStopCallback(otaStopped);
+
     audioBootInit();
     chimeInit();
 
@@ -443,8 +474,11 @@ void loop() {
     diagLoopTick(millis(), ++s_iter);
     hwInputUpdate();
     handleHttpStatus();
+    // Wireless firmware update. Blocks for the whole transfer (see ota.h) —
+    // the OTA module paints the panel and pauses the pollers for its duration.
+    otaUpdate();
     serviceFetch();               // publish finished fetch jobs (never blocks)
-    fetchWatchdog(millis());      // restart the worker if a job stopped moving
+    if (!otaActive()) fetchWatchdog(millis());  // restart the worker if a job stopped moving
 
 #if BOARD_HAS_KEY2
     // The middle key IS the AXP PWRON button, so the very press that powered the
@@ -513,6 +547,9 @@ void loop() {
             Serial.println("mDNS: begin failed");
         }
         s_wifi.open = false;
+        // Wireless OTA, once the link is up. After the mDNS block on purpose:
+        // ArduinoOTA is told not to touch mDNS (main.cpp owns it here).
+        otaBegin(s_cfg.ota_password);
         // Pull fresh data right away (one job in flight at a time).
         pollerForceAll();
         s_lastActivity = millis();   // don't idle-out the instant setup closes
@@ -545,7 +582,7 @@ void loop() {
                 Serial.println("poll: no valid clock yet; holding off TLS fetches");
             }
         }
-        if (WiFi.status() == WL_CONNECTED && clockSyncValid() && !fetchTaskBusy()) {
+        if (WiFi.status() == WL_CONNECTED && clockSyncValid() && !fetchTaskBusy() && !otaActive()) {
             // Idle backoff: the usage meter only matters while someone is
             // looking, so poll it slowly once the device has been idle a while.
             // Any activity refreshes s_lastActivity and restores the fast rate.

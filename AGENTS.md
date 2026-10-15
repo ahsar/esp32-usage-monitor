@@ -12,8 +12,18 @@ pio run -e esp32-usage-monitor                              # compile
 pio run -e esp32-usage-monitor -t upload                    # upload firmware
 pio run -e esp32-usage-monitor -t uploadfs                  # upload filesystem
 pio run -e esp32-usage-monitor -t upload -t uploadfs        # both
+pio run -e esp32-ota -t upload --upload-port <IP>           # firmware, over WiFi
 pio test -e native                                          # host unit tests
 ```
+
+`[env:esp32-ota]` is the same firmware with `upload_protocol = espota`; the
+default env stays on USB deliberately. OTA needs the firmware that contains
+`src/ota.*` flashed over USB once, after which only the *app* moves — LittleFS
+(config + rotated tokens) is untouched, so no `authorize.py` is needed for an
+OTA (unlike `uploadfs`). `-t uploadfs` cannot go over the air, and there is no
+automatic rollback. The endpoint is password-only (`ota_password`, ≥ 12 chars —
+empty/short disables it); `tools/ota.sh [ip]` reads the secret from
+`data/config.json`, retries, and `--gen-password` rotates it.
 
 Custom platform (not the default Espressif one): `platform` URL in
 `platformio.ini`. Lib versions are pinned exactly so CI and local builds resolve
@@ -82,6 +92,7 @@ x86_64-only binary and needs an arm64 replacement) is in the README,
 | `src/wifi_setup.{h,cpp}` | WiFi config UI (scan list, button-based password entry). |
 | `src/frame_dump.{h,cpp}` | `-DFRAME_DUMP` screen walker streaming canvases over USB CDC. |
 | `src/diag.{h,cpp}` | **TEMPORARY** freeze diagnostics (RTC breadcrumbs + stall reporter). Still load-bearing — see invariants. |
+| `src/ota.{h,cpp}` | Wireless firmware update (ArduinoOTA). Pauses the pollers, paints the progress screen, flushes tokens before the reboot. |
 | `src/hw/` | Drivers: `display`, `input`, `power`, `rtc`, `net`, `expander`, `pins.h`. |
 | `src/voice/` | I2S output (ES8311) + boot-synthesised `chime.*`. |
 | `src/boards/` | Board-specific pin definitions. |
@@ -127,6 +138,12 @@ linked deep dive before changing the area.
 - **`src/diag.*` is temporary but load-bearing** — it is what makes a wedged
   fetch or a frozen UI diagnosable over USB CDC. Don't delete it while the
   watchdog still relies on its breadcrumbs.
+- **OTA only replaces the app.** `ArduinoOTA::handle()` blocks `loop()` for the
+  whole transfer and writes flash, so it runs on the loop task only (never the
+  fetch task), it pauses every poller for its duration, and the token flush
+  before its reboot is what keeps the rotated refresh token alive. The
+  partition table and LittleFS are USB-only; there is no rollback. The endpoint
+  never runs unauthenticated: a missing/short `ota_password` disables it.
 
 ## Deep dives (docs/)
 
