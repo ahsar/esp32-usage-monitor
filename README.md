@@ -53,6 +53,10 @@ current weather card. These are real captures from the device — see
   chime when it asks for permission, and rising / falling chimes when a session
   succeeds or fails.
 - **Chimes** are synthesised at boot on the ES8311 codec — nothing to upload.
+- **Remote settings** — chime, brightness and the whole location (place,
+  coordinates, timezone, air station) are changeable over the status endpoint
+  with `tools/status-settings.sh`, so tuning the device never means another
+  `uploadfs`.
 - **OAuth device flow** — authorise once with `tools/authorize.py`; the refresh
   token rotates automatically and is persisted to LittleFS.
 - **WiFi setup UI** on first boot — scan, pick a network, type the password with
@@ -157,6 +161,10 @@ above. Changing `tz_offset_min` needs a note of its own — the PCF85063 stores
 *local* wall time, so the first boot after the change reads the old offset's time
 with the new offset and can be off by the difference until NTP answers (the
 firmware retries every 5 s until it does, then hourly).
+
+Most of these can also be changed without touching this file at all: see
+[Tuning it over HTTP](#tuning-it-over-http), which writes them to
+`/settings.json` on the device (layered over this file) instead.
 
 ### Authorisation (OAuth device flow)
 
@@ -294,6 +302,35 @@ and a ±60 s window blocks replays. See
 [`tools/opencode-plugin/README.md`](tools/opencode-plugin/README.md) for setup,
 and `tools/status-ping.sh` to drive the endpoint by hand.
 
+### Tuning it over HTTP
+
+The same server carries a small settings channel, so the knobs you would
+otherwise edit into `data/config.json` — and `uploadfs`, which erases the device's
+rotated OAuth token — can be changed from the couch instead:
+
+```bash
+tools/status-settings.sh                     # what is overridden right now
+tools/status-settings.sh chime=0 brightness=3
+tools/status-settings.sh place=Shanghai lat=31.2304 lon=121.4737
+tools/status-settings.sh place=              # clear it: back to config.json
+```
+
+| Key | Value |
+|---|---|
+| `chime` | `0` / `1` |
+| `brightness` | `1`–`4` (the awake panel level; `0` is the idle-dim level) |
+| `place` | city for wttr.in and the status bar |
+| `lat`, `lon` | moonrise/moonset coordinates (set together) |
+| `tz_offset_min` | minutes east of UTC (resyncs NTP + the RTC) |
+| `waqi_station` | aqicn.org station id |
+| `air_label` | Air card subtitle |
+
+They are stored in `/settings.json` on the device and layered over `config.json`,
+so a reboot keeps them and clearing one restores the configured value; the same
+signature as the state pings applies (over the raw query string), and with no
+`status_key` the device refuses settings outright rather than accepting an
+unauthenticated write. See [docs/pc-bridge.md](docs/pc-bridge.md#settings-over-the-same-endpoint).
+
 ## Project layout
 
 ```
@@ -308,12 +345,13 @@ and `tools/status-ping.sh` to drive the endpoint by hand.
 │   ├── ui_compose.cpp/h     # picks the page/cards to draw for the pager state
 │   ├── ui_model.h           # neutral UiPage / UiWeatherCard enums + UiEnv
 │   ├── pager.cpp/h          # page/card gesture + animation state machine
-│   ├── status_server.cpp/h  # HTTP status endpoint (signed state changes)
+│   ├── status_server.cpp/h  # HTTP status endpoint (signed state + settings)
 │   ├── clock_sync.cpp/h     # NTP bootstrap + RTC resync scheduling
 │   ├── usage_history.cpp/h  # RAM ring of spend samples (Trend page)
 │   ├── storage.cpp/h        # LittleFS mount helper
 │   ├── config.h             # AppConfig + LittleFS JSON loader
 │   ├── token_store.cpp/h    # OAuth tokens persisted to LittleFS
+│   ├── settings_store.cpp/h # runtime overrides persisted to /settings.json
 │   ├── http_client.cpp/h    # shared blocking HTTPS helper
 │   ├── fetch_task.cpp/h     # background fetch worker (job/result queues)
 │   ├── api_client.cpp       # OpenCode console REST client
@@ -323,7 +361,7 @@ and `tools/status-ping.sh` to drive the endpoint by hand.
 │   ├── diag.cpp/h           # boot/fetch freeze diagnostics
 │   ├── usage_display.h      # public UI drawing API
 │   ├── ui/                  # cards, trend, primitives, icons, lvgl_text, theme
-│   ├── parse/               # header-only payload parsers (usage/weather/moon/air)
+│   ├── parse/               # header-only parsers (usage/weather/moon/air/settings)
 │   ├── util/                # dependency-free helpers (host-unit-tested)
 │   ├── voice/               # I2S audio (ES8311, chimes)
 │   ├── boards/              # per-board pin definitions

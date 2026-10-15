@@ -1,4 +1,5 @@
 #include "config.h"
+#include "settings_store.h"
 #include "storage.h"
 #include "diag.h"
 #include "fetch_task.h"
@@ -30,6 +31,10 @@ static WeatherData s_weather;
 static MoonData s_moon;
 static AirData s_air;
 static AppConfig s_cfg;
+// config.json as loaded, before /settings.json is overlaid. Every settings change
+// re-derives s_cfg from this, so clearing an override restores the configured
+// value instead of leaving the override behind.
+static AppConfig s_cfgBase;
 static bool s_chimeEnabled = true;
 
 // The poll schedule and failure policy (periods, exponential backoff, the wedge
@@ -44,7 +49,12 @@ static WifiState s_wifi;
 
 // ---- display power (state-driven render + idle dim) ------------------------
 static bool     s_screenDim = false;
-static int      s_brightLevel = 2;       // BRIGHT_LUT index; 2 = 150/255
+// Awake brightness: an index into BRIGHT_LUT (see hw/display.h). The factory
+// default is named because the settings channel can *clear* its override, and a
+// cleared override has to land back here — 0 would mean the dim level, which is
+// what BRIGHT_LUT[0] is.
+static const uint8_t DEFAULT_BRIGHT_LEVEL = 2;   // BRIGHT_LUT[2] = 150/255
+static int      s_brightLevel = DEFAULT_BRIGHT_LEVEL;
 static uint32_t s_lastActivity = 0;
 static bool     s_swallowKey   = false;  // first key only wakes, doesn't act
 
@@ -154,6 +164,49 @@ static void refreshEnv(uint32_t now) {
     s_env.airLabel = s_cfg.air_label[0] ? s_cfg.air_label : s_cfg.place;
     diagSetNet(s_env.online, (int)WiFi.status(), (int)WiFi.RSSI());
     uiSetEnv(s_env);
+}
+
+// The settings channel's actor (status_server.cpp calls this with a validated,
+// range-checked set of overrides and the fields the request touched): store them
+// first, then apply them live. Storing first means the device never claims a
+// change it cannot reproduce after a reboot.
+static bool applyDeviceSettings(const DeviceSettings& st, uint16_t changed) {
+    if (!settingsSave(st)) return false;
+
+    s_cfg = s_cfgBase;
+    settingsOverlay(st, s_cfg);
+    s_chimeEnabled = s_cfg.chime;
+
+    if (changed & SET_BRIGHTNESS) {
+        // A cleared override goes back to the factory level, not to 0 (the dim
+        // level), which would leave the "awake" panel as dark as the idle one.
+        s_brightLevel = (st.set & SET_BRIGHTNESS) ? st.brightness : DEFAULT_BRIGHT_LEVEL;
+        // Leave the panel dimmed if it is dimmed; the wake path pushes the new
+        // level, so a settings write cannot un-dim someone's quiet room.
+        if (!s_screenDim) hwDisplayBrightness((uint8_t)s_brightLevel);
+    }
+
+    const uint16_t LOCATION = SET_PLACE | SET_COORDS | SET_TZ | SET_STATION | SET_AIR_LABEL;
+    if (changed & LOCATION) {
+        weatherSetLocation(s_cfg.place, s_cfg.lat, s_cfg.lon, s_cfg.tz_offset_min,
+                           s_cfg.waqi_station);
+        if (changed & SET_TZ) {
+            // Re-sync NTP (and so the RTC) in the new zone: the RTC holds local
+            // wall time, so leaving it alone would keep the old offset's time
+            // until the next hourly sync.
+            clockSyncSetOffset(s_cfg.tz_offset_min);
+            clockSyncUpdate(millis(), true);
+        }
+        // The panel is showing another place now; pull everything again instead
+        // of waiting out the weather/moon/air periods. Force every poller (the
+        // same thing a fresh WiFi association does) so the usage meter is not
+        // left on a half-updated screen.
+        pollerForceAll();
+    }
+
+    s_ivEnv.forcePending();     // refreshEnv() re-reads city/airLabel next loop
+    s_forceRender = true;
+    return true;
 }
 
 static UiData currentUiData() {
@@ -428,6 +481,17 @@ void setup() {
 
     storageMount();
     loadConfig(s_cfg);
+    s_cfgBase = s_cfg;
+    // /settings.json (written by the HTTP settings channel) overrides config.json
+    // field by field; a corrupt or missing file leaves the configured values.
+    DeviceSettings st;
+    settingsClear(st);
+    settingsLoad(st);
+    settingsOverlay(st, s_cfg);
+    if (st.set & SET_BRIGHTNESS) {
+        s_brightLevel = st.brightness;
+        hwDisplayBrightness((uint8_t)s_brightLevel);   // hwDisplayInit() left 150
+    }
     // Location and timezone come from config, so they have to land before the
     // fetch task starts (the request paths) and before the RTC seeds the system
     // clock (the UTC offset the RTC's wall time is interpreted with).
@@ -473,6 +537,8 @@ void setup() {
     pagerInit();
     trendReset();
     statusServerSetKey(s_cfg.status_key);
+    statusServerSetSettings(st);
+    statusServerSetSettingsCallback(applyDeviceSettings);
     if (statusServerAuthEnabled()) {
         Serial.println("status auth: HMAC-SHA256 enabled");
     } else {

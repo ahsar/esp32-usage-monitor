@@ -47,7 +47,9 @@ pio run -e esp32-usage-monitor -t uploadfs
 ```
 
 `workspace_id` (the `wrk_...` org id) is the only required base field. After
-editing config, re-run `uploadfs`.
+editing config, re-run `uploadfs` — except for chime, brightness, the location
+(place/coords/tz/air station): those are also settable at runtime over the
+settings channel, which needs no `uploadfs` at all (docs/pc-bridge.md).
 
 > **⚠️ Token lifecycle.** The refresh token is single-use and *rotates* on every
 > refresh; reusing an old one revokes the whole token family (then you must
@@ -83,15 +85,16 @@ x86_64-only binary and needs an arm64 replacement) is in the README,
 | `src/ui/` | Drawing impl: `cards`, `trend`, `primitives` (fonts + text helpers), `icons`, `lvgl_text`, shared palette `theme.h`. |
 | `src/usage_history.{h,cpp}` | RAM-only ring of rolling spend samples feeding the trend page. |
 | `src/fetch_task.{h,cpp}` | Background FreeRTOS worker: job/result queues, token hand-off. Threading rules in the header. |
-| `src/status_server.{h,cpp}` | HTTP status endpoint (`?state=…`), HMAC auth, chime events. |
+| `src/status_server.{h,cpp}` | HTTP status endpoint (`?state=…`) + the signed settings channel (`?chime=…`, `?place=…`, `?settings`), HMAC auth, chime events. |
 | `src/api_client.{h,cpp}` | opencode console REST client (usage + token refresh). |
 | `src/weather_client.{h,cpp}` | Weather (wttr.in), moon (MET Norway), air (waqi) transport. Location comes from `weatherSetLocation()`. |
 | `src/http_client.{h,cpp}` | Shared **blocking** HTTPS helper: DNS/handshake/read deadlines, CA-bundle verification. |
-| `src/parse/` | Header-only, host-testable payload parsers (usage/wttr/moon/air). Pure functions — test them here. |
-| `src/util/` | Dependency-free helpers (time/value/interval/trend/loc), host-unit-tested. |
+| `src/parse/` | Header-only, host-testable payload parsers (usage/wttr/moon/air/settings). Pure functions — test them here. |
+| `src/util/` | Dependency-free helpers (time/value/interval/trend/loc/url), host-unit-tested. |
 | `src/config.h` | `AppConfig` + LittleFS JSON loader (`/config.json`). Add a config field here. |
 | `src/storage.{h,cpp}` | One-shot LittleFS mount helper. |
 | `src/token_store.{h,cpp}` | OAuth tokens in `/tokens.json` + config fallback. |
+| `src/settings_store.{h,cpp}` | Settings-channel overrides in `/settings.json`, overlaid on `AppConfig` at boot. |
 | `src/clock_sync.{h,cpp}` | NTP bootstrap + RTC resync; `clockSyncValid()` gates all TLS. |
 | `src/wifi_setup.{h,cpp}` | WiFi config UI (scan list, button-based password entry). |
 | `src/frame_dump.{h,cpp}` | `-DFRAME_DUMP` screen walker streaming canvases over USB CDC. |
@@ -150,6 +153,13 @@ linked deep dive before changing the area.
   point is that rssi cannot tell them apart. See docs/network-polling.md.
 - **The boot PWRON press must not power the board off.** `loop()` consumes the
   AXP IRQ the boot press latched and only acts on a fresh one.
+- **Settings live in `/settings.json`, never back in `config.json`.** The settings
+  channel (`status_server` → `applyDeviceSettings()` in `main.cpp`) writes overrides
+  to their own file and overlays them on the config at boot, so the packed
+  `data/config.json` stays the single source of the *configured* values that
+  `tools/uploadfs_guard.py` reasons about. Clearing an override must re-derive
+  `s_cfg` from `s_cfgBase`, or the old value sticks. The write is flash, so it runs
+  on the loop task (the HTTP handler), like the token flush — never the fetch task.
 - **`uploadfs` erases the device's rotated tokens.** Run `authorize.py` first
   (see the token-lifecycle warning above); the `uploadfs` guard enforces it.
 - **`src/diag.*` is temporary but load-bearing** — it is what makes a wedged
@@ -186,7 +196,10 @@ Read the relevant one before changing that area:
   same question by hand); see the token-lifecycle warning above
 - `tools/opencode-plugin/` — OpenCode V2 plugin that drives the status endpoint
 - `tools/status-ping.sh` — signed status ping, for testing the device by hand
-- `tools/status_stub.py` — local stand-in for the status endpoint (tests the plugin + HMAC)
+- `tools/status-settings.sh` — read/change chime, brightness and the location over the
+  signed settings channel (no `uploadfs`)
+- `tools/status_stub.py` — local stand-in for the status endpoint (tests the plugin,
+  `tools/status-settings.sh` and both HMAC forms)
 - `tools/check-hosts.sh` — verify the firmware's CA bundle still covers every host it talks to
   (reads the bundle out of the *built* library). Exits non-zero when a host needs a firmware update.
 - `tools/build_fonts.py` — PRE `extra_scripts` hook that compiles `fonts/`.

@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A signed settings channel on the status endpoint.** The chime, the awake
+  brightness and the whole location can now be changed over the network instead
+  of by editing `data/config.json` and running `uploadfs` (which erases the
+  device's rotated OAuth token — see the guard below):
+
+  ```
+  tools/status-settings.sh                        # what is overridden right now
+  tools/status-settings.sh chime=0 brightness=3
+  tools/status-settings.sh place=Shanghai lat=31.2304 lon=121.4737
+  tools/status-settings.sh place=                 # clear: back to config.json
+  ```
+
+  `src/parse/settings_parse.h` is the whole decision — key names, ranges,
+  "lat and lon belong together", clearing, and the "a typo changes nothing"
+  all-or-nothing rule — and is host-tested (16 new cases); `src/settings_store.*`
+  persists the overrides to `/settings.json` and overlays them on `AppConfig` at
+  boot, so they survive a reboot and clearing one restores the configured value
+  without `config.json` ever being rewritten (it is the packed file the uploadfs
+  guard reasons about). Accepted changes are applied live: chime, brightness, the
+  request paths, an NTP resync for a new timezone, and a forced round of polls so
+  the panel does not sit on the old place until the next weather period. A
+  settings request is signed over the **raw query string** rather than a single
+  value (so every field is bound to the key), while `?state=` keeps its original
+  value-only signature and the OpenCode plugin is untouched; with no `status_key`
+  the channel answers `403` instead of accepting an unauthenticated write.
+  `tools/status-settings.sh` is the client and `tools/status_stub.py` now checks
+  both signature forms, so the tool is testable without hardware.
 - **The location is config, not code.** `place`, `lat`/`lon`, `tz_offset_min`,
   `waqi_station` and `air_label` now come from `config.json` instead of being
   written into the firmware: `place` is both the wttr.in query and the status-bar

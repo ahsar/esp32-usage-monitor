@@ -11,6 +11,8 @@
 #include "value_util.h"
 #include "interval.h"
 #include "util/loc_util.h"
+#include "util/url_util.h"
+#include "parse/settings_parse.h"
 #include "parse/usage_parse.h"
 #include "parse/weather_parse.h"
 #include "util/trend_util.h"
@@ -130,6 +132,22 @@ void test_url_encode_rejects_overflow(void) {
   TEST_ASSERT_FALSE(urlEncode("Beijing", small, sizeof(small)));
 }
 
+void test_url_decode(void) {
+  char b[64];
+  TEST_ASSERT_TRUE(urlDecode("Beijing", b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("Beijing", b);
+  TEST_ASSERT_TRUE(urlDecode("New%20York", b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("New York", b);
+  TEST_ASSERT_TRUE(urlDecode("New+York", b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("New York", b);      // '+' is the query-string space
+  TEST_ASSERT_TRUE(urlDecode("%2B08:00", b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("+08:00", b);
+  TEST_ASSERT_TRUE(urlDecode("a%2", b, sizeof(b)));
+  TEST_ASSERT_EQUAL_STRING("a%2", b);           // malformed escape passes through
+  char small[8];
+  TEST_ASSERT_FALSE(urlDecode("aaaaaaaaaaaaaaaa", small, sizeof(small)));
+}
+
 void test_tz_offset_query(void) {
   char b[16];
   TEST_ASSERT_TRUE(formatTzOffsetQuery(480, b, sizeof(b)));
@@ -191,6 +209,241 @@ void test_moon_api_path(void) {
       "/weatherapi/sunrise/3.0/moon?lat=40.7128&lon=-74.0060&offset=-05:00", b);
   char small[16];
   TEST_ASSERT_FALSE(moonApiPath(0, 0, 0, small, sizeof(small)));
+}
+
+// ---- settings_parse -------------------------------------------------------
+
+// Parse `query` into a fresh set and return whether it was accepted.
+static bool settingsQuery(const char* query, DeviceSettings& out, uint16_t& changed,
+                          char* err = nullptr, size_t errCap = 0) {
+  settingsClear(out);
+  changed = SET_NONE;
+  return settingsFromQuery(query, out, changed, err, errCap);
+}
+
+void test_settings_query_single(void) {
+  DeviceSettings s;
+  uint16_t changed = SET_NONE;
+  TEST_ASSERT_TRUE(settingsQuery("chime=0", s, changed));
+  TEST_ASSERT_EQUAL_HEX16(SET_CHIME, changed);
+  TEST_ASSERT_EQUAL_HEX16(SET_CHIME, s.set);
+  TEST_ASSERT_EQUAL_INT(0, s.chime);
+  TEST_ASSERT_EQUAL_INT(0, s.set & SET_BRIGHTNESS);   // untouched stays clear
+}
+
+void test_settings_query_multi_and_encoding(void) {
+  DeviceSettings s;
+  uint16_t changed = SET_NONE;
+  TEST_ASSERT_TRUE(settingsQuery("chime=1&brightness=4&place=New%20York", s, changed));
+  TEST_ASSERT_EQUAL_HEX16(SET_CHIME | SET_BRIGHTNESS | SET_PLACE, changed);
+  TEST_ASSERT_EQUAL_INT(4, s.brightness);
+  TEST_ASSERT_EQUAL_STRING("New York", s.place);
+
+  TEST_ASSERT_TRUE(settingsQuery("place=New+York", s, changed));
+  TEST_ASSERT_EQUAL_STRING("New York", s.place);
+}
+
+void test_settings_query_location_group(void) {
+  DeviceSettings s;
+  uint16_t changed = SET_NONE;
+  TEST_ASSERT_TRUE(settingsQuery(
+      "place=Shanghai&lat=31.2304&lon=121.4737&tz_offset_min=480&waqi_station=@1437"
+      "&air_label=Shanghai%20US", s, changed));
+  TEST_ASSERT_EQUAL_HEX16(SET_PLACE | SET_COORDS | SET_TZ | SET_STATION | SET_AIR_LABEL,
+                          changed);
+  TEST_ASSERT_EQUAL_STRING("Shanghai", s.place);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 31.2304f, s.lat);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 121.4737f, s.lon);
+  TEST_ASSERT_EQUAL_INT(480, s.tz_offset_min);
+  TEST_ASSERT_EQUAL_STRING("@1437", s.waqi_station);
+  TEST_ASSERT_EQUAL_STRING("Shanghai US", s.air_label);
+
+  // A negative offset and negative coordinates are fine too.
+  TEST_ASSERT_TRUE(settingsQuery("lat=40.7128&lon=-74.0060&tz_offset_min=-300", s, changed));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, -74.0060f, s.lon);
+  TEST_ASSERT_EQUAL_INT(-300, s.tz_offset_min);
+}
+
+void test_settings_query_empty_value_clears(void) {
+  DeviceSettings s;
+  uint16_t changed = SET_NONE;
+  TEST_ASSERT_TRUE(settingsQuery("place=Shanghai&lat=31&lon=121&chime=0", s, changed));
+  TEST_ASSERT_EQUAL_HEX16(SET_PLACE | SET_COORDS | SET_CHIME, s.set);
+
+  // Clearing reports the field as touched, so the caller re-derives it from
+  // config.json rather than keeping the override.
+  TEST_ASSERT_TRUE(settingsFromQuery("place=&chime=", s, changed, nullptr, 0));
+  TEST_ASSERT_EQUAL_HEX16(SET_PLACE | SET_CHIME, changed);
+  TEST_ASSERT_EQUAL_HEX16(SET_COORDS, s.set);        // coords untouched
+  TEST_ASSERT_EQUAL_STRING("", s.place);
+}
+
+void test_settings_query_rejects_unknown_key(void) {
+  DeviceSettings s;
+  uint16_t changed = SET_NONE;
+  char err[96] = {0};
+  TEST_ASSERT_FALSE(settingsQuery("chime=1&brightnes=4", s, changed, err, sizeof(err)));
+  TEST_ASSERT_TRUE(err[0] != 0);
+  TEST_ASSERT_EQUAL_HEX16(SET_NONE, s.set);          // nothing half-applied
+}
+
+void test_settings_query_rejects_out_of_range(void) {
+  DeviceSettings s;
+  uint16_t changed = SET_NONE;
+  char err[96];
+  TEST_ASSERT_FALSE(settingsQuery("brightness=0", s, changed, err, sizeof(err)));
+  TEST_ASSERT_FALSE(settingsQuery("brightness=5", s, changed, err, sizeof(err)));
+  TEST_ASSERT_TRUE(settingsQuery("brightness=", s, changed, err, sizeof(err)));   // clear
+  TEST_ASSERT_EQUAL_HEX16(SET_NONE, s.set);
+  TEST_ASSERT_TRUE(settingsQuery("brightness=1", s, changed, err, sizeof(err)));  // in range
+  TEST_ASSERT_FALSE(settingsQuery("chime=2", s, changed, err, sizeof(err)));
+  TEST_ASSERT_FALSE(settingsQuery("tz_offset_min=961", s, changed, err, sizeof(err)));
+  TEST_ASSERT_TRUE(settingsQuery("tz_offset_min=960", s, changed, err, sizeof(err)));
+  TEST_ASSERT_FALSE(settingsQuery("lat=91&lon=0", s, changed, err, sizeof(err)));
+  TEST_ASSERT_FALSE(settingsQuery("lat=0&lon=181", s, changed, err, sizeof(err)));
+  // A rejected query never leaves a partial override behind.
+  TEST_ASSERT_EQUAL_HEX16(SET_NONE, s.set);
+}
+
+void test_settings_query_rejects_junk_numbers(void) {
+  // strtol()/strtof() stop at the first bad character; "4x" must not become 4.
+  DeviceSettings s;
+  uint16_t changed = SET_NONE;
+  char err[96];
+  TEST_ASSERT_FALSE(settingsQuery("brightness=4x", s, changed, err, sizeof(err)));
+  TEST_ASSERT_FALSE(settingsQuery("lat=abc&lon=1", s, changed, err, sizeof(err)));
+  TEST_ASSERT_FALSE(settingsQuery("lat=12abc&lon=1", s, changed, err, sizeof(err)));
+  TEST_ASSERT_FALSE(settingsQuery("tz_offset_min=+8:00", s, changed, err, sizeof(err)));
+}
+
+void test_settings_query_rejects_half_a_location(void) {
+  DeviceSettings s;
+  uint16_t changed = SET_NONE;
+  char err[96];
+  TEST_ASSERT_FALSE(settingsQuery("lat=31.23", s, changed, err, sizeof(err)));
+  TEST_ASSERT_FALSE(settingsQuery("lon=121.47", s, changed, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_HEX16(SET_NONE, s.set);
+}
+
+void test_settings_query_rejects_malformed(void) {
+  DeviceSettings s;
+  uint16_t changed = SET_NONE;
+  char err[96];
+  TEST_ASSERT_FALSE(settingsQuery("chime", s, changed, err, sizeof(err)));      // no '='
+  TEST_ASSERT_FALSE(settingsQuery("settings", s, changed, err, sizeof(err)));   // read-only token
+  TEST_ASSERT_FALSE(settingsQuery("", s, changed, err, sizeof(err)));
+}
+
+void test_settings_query_rejects_long_values(void) {
+  DeviceSettings s;
+  uint16_t changed = SET_NONE;
+  char err[96];
+  char q[128];
+  // place[48] holds 47 characters plus the NUL.
+  snprintf(q, sizeof(q), "place=%s", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); // 48
+  TEST_ASSERT_FALSE(settingsQuery(q, s, changed, err, sizeof(err)));
+  snprintf(q, sizeof(q), "place=%s", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");  // 47
+  TEST_ASSERT_TRUE(settingsQuery(q, s, changed, err, sizeof(err)));
+}
+
+void test_settings_query_all_fields_at_once(void) {
+  // The transport accepts a 255-byte query; the longest legitimate one must parse
+  // (and fit the per-pair buffer) rather than being rejected as malformed.
+  DeviceSettings s;
+  uint16_t changed = SET_NONE;
+  char err[96];
+  char q[256];
+  snprintf(q, sizeof(q),
+           "chime=1&brightness=4&place=%s&lat=-89.9999&lon=-179.9999"
+           "&tz_offset_min=-960&waqi_station=%s&air_label=%s",
+           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+           "@1234567890123456789012",
+           "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+  TEST_ASSERT_TRUE(settingsQuery(q, s, changed, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_HEX16(SET_CHIME | SET_BRIGHTNESS | SET_PLACE | SET_COORDS |
+                          SET_TZ | SET_STATION | SET_AIR_LABEL, changed);
+  TEST_ASSERT_EQUAL_INT(47, (int)strlen(s.place));
+}
+
+void test_settings_json_round_trip(void) {
+  DeviceSettings s, back;
+  uint16_t changed = SET_NONE;
+  TEST_ASSERT_TRUE(settingsQuery(
+      "chime=0&brightness=4&place=Shanghai&lat=31.2304&lon=121.4737"
+      "&tz_offset_min=480&waqi_station=@1437&air_label=Shanghai%20US", s, changed));
+
+  char json[512];
+  TEST_ASSERT_TRUE(settingsToJson(s, json, sizeof(json)));
+  TEST_ASSERT_TRUE(strstr(json, "\"place\":\"Shanghai\"") != nullptr);
+  TEST_ASSERT_TRUE(strstr(json, "\"chime\":0") != nullptr);
+
+  settingsClear(back);
+  uint16_t changedBack = SET_NONE;
+  TEST_ASSERT_TRUE(settingsFromJson(json, back, changedBack));
+  TEST_ASSERT_EQUAL_HEX16(s.set, back.set);
+  TEST_ASSERT_EQUAL_INT(s.chime, back.chime);
+  TEST_ASSERT_EQUAL_INT(s.brightness, back.brightness);
+  TEST_ASSERT_EQUAL_STRING(s.place, back.place);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, s.lat, back.lat);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, s.lon, back.lon);
+  TEST_ASSERT_EQUAL_INT(s.tz_offset_min, back.tz_offset_min);
+  TEST_ASSERT_EQUAL_STRING(s.waqi_station, back.waqi_station);
+  TEST_ASSERT_EQUAL_STRING(s.air_label, back.air_label);
+}
+
+void test_settings_json_empty_and_small_buffer(void) {
+  DeviceSettings s;
+  settingsClear(s);
+  char json[64];
+  TEST_ASSERT_TRUE(settingsToJson(s, json, sizeof(json)));
+  TEST_ASSERT_EQUAL_STRING("{}", json);
+
+  char small[8];
+  DeviceSettings full;
+  uint16_t changed = SET_NONE;
+  TEST_ASSERT_TRUE(settingsQuery("place=Shanghai&lat=31&lon=121&brightness=3",
+                                 full, changed));
+  TEST_ASSERT_FALSE(settingsToJson(full, small, sizeof(small)));
+}
+
+void test_settings_json_rejects_bad_documents(void) {
+  DeviceSettings s;
+  uint16_t changed = SET_NONE;
+  char json[512];
+  settingsClear(s);
+
+  TEST_ASSERT_FALSE(settingsFromJson("not json", s, changed));
+  TEST_ASSERT_FALSE(settingsFromJson("[1,2]", s, changed));            // not an object
+  TEST_ASSERT_FALSE(settingsFromJson("{\"brightness\":9}", s, changed));
+  TEST_ASSERT_FALSE(settingsFromJson("{\"chime\":\"maybe\"}", s, changed));
+  TEST_ASSERT_FALSE(settingsFromJson("{\"lat\":31.2}", s, changed));   // half a location
+  TEST_ASSERT_EQUAL_HEX16(SET_NONE, s.set);
+
+  // Unknown keys are ignored (forward compatibility), the known ones still load.
+  settingsClear(s);
+  TEST_ASSERT_TRUE(settingsFromJson("{\"future\":1,\"place\":\"Oslo\"}", s, changed));
+  TEST_ASSERT_EQUAL_HEX16(SET_PLACE, s.set);
+  TEST_ASSERT_EQUAL_STRING("Oslo", s.place);
+
+  TEST_ASSERT_TRUE(settingsFromJson("{\"chime\":true,\"brightness\":2}", s, changed));
+  TEST_ASSERT_EQUAL_INT(1, s.chime);
+  TEST_ASSERT_EQUAL_INT(2, s.brightness);
+}
+
+void test_settings_describe(void) {
+  DeviceSettings s;
+  char out[512];
+  settingsClear(s);
+  settingsDescribe(s, out, sizeof(out));
+  TEST_ASSERT_EQUAL_STRING("no overrides (everything follows config.json)\n", out);
+
+  uint16_t changed = SET_NONE;
+  TEST_ASSERT_TRUE(settingsQuery("chime=0&place=Shanghai&tz_offset_min=480", s, changed));
+  settingsDescribe(s, out, sizeof(out));
+  TEST_ASSERT_TRUE(strstr(out, "chime          = off") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "place          = Shanghai") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "tz_offset_min  = 480") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "brightness") == nullptr);   // unset: not listed
 }
 
 // ---- usageParse -----------------------------------------------------------
@@ -529,12 +782,28 @@ int main(int, char**) {
   RUN_TEST(test_aqi_category);
   RUN_TEST(test_url_encode);
   RUN_TEST(test_url_encode_rejects_overflow);
+  RUN_TEST(test_url_decode);
   RUN_TEST(test_tz_offset_query);
   RUN_TEST(test_tz_offset_query_clamps);
   RUN_TEST(test_wttr_one_line_path);
   RUN_TEST(test_wttr_path_rejects_bad_input);
   RUN_TEST(test_wttr_path_worst_case_place);
   RUN_TEST(test_moon_api_path);
+  RUN_TEST(test_settings_query_single);
+  RUN_TEST(test_settings_query_multi_and_encoding);
+  RUN_TEST(test_settings_query_location_group);
+  RUN_TEST(test_settings_query_empty_value_clears);
+  RUN_TEST(test_settings_query_rejects_unknown_key);
+  RUN_TEST(test_settings_query_rejects_out_of_range);
+  RUN_TEST(test_settings_query_rejects_junk_numbers);
+  RUN_TEST(test_settings_query_rejects_half_a_location);
+  RUN_TEST(test_settings_query_rejects_malformed);
+  RUN_TEST(test_settings_query_rejects_long_values);
+  RUN_TEST(test_settings_query_all_fields_at_once);
+  RUN_TEST(test_settings_json_round_trip);
+  RUN_TEST(test_settings_json_empty_and_small_buffer);
+  RUN_TEST(test_settings_json_rejects_bad_documents);
+  RUN_TEST(test_settings_describe);
   RUN_TEST(test_usage_parse);
   RUN_TEST(test_usage_parse_clamps_and_zero_limit);
   RUN_TEST(test_usage_parse_bad_input);

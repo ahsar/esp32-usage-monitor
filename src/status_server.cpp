@@ -97,8 +97,9 @@ static bool headerValue(const String& req, const char* name, char* out, size_t o
   return false;
 }
 
-// True when the request is allowed to change state.
-static bool authorize(const String& req, const char* state) {
+// True when the request is allowed to change state. `payload` is what gets
+// signed: the state name for `?state=`, the raw query string for settings.
+static bool authorize(const String& req, const char* payload) {
   if (!statusServerAuthEnabled()) return true;   // dev mode, warned at boot
 
   char ts[24], sig[80];
@@ -106,8 +107,11 @@ static bool authorize(const String& req, const char* state) {
   if (!headerValue(req, "X-Sig", sig, sizeof(sig))) return false;
   if (ts[0] == 0) return false;
 
-  char msg[64];
-  snprintf(msg, sizeof(msg), "%s|%s", state, ts);
+  // Sized for a full settings query: the longest place/station/air_label plus the
+  // keys and separators, which is what the client hashes too.
+  char msg[256];
+  int n = snprintf(msg, sizeof(msg), "%s|%s", payload, ts);
+  if (n <= 0 || (size_t)n >= sizeof(msg)) return false;   // too long to sign
 
   uint8_t mac[32], got[32];
   hmacSha256(s_key, s_keyLen, msg, strlen(msg), mac);
@@ -134,10 +138,16 @@ static St s_state = ST_IDLE;
 static uint32_t s_since = 0;
 static StatusEvent s_pending = STATUS_EV_NONE;
 static void (*s_wakeCb)() = nullptr;
+static DeviceSettings s_settings;
+static bool (*s_settingsCb)(const DeviceSettings&, uint16_t) = nullptr;
 static uint32_t s_lastRejectLog = 0;
 
 void statusServerBegin() { s_server.begin(); }
 void statusServerSetWakeCallback(void (*cb)()) { s_wakeCb = cb; }
+void statusServerSetSettings(const DeviceSettings& s) { s_settings = s; }
+void statusServerSetSettingsCallback(bool (*cb)(const DeviceSettings&, uint16_t)) {
+  s_settingsCb = cb;
+}
 
 bool statusServerThinking() {
   return s_state == ST_RUNNING || s_state == ST_WAITING;
@@ -162,12 +172,82 @@ static void enterActive(St next) {
   if (s_wakeCb) s_wakeCb();
 }
 
-static void respond(WiFiClient& client, const char* status) {
+static void respond(WiFiClient& client, const char* status, const char* body = "OK") {
   client.print("HTTP/1.1 ");
   client.print(status);
-  client.print("\r\nConnection: close\r\nContent-Length: 2\r\n\r\nOK");
+  client.print("\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: ");
+  client.print((unsigned)strlen(body));
+  client.print("\r\n\r\n");
+  client.print(body);
   delay(10);
   client.stop();
+}
+
+// The query of the request line, verbatim and undecoded (no leading '?'), e.g.
+// "chime=0&place=Shanghai". This exact string is what the settings signature
+// covers, so it must be taken as bytes off the wire.
+static bool requestQuery(const String& req, char* out, size_t cap) {
+  int g = req.indexOf("GET ");
+  if (g < 0) return false;
+  int sp = req.indexOf(' ', g + 4);          // end of the request target
+  if (sp < 0) return false;
+  int q = req.indexOf('?', g + 4);
+  if (q < 0 || q >= sp) return false;
+  size_t n = (size_t)(sp - q - 1);
+  if (n == 0 || n + 1 > cap) return false;
+  memcpy(out, req.c_str() + q + 1, n);
+  out[n] = '\0';
+  return true;
+}
+
+// A settings request: everything except a `?state=` (which keeps the original
+// value-only signature so the OpenCode plugin is untouched). `?settings` on its
+// own reads the current overrides back.
+static void handleSettings(WiFiClient& client, const String& req, const char* query) {
+  if (!statusServerAuthEnabled()) {
+    Serial.println("settings: REFUSED (no status_key configured)");
+    respond(client, "403 Forbidden", "settings require status_key\n");
+    return;
+  }
+
+  // Auth before parsing: an unauthenticated request gets no feedback about the
+  // parser at all, and the signature covers the raw query either way.
+  if (!authorize(req, query)) {
+    if (millis() - s_lastRejectLog > 5000) {
+      s_lastRejectLog = millis();
+      Serial.printf("settings: REJECTED from %s (bad/missing signature)\n",
+                    client.remoteIP().toString().c_str());
+    }
+    respond(client, "401 Unauthorized");
+    return;
+  }
+
+  bool readOnly = !strcmp(query, "settings");
+  DeviceSettings next = s_settings;
+  uint16_t changed = SET_NONE;
+  char err[96] = {0};
+
+  if (!readOnly && !settingsFromQuery(query, next, changed, err, sizeof(err)))
+    return respond(client, "400 Bad Request", err[0] ? err : "bad settings query");
+
+  if (readOnly || !s_settingsCb) {
+    char body[512];
+    settingsDescribe(s_settings, body, sizeof(body));
+    respond(client, "200 OK", body);
+    return;
+  }
+
+  if (!s_settingsCb(next, changed)) {
+    Serial.printf("settings: apply failed for query '%s'\n", query);
+    respond(client, "500 Internal Server Error", "could not store settings\n");
+    return;
+  }
+
+  s_settings = next;
+  Serial.printf("settings: %s\n", query);
+  char body[512];
+  settingsDescribe(s_settings, body, sizeof(body));
+  respond(client, "200 OK", body);
 }
 
 extern "C" void handleHttpStatus() {
@@ -191,6 +271,15 @@ extern "C" void handleHttpStatus() {
 
   if (req.indexOf("GET ") < 0) {
     respond(client, "405 Method Not Allowed");
+    return;
+  }
+
+  // Settings first: a `?state=` request keeps the original protocol, anything
+  // else that is a query is the settings channel.
+  char query[256];
+  bool hasQuery = requestQuery(req, query, sizeof(query));
+  if (hasQuery && strncmp(query, "state=", 6) != 0) {
+    handleSettings(client, req, query);
     return;
   }
 

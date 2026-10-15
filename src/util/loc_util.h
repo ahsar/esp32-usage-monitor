@@ -2,32 +2,10 @@
 // Dependency-free location helpers: build the request paths that carry the
 // device's configured place, and format a UTC offset the way the APIs want. No
 // Arduino headers, so this is compiled and unit-tested on the host
-// (test/test_util).
+// (test/test_util). The percent-encoding itself lives in url_util.h.
 #include <stddef.h>
 #include <stdio.h>
-
-// Percent-encode `src` for use in a path segment or query value. The unreserved
-// set (ALPHA / DIGIT / "-._~") passes through; everything else becomes %XX.
-// Returns false when the encoded result (plus its NUL) does not fit in `cap`.
-inline bool urlEncode(const char* src, char* out, size_t cap) {
-  if (!out || cap == 0) return false;
-  size_t n = 0;
-  for (const char* p = src; p && *p; p++) {
-    unsigned char c = (unsigned char)*p;
-    bool safe = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' || c == '~';
-    if (safe) {
-      if (n + 1 >= cap) return false;
-      out[n++] = (char)c;
-    } else {
-      if (n + 3 >= cap) return false;
-      snprintf(out + n, 4, "%%%02X", c);
-      n += 3;
-    }
-  }
-  out[n] = '\0';
-  return true;
-}
+#include "util/url_util.h"
 
 // Minutes east of UTC -> the `offset=` value MET Norway expects ("+08:00"),
 // URL-encoded because an unencoded '+' means "space" in a query string. The
