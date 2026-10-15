@@ -24,6 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A worker stuck inside an SDK call that ignores the phase timeouts is now
   detected by its job age (4 min) and restarted, with the offending host paused,
   instead of silently freezing the whole poll loop forever.
+- **Holding the middle (PWR) key no longer powers the board straight back off.**
+  The key is the AXP `PWRON` input, so the press that switched the device on also
+  latched the AXP long-press IRQ while the board was still booting, and `loop()`
+  shut it down on its first pass — the screen flashed, then went black. `loop()`
+  now consumes the IRQ the boot press produced and only acts on a fresh one. The
+  AXP PWRON timers were retuned (ON 128 ms / OFF 10 s / IRQ 2.5 s) so a slow
+  power-on hold is no longer hard-cut at 4 s.
+- Releasing `Key1` during the boot WiFi connect no longer aborts it: on the 2.16
+  boards `Key1` is the PWR key, and the setup screen treated its release as
+  "choose another network" — which scanned (disconnecting the in-flight
+  `WiFi.begin()`) instead.
 
 ### Changed
 
@@ -38,6 +49,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 10 s diagnostic line carries the in-flight job, its age and the *worker's*
   own phase (`job=… age=… fbc=… host=…`, kept apart from the loop's breadcrumb,
   which re-rendering overwrites), so a stalled fetch says where it is stalled.
+- **The poll schedule and failure policy moved out of `main.cpp` into
+  `src/poller.{h,cpp}`** (timers, selection priority, exponential backoff, the
+  wedge ladder). It is dependency-free, so it is now covered by
+  `test/test_poller/` instead of only being readable; `main.cpp` keeps the actor
+  side (restarting the fetch task) and the wiring.
+- **The payload structs moved into `src/data_types.h`** (with `FetchJob`), so
+  the UI layer, the pager and the header-only parsers no longer include the
+  network client headers — and, through them, the OAuth token types. `apiFetch*`
+  still live in the clients; only the data crossed over.
+- **The generated Montserrat fonts moved from `src/ui/fonts/` to `fonts/`.**
+  PlatformIO only auto-collects `src/`, so `tools/build_fonts.py` (a PRE
+  `extra_scripts` hook) adds them back to the build; a repo-root `.ignore` keeps
+  ~29k generated lines out of ripgrep/fd results.
+- `AGENTS.md` was split: it keeps the build commands, the module map and the hard
+  invariants, and the subsystem deep dives now live under `docs/` (linked from
+  it) instead of inflating the file every agent session loads.
 
 ### Added
 
@@ -51,16 +78,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cues at boot (rising = done, falling = failed, double blip = needs you) and
   streams them through the existing ES8311 path. No raw file, so activating a
   chime never needs an `uploadfs` (which would erase the rotated tokens).
-- **IMU gestures.** `src/gestures.*` is now the single IMU sampling point
-  (shake detection moved out of `easter_egg.cpp`): double-tap pages, pickup
-  wakes, face-down blanks the panel, and a gyro twist steps pages/cards. The
-  pure classifier lives in `src/util/gesture_util.h` and is host-tested.
 - **Trend page.** A fourth page plots rolling-window spend: current cost,
   burn rate (`$/h`), time-to-limit, a cumulative curve and per-poll bars, from
   the RAM-only ring in `src/usage_history.*`. Cost math is in
   `src/util/trend_util.h` (host-tested); `UsageData` now carries the
   `*MicroCents` fields.
-- New `config.json` toggles: `chime`, `imu_gestures`.
+- New `config.json` toggle: `chime`.
 - **Status-endpoint HMAC auth.** The port-80 endpoint now requires an
   HMAC-SHA256 signature (`X-Sig` / `X-Ts`) over `"<state>|<unixSeconds>"`,
   verified in constant time against `status_key` from `config.json`, with a
@@ -90,12 +113,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the WiFi setup screen, the shutdown banner and the `die()` report — is 4bpp
   Montserrat smooth instead of jagged 1-bit u8g2 glyphs. Layout, shapes,
   animations and the pager are unchanged.
-- Ship our own Montserrat builds (`src/ui/fonts/`, via `lv_font_conv`) so the
+- Ship our own Montserrat builds (`fonts/`, via `lv_font_conv`) so the
   glyphs the UI actually needs are present: LVGL's built-ins only cover ASCII +
   `°` + `•`, which left the air card's `µg/m³` rendering as garbage. Dropping
   their FontAwesome glyphs also keeps the font data about half the size.
 - `tools/frame_dump.py`: rebuild the `-DFRAME_DUMP` screen walk as PNGs for
   host-side layout checks.
+
+### Removed
+
+- **The 555 easter egg.** `src/easter_egg.*` and `data/555_audio.raw` are gone;
+  nothing plays on a shake any more. The "Thinking…" animation keeps the 555
+  artwork.
+- **All IMU/gesture handling.** `src/gestures.*`, `src/hw/imu.*` and
+  `src/util/gesture_util.h` are gone, the QMI8658 is no longer initialised, and
+  the `imu_gestures` config toggle is dropped. Face-down blanking was the only
+  path that could blank the panel while the firmware kept running, and a false
+  positive (`hwDisplayBrightnessRaw(0)` with touch/key disabled) was
+  indistinguishable from a dead device — the panel is now only ever dimmed.
+  Navigation is touch + Key1; `EV_SHAKE`/double-tap/pickup/rotate are gone too.
 
 ### Changed
 

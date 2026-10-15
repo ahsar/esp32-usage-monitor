@@ -8,7 +8,7 @@ and a clock — and the panel reacts while the agent is working.
   <img src="docs/screens/usage.png" width="300" alt="Usage page with the 5-hour, weekly and monthly meters">
 </p>
 
-Four pages (Weather · Usage · Trend · Clock) driven by touch, twist or key, five
+Four pages (Weather · Usage · Trend · Clock) driven by touch or key, five
 weather cards, an OpenCode status bridge with chimes, and a Trend page that plots
 spend rate and time-to-limit.
 
@@ -40,8 +40,8 @@ current weather card. These are real captures from the device — see
 
 ## Features
 
-- **Four horizontal pages** — Weather ↔ Usage ↔ Trend ↔ Clock: swipe, tap, twist
-  the device, or press Key1.
+- **Four horizontal pages** — Weather ↔ Usage ↔ Trend ↔ Clock: swipe, tap or
+  press Key1.
 - **Five weather cards** — Now → Sun → Air → Moon → Moonrise/Moonset.
 - **Usage meters** — 5-hour rolling / weekly / monthly, each with a reset
   countdown; the bars go green, yellow above 30% and red above 60%.
@@ -52,19 +52,14 @@ current weather card. These are real captures from the device — see
   "Thinking…" animation while the agent works, "Needs you" plus an attention
   chime when it asks for permission, and rising / falling chimes when a session
   succeeds or fails.
-- **Chimes** are synthesised at boot on the ES8311 codec — nothing to upload. The
-  555 easter egg (`data/555_audio.raw`) is the only audio file.
-- **IMU gestures** (QMI8658) — shake plays the 555 easter egg, double-tap
-  advances, twist left/right steps pages or cards, lifting the device wakes it
-  and face-down blanks the panel.
+- **Chimes** are synthesised at boot on the ES8311 codec — nothing to upload.
 - **OAuth device flow** — authorise once with `tools/authorize.py`; the refresh
   token rotates automatically and is persisted to LittleFS.
 - **WiFi setup UI** on first boot — scan, pick a network, type the password with
   the touch keyboard or the two keys.
 - **Glanceable power** — 30 s without input dims the panel to 50/255 and any
-  touch, key or status event wakes it. It only ever blanks while the device is
-  face-down, and a frame is re-rendered and pushed only when something on it
-  actually changes.
+  touch, key or status event wakes it. The panel is never blanked, and a frame is
+  re-rendered and pushed only when something on it actually changes.
 
 ## Hardware
 
@@ -73,8 +68,8 @@ current weather card. These are real captures from the device — see
 - **Display**: 480×480 rounded-square AMOLED (CO5300, QSPI). The UI is authored
   on a 184×224 logical grid, rasterised at 2× and blitted as a 368×448 canvas
   centred in the panel
-- **Touch**: CST9220 · **IMU**: QMI8658 · **RTC**: PCF85063 · **PMU**: AXP2101
-- **Audio**: ES8311 codec + PA (chimes and the easter egg)
+- **Touch**: CST9220 · **RTC**: PCF85063 · **PMU**: AXP2101
+- **Audio**: ES8311 codec + PA (chimes)
 - **Keys**: Key1 (middle, PWR), Key2 (left, IO18), BOOT (right)
 
 The current build targets the 2.16 board (`-DBOARD_WAVESHARE_ESP32S3_TOUCH_AMOLED_2_16`
@@ -125,8 +120,7 @@ the build today.
   "poll_air_s": 3600,
   "poll_moon_s": 43200,
 
-  "chime": true,
-  "imu_gestures": true
+  "chime": true
 }
 ```
 
@@ -143,7 +137,6 @@ the build today.
 | `poll_air_s` | `3600` | Air-quality poll period |
 | `poll_moon_s` | `43200` | Moon poll period |
 | `chime` | `true` | Play a chime when the agent finishes or needs you |
-| `imu_gestures` | `true` | Shake / double-tap / pickup / face-down / twist |
 
 ### Authorisation (OAuth device flow)
 
@@ -176,7 +169,7 @@ pio run -e esp32-usage-monitor
 # upload firmware
 pio run -e esp32-usage-monitor -t upload
 
-# upload filesystem (config.json, easter-egg assets)
+# upload filesystem (config.json, 555 artwork)
 pio run -e esp32-usage-monitor -t uploadfs
 
 # upload both
@@ -202,12 +195,11 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
     connects
   - The on-screen touch keyboard does the same thing directly
 - **Pages.** Swipe left/right (or tap) to move between Weather / Usage / Trend /
-  Clock. On the Weather page, swipe up/down for the five cards. Twisting the
-  device left or right steps one page or card, and a double-tap advances.
+  Clock. On the Weather page, swipe up/down for the five cards.
 - **Key1** cycles pages, and dismisses the "Thinking…" / "Needs you" animation.
-- **Shake** plays the 555 easter egg; **lifting** the device wakes the panel;
-  **face-down** blanks it until you pick it up.
-- **Power key**: hold ~4 s to shut down.
+- **Power key** (middle, the AXP `PWRON` input): tap to power on, hold ~2.5 s to
+  shut down. The press that switched the device on is ignored, so holding the key
+  a moment too long will not power it straight back off.
 
 ## Status bridge (OpenCode → device)
 
@@ -234,17 +226,16 @@ and `tools/status-ping.sh` to drive the endpoint by hand.
 ├── data/
 │   ├── config.json          # runtime config (gitignored)
 │   ├── config.json.example  # config template
-│   ├── 555_audio.raw        # easter-egg audio
-│   └── 555.raw              # easter-egg artwork
+│   └── 555.raw              # 555 artwork (Thinking… animation)
 ├── src/
-│   ├── main.cpp             # setup/loop, poll schedule, render + push
+│   ├── main.cpp             # setup/loop, UI frame gate, idle/dim, wiring
+│   ├── poller.cpp/h         # poll schedule + backoff + wedge ladder (tested)
+│   ├── data_types.h         # shared payload structs + FetchJob
 │   ├── ui_compose.cpp/h     # picks the page/cards to draw for the pager state
 │   ├── ui_model.h           # neutral UiPage / UiWeatherCard enums + UiEnv
 │   ├── pager.cpp/h          # page/card gesture + animation state machine
 │   ├── status_server.cpp/h  # HTTP status endpoint (signed state changes)
 │   ├── clock_sync.cpp/h     # NTP bootstrap + RTC resync scheduling
-│   ├── gestures.cpp/h       # IMU sampling (shake / tap / pickup / face-down)
-│   ├── easter_egg.cpp/h     # 555 playback
 │   ├── usage_history.cpp/h  # RAM ring of spend samples (Trend page)
 │   ├── storage.cpp/h        # LittleFS mount helper
 │   ├── config.h             # AppConfig + LittleFS JSON loader
@@ -258,13 +249,14 @@ and `tools/status-ping.sh` to drive the endpoint by hand.
 │   ├── diag.cpp/h           # boot/fetch freeze diagnostics
 │   ├── usage_display.h      # public UI drawing API
 │   ├── ui/                  # cards, trend, primitives, icons, lvgl_text, theme
-│   │   └── fonts/           # own Montserrat builds (lv_font_ui_*.c)
 │   ├── parse/               # header-only payload parsers (usage/weather/moon/air)
 │   ├── util/                # dependency-free helpers (host-unit-tested)
 │   ├── voice/               # I2S audio (ES8311, chimes)
 │   ├── boards/              # per-board pin definitions
-│   └── hw/                  # display, input, power, imu, rtc, expander, net
-├── test/test_util/          # host unit tests (pio test -e native)
+│   └── hw/                  # display, input, power, rtc, expander, net
+├── fonts/                   # own Montserrat builds (lv_font_ui_*.c, generated)
+├── docs/                    # subsystem deep dives (linked from AGENTS.md)
+├── test/                    # host unit tests (pio test -e native)
 ├── tools/                   # PC-side scripts + the OpenCode plugin
 └── platformio.ini           # PlatformIO config
 ```
@@ -272,9 +264,10 @@ and `tools/status-ping.sh` to drive the endpoint by hand.
 ## Tests
 
 The pure helpers under `src/util/` (epoch/date parsing, weather-icon kind, moon
-phase, AQI label, gesture classifier, trend math, `Interval`) and the header-only
-parsers under `src/parse/` (usage meters, wttr one-line, moon/air JSON) are free
-of Arduino dependencies and covered by host unit tests — no hardware needed:
+phase, AQI label, trend math, `Interval`), the header-only
+parsers under `src/parse/` (usage meters, wttr one-line, moon/air JSON) and the
+poll scheduler in `src/poller.cpp` are free of Arduino and hardware dependencies
+and covered by host unit tests — no hardware needed:
 
 ```bash
 pio test -e native
