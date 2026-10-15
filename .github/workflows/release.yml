@@ -1,0 +1,46 @@
+name: Release
+
+# Publishing a tag publishes a GitHub Release whose notes are the matching
+# `## [X.Y.Z]` section of CHANGELOG.md — so cutting the changelog and pushing the
+# tag is the whole release procedure. Uses the workflow's own GITHUB_TOKEN (the
+# runner image ships `gh`), so no extra secret is needed.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # create the release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create the release from CHANGELOG.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+
+          # Re-running a tag push must not fail the workflow.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists — nothing to do"
+            exit 0
+          fi
+
+          # index() instead of a regex: the heading contains '[' and '.'.
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { inside = 1; next }
+            inside && index($0, "## [") == 1 { exit }
+            inside { print }
+          ' CHANGELOG.md > notes.md
+
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md has no '## [$version]' section — cut it before tagging" >&2
+            exit 1
+          fi
+
+          gh release create "$tag" --title "$tag" --notes-file notes.md
