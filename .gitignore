@@ -4,6 +4,9 @@
 *.elf
 *.map
 data/config.json
+# tools/uploadfs_guard.py bookkeeping — host-side only, and it cannot live in
+# data/: that directory is packed into the LittleFS image sent to the device.
+.uploadfs-state.json
 __pycache__/
 
 # Local/IDE + build artifacts

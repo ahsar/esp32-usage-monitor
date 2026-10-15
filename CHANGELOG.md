@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`uploadfs` guard (`tools/uploadfs_guard.py`).** `uploadfs` erases LittleFS,
+  `/tokens.json` with it, so the rebooted device falls back to the `refresh_token`
+  in `data/config.json` — which is only still usable if the device has *not*
+  booted since it was written. Push a config the device has already claimed and
+  the fallback refresh gets `invalid_grant`, which revokes the whole OAuth family
+  and costs a full `authorize.py` round trip; on screen it just looks like the
+  meters went empty, which is a long way back to the cause. Wired into
+  `platformio.ini` as a PRE/POST action on the `uploadfs` target (state in
+  `.uploadfs-state.json`, host-side only — everything under `data/` is packed into
+  the image), it blocks the flash when the token in `config.json` is the one last
+  pushed, and records the pushed token after a successful upload: the second
+  `uploadfs` of an unchanged config is the fatal one, and that is precisely the
+  case it can see. `ESP32_ALLOW_STALE_TOKEN=1` bypasses it for a deliberate
+  re-flash, and running the script bare answers the same question without
+  uploading. It cannot know about tokens pushed before it existed, so the very
+  first upload of an already-claimed config still needs `authorize.py`.
+
 ## [0.3.0] - 2026-10-15
 
 ### Added

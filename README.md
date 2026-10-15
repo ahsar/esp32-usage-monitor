@@ -158,7 +158,11 @@ The script writes `refresh_token` / `org_id` back into `data/config.json`.
 > - `pio run -t upload` (firmware only) is **safe** — it does not touch the filesystem.
 > - `pio run -t uploadfs` **erases** LittleFS (including `/tokens.json`), so the device
 >   falls back to the possibly stale token in `config.json`. **Always run
->   `python3 tools/authorize.py` right before an `uploadfs`.**
+>   `python3 tools/authorize.py` right before an `uploadfs`.** A second `uploadfs`
+>   of an unchanged config is the case that breaks, so the target refuses to run
+>   while `config.json` still holds the token it already pushed
+>   (`tools/uploadfs_guard.py`); override with `ESP32_ALLOW_STALE_TOKEN=1` if you
+>   really mean it.
 > - Do **not** run `python3 tools/authorize.py --check` while the device is live — it
 >   rotates the token and invalidates the device's copy.
 
@@ -330,7 +334,10 @@ CI runs that plus `pio run -e esp32-usage-monitor` on every push and PR.
 ## Notes
 
 - `data/config.json` holds credentials and is gitignored; never commit it. After
-  editing it, re-upload the filesystem (`-t uploadfs`).
+  editing it, re-upload the filesystem (`-t uploadfs`) — but run
+  `python3 tools/authorize.py` first, because that erase takes the device's
+  rotated token with it. `tools/uploadfs_guard.py` stops the `uploadfs` if you
+  forget.
 - The screenshots above come from the device itself. Build with
   `PLATFORMIO_BUILD_FLAGS='-DFRAME_DUMP' pio run -e esp32-usage-monitor -t upload`,
   then `python3 tools/frame_dump.py /dev/cu.usbmodemXXXX docs/screens` walks the

@@ -6,7 +6,7 @@ Poll periods live in `data/config.json` (`poll_usage_s`, `poll_usage_idle_s`,
 (completion cues), default `true`. `status_key` is the HMAC secret for the
 status endpoint (empty = auth off). Changing `status_key` needs an `uploadfs` —
 run `python3 tools/authorize.py` first, because `uploadfs` erases the device's
-rotated tokens.
+rotated tokens (the pre-hook in `tools/uploadfs_guard.py` will insist on it).
 
 The schedule and the failure policy are **pure logic in `src/poller.{h,cpp}`**
 (timers, exponential backoff, the wedge ladder) and are covered by

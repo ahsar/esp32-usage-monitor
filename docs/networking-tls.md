@@ -34,7 +34,10 @@ it; the bundle's format is `u16 count` then per entry
   `Authorization: Bearer <access token>` or the `__Host-console_session` cookie.
   The firmware uses the Bearer/device-flow path.
 - `authorize.py` uses `client_id=opencode-cli`; the device refreshes with the
-  `refresh_token` grant and persists rotated tokens to `/tokens.json`.
+  `refresh_token` grant and persists rotated tokens to `/tokens.json`. That
+  rotation is what turns the token left in `data/config.json` into a family
+  revoker, so `tools/uploadfs_guard.py` blocks an `uploadfs` that would make the
+  device fall back to it.
 - Usage meters: `access.meters.{fiveHour,week,month}` with string
   `usedMicroCents` / `limitMicroCents`; percent = used/limit*100.
 - Weather: `wttr.in/Beijing?m&format=...` (one-line, ~120 B) — **must** send a

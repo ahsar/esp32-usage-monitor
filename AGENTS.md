@@ -57,7 +57,11 @@ editing config, re-run `uploadfs`.
 > - `pio run -t upload` (firmware only) is **safe** — it does not touch the filesystem.
 > - `pio run -t uploadfs` **erases** LittleFS including `/tokens.json`, so the device
 >   falls back to the (now stale) token in `config.json`. **Always run
->   `python3 tools/authorize.py` immediately before an `uploadfs`.**
+>   `python3 tools/authorize.py` immediately before an `uploadfs`.** The second
+>   `uploadfs` of an unchanged `config.json` is the fatal one, so the target now
+>   refuses to run once the token it already pushed is the one still in the file
+>   (`tools/uploadfs_guard.py`, state in `.uploadfs-state.json`); the escape hatch
+>   is `ESP32_ALLOW_STALE_TOKEN=1`.
 > - Never run `authorize.py --check` while the device is live — it rotates the token
 >   and invalidates the device's copy.
 
@@ -135,7 +139,7 @@ linked deep dive before changing the area.
 - **The boot PWRON press must not power the board off.** `loop()` consumes the
   AXP IRQ the boot press latched and only acts on a fresh one.
 - **`uploadfs` erases the device's rotated tokens.** Run `authorize.py` first
-  (see the token-lifecycle warning above).
+  (see the token-lifecycle warning above); the `uploadfs` guard enforces it.
 - **`src/diag.*` is temporary but load-bearing** — it is what makes a wedged
   fetch or a frozen UI diagnosable over USB CDC. Don't delete it while the
   watchdog still relies on its breadcrumbs.
@@ -162,6 +166,9 @@ Read the relevant one before changing that area:
 ## PC-side tools
 
 - `tools/authorize.py` — opencode console device-flow authoriser + `--check`
+- `tools/uploadfs_guard.py` — `uploadfs` pre/post hook that refuses to flash a
+  `config.json` token the device has already rotated away (run it bare to ask the
+  same question by hand); see the token-lifecycle warning above
 - `tools/opencode-plugin/` — OpenCode V2 plugin that drives the status endpoint
 - `tools/status-ping.sh` — signed status ping, for testing the device by hand
 - `tools/status_stub.py` — local stand-in for the status endpoint (tests the plugin + HMAC)
