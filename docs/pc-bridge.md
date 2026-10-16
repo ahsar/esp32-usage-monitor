@@ -17,7 +17,9 @@ so hand-dismissing the animation stays silent. Do **not** rely on V1 event names
 (`session.idle`, `session.status`, `permission.updated`) — V2 does not emit them.
 `tools/status-ping.sh` drives the same endpoint by hand, so the firmware path can
 be tested without OpenCode. The device advertises `usage-monitor.local` over
-mDNS (`ESPmDNS`) so the plugin needs no DHCP IP.
+mDNS (`ESPmDNS`) so the plugin needs no DHCP IP — and where mDNS does not cross a
+segment (an office VLAN), the ladder in `tools/monitor-send.sh` carries the device's
+IP instead.
 
 **Auth.** Port 80 is reachable by anyone on the LAN, so the endpoint takes an
 HMAC-SHA256 signature over `"<state>|<unixSeconds>"` in `X-Sig` / `X-Ts`
@@ -128,19 +130,25 @@ already the application-layer HMAC, and the frame carries that signature instead
 relying on the link. Requiring encryption here would *require* bonding, i.e. the
 ceremony this avoids.
 
-**The host side is `tools/ble-bridge.py`** — a `bleak` (CoreBluetooth) process that
-holds the link and serves the same channel on `http://127.0.0.1:8098`, so the client
-stays an HTTP client and never learns that BLE exists. The ordering lives in the
-client: `tools/opencode-plugin/` tries the LAN, then any other configured address,
-then the bridge, and a transport that failed sits in a penalty box — which is also
-what brings it back to the LAN once the network recovers.
+**The host side is `tools/monitor-send.sh`** — one command that owns the ladder, and
+what the OpenCode plugin spawns per state change. There is no daemon: it tries the
+last URL that worked, then the IP it learned over BLE, then the configured addresses,
+then BLE as a one-shot (`ble-bridge.py --once --info`), and exits. The order is a
+client-side decision the device cannot make for the host, and the BLE rung only pays
+its cold connect (~8-15 s) once HTTP has already failed; on that same link it reads
+the device's own IP back, so the next message returns to HTTP even after a DHCP move.
 
 ```sh
 python3 -m pip install "bleak>=0.22"
-tools/ble-bridge.py --scan                # is the device in range?
-tools/ble-bridge.py --once state=done     # drive it without OpenCode
-tools/ble-bridge.py                       # serve http://127.0.0.1:8098
+tools/ble-bridge.py --scan --info          # is the device in range, and where is it?
+tools/ble-bridge.py --once state=done      # drive it without OpenCode (cold connect)
+tools/monitor-send.sh done                 # the whole ladder, as the plugin runs it
+tools/ble-bridge.py                        # optional: hold the link and serve :8098
 ```
+
+`tools/ble-bridge.py` with no arguments still serves the channel on
+`http://127.0.0.1:8098`, for anything that would rather be an ordinary HTTP client;
+the plugin does not need it.
 
 **Finding the device without a serial console.** The Clock page (the device's own
 status page) shows the LAN address and whether the peripheral came up — see
@@ -243,22 +251,24 @@ in* once something referenced them (`ble_status` on `/config.json` turns the
 peripheral back off at runtime; the code stays in the image either way), and the
 `-DBLE_DEBUG_LOG` build adds another ~90 KB.
 
-**The PC side holds the link, because connecting is the slow part.** Measured against
-this device over macOS:
+**Connecting is the slow part, so a fallback pays it once per message.** Measured
+against this device over macOS:
 
 | | |
 |---|---|
 | warm request (link up) | **~0.5 s** |
 | cold connect, first attempt | 8–15 s — often times out, then the retry succeeds |
 
-So `tools/ble-bridge.py` keeps the link (default `--idle 70`, deliberately just
-under the device's own 90 s backstop) and remembers the
-device's address in `~/.cache/esp32-usage-monitor/ble-device.json` so a later run can
-connect without scanning. Both are optimizations with fallbacks — a stale address or
-a dropped link just means paying the cold path once. The client's budget has to
-cover that: the plugin allows **30 s** for a fallback transport, not the 1.5 s it
-gives the LAN. A one-shot `--once` always pays the cold path; the server mode is the
-warm one.
+The one-shot (`--once`), which is what the ladder uses, always pays the cold connect;
+the plugin's 60 s budget is sized for that, not for the ~0.5 s the LAN rungs take.
+What softens it is the remembered address in
+`~/.cache/esp32-usage-monitor/ble-device.json`: a later run skips the scan (the flaky
+part on macOS) and pays only the connect. A bridge process (`tools/ble-bridge.py`
+with no arguments) can still hold the link for ~0.5 s requests — default `--idle 70`,
+deliberately just under the device's own 90 s backstop — for a host that would rather
+run a daemon than pay a cold connect per message; the plugin does not need it. Both
+are optimizations with fallbacks: a stale address or a dropped link just means paying
+the cold path once.
 
 **Bluedroid's own error output needs a flag to see.** The messages that explain an
 advertising failure (`esp_ble_gap_config_adv_data: rc=…`,

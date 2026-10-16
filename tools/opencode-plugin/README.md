@@ -8,11 +8,23 @@ The device serves the same tiny channel two ways — HTTP on port 80
 plugin is the client for both. It is the *missing half*: without it nothing ever
 drives the device's status endpoint.
 
-It sends over an **ordered list of transports**, because the two do not always agree
-about being reachable. A LAN that crosses a VLAN boundary, blocks mDNS, or rides an
-AP that associates and then carries nothing breaks HTTP without the device noticing
-— and none of that means anything to BLE. The order is a client-side decision: the
-device cannot choose how the host reaches it.
+The plugin itself is deliberately thin: it maps an event to a state and runs
+`tools/monitor-send.sh`, which owns the transport ladder. That is a command, not a
+daemon — every message tries the transports in order, uses the first that answers,
+and exits:
+
+1. the URL that worked last (cached),
+2. the device IP learned over BLE (cached),
+3. `options.urls` (default `http://usage-monitor.local`),
+4. BLE, one shot (`tools/ble-bridge.py --once --info`).
+
+The order is a client-side decision — the device cannot choose how the host reaches
+it — and it matters: a LAN that crosses a VLAN boundary, blocks mDNS, or rides an AP
+that associates and then carries nothing breaks HTTP without the device noticing, and
+none of that means anything to BLE. A message that falls all the way through pays one
+cold BLE connect (~8-15 s on macOS); every other path is sub-second. A successful BLE
+send reads the device's own IP back and caches it, so the next message returns to HTTP
+even after a DHCP move.
 
 ## What it sends
 
@@ -33,43 +45,37 @@ network can never slow OpenCode down.
 > v2.0.x`. V1's `session.idle` / `session.status` / `permission.updated` are
 > not emitted by V2.
 
-## Transports
+## The ladder
 
-`options.urls` is tried in order, and a transport that fails is put in a penalty box
-(`penaltyMs`, 30 s) so a dead one is not paid for on every message. Expiry is also
-the recovery path: once it lapses the LAN is preferred again, so a network that came
-back is picked up on the next message without any restart.
+Each message runs `tools/monitor-send.sh <state>`, which tries, in order:
 
-| # | Transport | Default | Timeout |
-| --- | --- | --- | --- |
-| 1 | the LAN, over HTTP | `http://usage-monitor.local` | `timeoutMs` (1.5 s) |
-| 2… | any further addresses | — | `fallbackTimeoutMs` (30 s) |
-| last | the BLE bridge | `http://127.0.0.1:8098` | `fallbackTimeoutMs` (30 s) |
+| # | Rung | Budget |
+| --- | --- | --- |
+| 1 | the URL that worked last (cached) | `ESP32_MONITOR_HTTP_TIMEOUT_S` (2 s) |
+| 2 | the device IP learned over BLE (cached) | same |
+| 3 | `options.urls` (default `http://usage-monitor.local`) | same |
+| 4 | BLE, one shot (`ble-bridge.py --once --info`) | one cold connect, ~8-15 s |
+
+A message is fire-and-forget: the plugin allows it `sendTimeoutMs` (60 s — the whole
+ladder, worst case) and then kills it, and a message that reached nothing puts the
+device in a penalty box (`penaltyMs`, 30 s) so a transport that is down is not paid
+for on every event. Expiry is also the recovery path: the next message walks the
+ladder afresh, so a network that came back is picked up without a restart.
+
+Any HTTP *response* — `401`/`403` included — counts as reached: the key is wrong, and
+it will be just as wrong on the next rung, so the ladder stops there rather than
+spending the BLE budget. Nothing answering at all is not an error; the message is
+dropped and the next event retries.
 
 More than one LAN address is the norm on a segmented network: mDNS does not cross a
-VLAN boundary, so list the device's IP on each segment you might be on and let the
-order sort it out.
+VLAN boundary, so list the device's IP — on each segment you might be on — in `urls`
+and let the order sort it out. The address is on the device's Clock page and is read
+back by `tools/ble-bridge.py --scan --info` (`ip=…`), which is also how the cache
+learns it: after a BLE fallback the next message prefers that IP over mDNS.
 
-The last rung is `tools/ble-bridge.py`, which holds a BLE link to the device and
-serves the same channel on loopback. Its budget is deliberately enormous next to the
-LAN's 1.5 s, because **connecting is the slow part**: measured against the device,
-a request on a link the bridge already holds takes ~0.5 s, while a cold connect takes
-8-15 s (macOS often times out the first attempt and succeeds on the retry). A cold
-fallback abandoned after 1.5 s could never work at all. `"ble": false` takes the
-rung out; leave it running (the bridge keeps the link for 70 s of quiet — just
-under the device's own backstop, because a *stale* link makes the device
-undiscoverable — and remembers the device's address, so only a cold start pays the
-scan).
-
-Messages are delivered **one at a time, in order** — not for the device's sake (it
-takes one at a time anyway) but so that a 1.5 s LAN probe cannot overlap the next
-event, which would make both pay the same dead transport's timeout and neither
-record the penalty. Serialising costs nothing here: a message can be late, but it is
-never lost, and the chimes depend on seeing the states in the order they happened.
-
-A `401` stops the walk rather than falling through: the key is wrong, and it will be
-just as wrong on the next transport. Nothing answering at all is not an error —
-the message is dropped and the next event retries.
+Messages are delivered **one at a time, in order**, so the chimes see the states in
+the order they happened — and so a slow BLE fallback cannot be overlapped by the next
+event's probe. `"ble": false` takes the BLE rung out.
 
 ## Security
 
@@ -135,24 +141,22 @@ If your network blocks multicast DNS — common as soon as there is more than on
 VLAN — use the device's IP instead (it is printed on the serial console at boot next
 to `diag: ip=`, and readable over BLE from the info characteristic).
 
-### 2. Start the BLE bridge (optional, for when the LAN is not there)
+### 2. Nothing to start for the fallback (but install `bleak`)
 
-Skip this if HTTP always reaches the device. Otherwise:
+There is no bridge daemon to run: the BLE rung is a one-shot
+(`tools/ble-bridge.py --once`) spawned only when the LAN rungs fail, so the only
+setup is its one dependency:
 
 ```sh
 python3 -m pip install "bleak>=0.22"
 ../ble-bridge.py --scan --info   # is the device advertising? what does it say about itself?
-../ble-bridge.py                 # serve http://127.0.0.1:8098
 ```
 
 `--scan --info` is also the only read-out that needs no serial console: it prints the
-device's own report (`fw=… ip=… auth=… ble=… iheap=… bt=…`). `--once state=done`
-sends one request by hand, but pays a full cold connect (~8-15 s) every time — the
-server mode is the warm path.
-
-It needs no pairing and no key: it forwards the plugin's signed request verbatim. Run
-it wherever it can hear the device (i.e. next to it, not on a server), and keep it
-running — a bridge that is not up is simply treated as another dead transport.
+device's own report (`fw=… ip=… auth=… ble=… iheap=… bt=…`), which is where an IP for
+`urls` comes from. Neither needs pairing or a key: the one-shot signs for itself, from
+`data/config.json` (or `ESP32_MONITOR_KEY`). Run it wherever it can hear the device —
+next to it, not on a server.
 
 ### 3. Load the plugin
 
@@ -187,30 +191,35 @@ opencode service restart
 ## Debugging
 
 Set `ESP32_MONITOR_DEBUG=1` **before the service starts** (the service, not the
-TUI, reads it) to log every state transition, which transport carried it, and every
-failure. Without it the plugin is completely silent. The transport line printed at
-startup shows the ladder and the timeout each rung got:
+TUI, reads it) to log every state transition and every failure. Without it the plugin
+is silent apart from real errors. The line printed at startup shows the ladder it
+will run:
 
 ```
-[esp32-monitor] transports: usage-monitor.local(1500ms) → 127.0.0.1:8098(8000ms)
+[esp32-monitor] ladder: http://usage-monitor.local → http://172.16.29.91 via …/monitor-send.sh (auth off)
 ```
 
-The quickest end-to-end check needs no OpenCode at all:
+The quickest end-to-end check is the very command the plugin runs, and it prints
+which rung carried the message:
 
 ```sh
-../status-ping.sh running    # device should show "Thinking…"
-../status-ping.sh waiting    # …then "Needs you"
-../status-ping.sh done       # …then a rising chime
+ESP32_MONITOR_DEBUG=1 ../monitor-send.sh running    # device should show "Thinking…"
+ESP32_MONITOR_DEBUG=1 ../monitor-send.sh waiting    # …then "Needs you" + a beep
+ESP32_MONITOR_DEBUG=1 ../monitor-send.sh done       # …then a rising chime
 ```
 
-To check the *fallback* path on its own, go straight at the bridge:
+To check the *fallback* rung on its own, hit BLE directly (a cold connect, ~8-15 s):
 
 ```sh
-../ble-bridge.py --once state=done     # expect: 200 OK
-../ble-bridge.py --scan --info         # firmware, IP and whether auth is on
+../ble-bridge.py --once state=done --info   # expect: 200 OK, then the device's info
+../ble-bridge.py --scan --info              # firmware, IP and whether auth is on
 ```
 
-To exercise the plugin against a stand-in instead of the hardware (including the
-HMAC path), run `python3 ../status_stub.py <status_key>` and put
-`http://127.0.0.1:8099` first in `urls`.
+To exercise the ladder against a stand-in instead of the hardware (including the HMAC
+path), run `python3 ../status_stub.py <status_key>` and point the first rung at it:
+
+```sh
+python3 ../status_stub.py <status_key> &
+ESP32_MONITOR_URLS=http://127.0.0.1:8099 ESP32_MONITOR_BLE=0 ../monitor-send.sh done
+```
 

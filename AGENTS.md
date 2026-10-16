@@ -205,6 +205,8 @@ Read the relevant one before changing that area:
   `config.json` token the device has already rotated away (run it bare to ask the
   same question by hand); see the token-lifecycle warning above
 - `tools/opencode-plugin/` — OpenCode V2 plugin that drives the status endpoint
+- `tools/monitor-send.sh` — the transport ladder as one command (HTTP last-good →
+  learned/BLE IP → configured URLs → BLE one-shot); what the plugin spawns
 - `tools/status-ping.sh` — signed status ping, for testing the device by hand
 - `tools/status-settings.sh` — read/change chime, brightness and the location over the
   signed settings channel (no `uploadfs`)

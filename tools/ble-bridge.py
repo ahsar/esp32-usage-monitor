@@ -531,10 +531,24 @@ async def run_scan(args) -> int:
 async def run_once(args) -> int:
     key = load_key(args.key)
     ts, sig = sign(args.once, key)
-    link = Link(args.scan_timeout, args.timeout, 1.0,
+    # No idle disconnect here: the process exits as soon as the reply arrives, so
+    # a short watchdog could only ever fire *during* the request. It did — a reply
+    # slower than the 1 s threshold lost the link mid-write ("write/reply failed:
+    # disconnected"), which is exactly the flakiness a one-shot cannot afford.
+    # `--idle` governs the server mode only.
+    link = Link(args.scan_timeout, args.timeout, args.timeout + 5,
                 connect_timeout_s=args.connect_timeout)
     try:
         code, body = await link.request(args.once, ts, sig)
+        if args.info:
+            # Same link, one extra read: the info report carries the device's own
+            # IP, which is how a caller that had to fall back to BLE learns where
+            # to find it over HTTP the next time (a DHCP move on an mDNS-less
+            # network is otherwise invisible to the host).
+            try:
+                log(f"info: {await link.info()}")
+            except LinkError as exc:
+                log(f"info: unavailable ({exc})")
     except LinkError as exc:
         print(f"failed: {exc}", file=sys.stderr)
         return 1
@@ -560,7 +574,8 @@ def main() -> int:
                         "reconnect costs 8-15 s against ~0.5 s warm (default %(default)s)")
     p.add_argument("--verbose", action="store_true", help="log every HTTP request")
     p.add_argument("--scan", action="store_true", help="list matching devices and exit")
-    p.add_argument("--info", action="store_true", help="with --scan, also read the info characteristic")
+    p.add_argument("--info", action="store_true",
+                   help="with --scan or --once, also read the info characteristic")
     p.add_argument("--once", metavar="QUERY",
                    help="send one query (e.g. state=done, or chime=0) and exit")
     p.add_argument("--key", help="status_key for --once (default: data/config.json, then $ESP32_MONITOR_KEY)")
