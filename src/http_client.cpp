@@ -20,9 +20,20 @@
 // hostname verification), which now costs nothing — lwIP's cache answers it.
 //
 // The resolver runs in a throwaway task because the lwIP call cannot be
-// interrupted. The context is refcounted (caller + task), so a lookup that
-// outlives its deadline cannot be freed under the still-running task.
+// interrupted. Ownership is deliberately one-sided: the context is a static,
+// the semaphore is created once and never deleted, and dnsTask is the only
+// code that releases the slot (it clears the busy flag last, after its final
+// write to the context). The waiting task never has to free anything, so the
+// fetch watchdog killing it mid-lookup — the exact point where the old
+// refcounted design leaked the context plus its semaphore — is harmless: the
+// resolver still finishes, writes the result into a slot nobody reads, and
+// hands the context back for the next lookup.
 static const uint32_t DNS_TIMEOUT_MS = 8000;
+// A previous lookup that timed out (or whose waiter was killed) still owns the
+// static context until its resolver finishes. lwIP's retry schedule is the
+// only bound on that, so the handover wait is generous but finite; past it the
+// lookup fails as a transport failure rather than reading a half-written ip.
+static const uint32_t DNS_HANDOVER_MS = 60000;
 // TLS handshake cap — the setter takes SECONDS (see the note in httpRequest()).
 static const uint32_t HANDSHAKE_TIMEOUT_S = 30;
 
@@ -32,12 +43,14 @@ static bool s_transportFailed = false;
 bool httpTransportFailed() { return s_transportFailed; }
 
 struct DnsCtx {
-  char              host[80];
-  IPAddress         ip;
-  volatile bool     ok;
-  SemaphoreHandle_t done;
-  volatile int      refs;
+  char          host[80];
+  IPAddress     ip;
+  volatile bool ok;
 };
+
+static DnsCtx s_dns;
+static SemaphoreHandle_t s_dnsSem;            // created lazily, never deleted
+static volatile bool     s_dnsBusy = false;   // cleared last, by the resolver
 
 static void dnsTask(void* arg) {
   DnsCtx* c = (DnsCtx*)arg;
@@ -45,33 +58,46 @@ static void dnsTask(void* arg) {
   bool ok = WiFi.hostByName(c->host, ip);
   if (ok) c->ip = ip;
   c->ok = ok;
-  xSemaphoreGive(c->done);
-  if (__atomic_sub_fetch(&c->refs, 1, __ATOMIC_SEQ_CST) == 0) {
-    vSemaphoreDelete(c->done);
-    free(c);
-  }
+  // The waiter reads the context only after taking this semaphore, so the
+  // results are published before the slot can be reused; clearing the busy
+  // flag last is what gives the next lookup its green light.
+  xSemaphoreGive(s_dnsSem);
+  s_dnsBusy = false;
   vTaskDelete(nullptr);
 }
 
 static bool resolveHost(const char* host, IPAddress& out, uint32_t timeoutMs) {
   if (out.fromString(host)) return true;      // already a literal address
 
-  DnsCtx* c = (DnsCtx*)calloc(1, sizeof(DnsCtx));
-  if (!c) return false;
-  strlcpy(c->host, host, sizeof(c->host));
-  c->done = xSemaphoreCreateBinary();
-  c->refs = 2;                                 // caller + resolver task
-  if (!c->done || xTaskCreate(dnsTask, "dns", 4096, c, 1, nullptr) != pdPASS) {
-    if (c->done) vSemaphoreDelete(c->done);
-    free(c);
+  if (!s_dnsSem) {
+    s_dnsSem = xSemaphoreCreateBinary();
+    if (!s_dnsSem) return false;
+  }
+
+  // A previous lookup may still own the context (it timed out, or its waiter
+  // was deleted). Take the resolver's completion before even the new name is
+  // copied in, so the two tasks never write the same result at once.
+  if (s_dnsBusy) {
+    if (xSemaphoreTake(s_dnsSem, pdMS_TO_TICKS(DNS_HANDOVER_MS)) != pdTRUE) {
+      Serial.println("http: dns context still held by an earlier lookup");
+      return false;
+    }
+    s_dnsBusy = false;
+  }
+
+  strlcpy(s_dns.host, host, sizeof(s_dns.host));
+  s_dns.ok = false;
+  s_dnsBusy = true;
+  xSemaphoreTake(s_dnsSem, 0);                // drain a stale give, just in case
+  if (xTaskCreate(dnsTask, "dns", 4096, &s_dns, 1, nullptr) != pdPASS) {
+    s_dnsBusy = false;
     return false;
   }
-  bool ok = (xSemaphoreTake(c->done, pdMS_TO_TICKS(timeoutMs)) == pdTRUE) && c->ok;
-  if (ok) out = c->ip;
-  if (__atomic_sub_fetch(&c->refs, 1, __ATOMIC_SEQ_CST) == 0) {
-    vSemaphoreDelete(c->done);
-    free(c);
-  }
+
+  bool ok = (xSemaphoreTake(s_dnsSem, pdMS_TO_TICKS(timeoutMs)) == pdTRUE) && s_dns.ok;
+  if (ok) out = s_dns.ip;
+  // On a timeout the resolver keeps the slot; it clears busy itself when the
+  // lookup finally lands (see dnsTask), and the caller just reads false.
   return ok;
 }
 

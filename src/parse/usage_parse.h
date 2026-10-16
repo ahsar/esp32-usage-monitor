@@ -14,13 +14,26 @@
 namespace usage_parse_detail {
 
 inline unsigned long long jsonU64(JsonVariantConst v) {
+  // The meter fields are counters, never negative. A "-5" handed to strtoull
+  // silently wraps to ~1.8e19 and flows on as an astronomic percent and a
+  // multi-trillion-dollar spend, so anything signed is treated as a server bug
+  // and read as 0 (the absent-value answer), not as a number.
   if (v.is<const char*>()) {
     const char* s = v.as<const char*>();
-    return s ? strtoull(s, nullptr, 10) : 0;
+    if (!s) return 0;
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '-') return 0;
+    return strtoull(s, nullptr, 10);
   }
-  if (v.is<long long>())          return (unsigned long long)v.as<long long>();
+  if (v.is<long long>()) {
+    long long n = v.as<long long>();
+    return n < 0 ? 0 : (unsigned long long)n;
+  }
   if (v.is<unsigned long long>()) return v.as<unsigned long long>();
-  if (v.is<double>())             return (unsigned long long)v.as<double>();
+  if (v.is<double>()) {
+    double d = v.as<double>();
+    return d < 0 ? 0 : (unsigned long long)d;
+  }
   return 0;
 }
 

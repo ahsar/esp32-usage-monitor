@@ -69,13 +69,15 @@ static bool ctEqual(const uint8_t* a, const uint8_t* b, size_t n) {
   return d == 0;
 }
 
-// Case-insensitive header lookup over the raw request head. Headers are
-// newline-separated in `req` (each line keeps its trailing '\r').
-static bool headerValue(const String& req, const char* name, char* out, size_t outLen) {
+// Case-insensitive header lookup over the raw request head. Lines are
+// newline-separated in `req` (each keeps its trailing '\r'). `req` is a plain
+// buffer handed over by readRequestHead(); a stray NUL byte on the wire just
+// ends matching early, and the request degrades to a health probe or a 405.
+static bool headerValue(const char* req, size_t rlen, const char* name,
+                        char* out, size_t outLen) {
   char needle[40];
   snprintf(needle, sizeof(needle), "\n%s:", name);
   const size_t nlen = strlen(needle);
-  const size_t rlen = req.length();
   if (rlen < nlen) return false;
 
   for (size_t i = 0; i + nlen <= rlen; i++) {
@@ -91,7 +93,7 @@ static bool headerValue(const String& req, const char* name, char* out, size_t o
     while (e < rlen && req[e] != '\r' && req[e] != '\n') e++;
     size_t len = e - v;
     if (len >= outLen) len = outLen - 1;
-    memcpy(out, req.c_str() + v, len);
+    memcpy(out, req + v, len);
     out[len] = 0;
     return true;
   }
@@ -107,9 +109,13 @@ static bool authorizePayload(const char* payload, const char* ts, const char* si
   if (!statusServerAuthEnabled()) return true;   // dev mode, warned at boot
   if (!payload || !ts || !ts[0] || !sig || !sig[0]) return false;
 
-  // Sized for a full settings query: the longest place/station/air_label plus the
-  // keys and separators, which is what the client hashes too.
-  char msg[256];
+  // Sized for the query cap requestQuery() uses: 255 bytes of query + '|' +
+  // a ≤20-digit timestamp + NUL = 277, and 288 keeps a little slack. The client
+  // hashes the same "<query>|<ts>" string, so both sides build it the same way.
+  // A long place name (URL-encoded, so Chinese names grow 3×) is what makes the
+  // cap reachable — rejecting a *validly signed* request over buffer sizing
+  // read like a bug in the client, so the cap has to exceed the query cap.
+  char msg[288];
   int n = snprintf(msg, sizeof(msg), "%s|%s", payload, ts);
   if (n <= 0 || (size_t)n >= sizeof(msg)) return false;   // too long to sign
 
@@ -184,21 +190,65 @@ static void respond(WiFiClient& client, const char* status, const char* body = "
   client.stop();
 }
 
+// Bounded helpers over the raw head buffer (no String, so no unbounded growth
+// anywhere in the request path).
+static bool memFind(const char* hay, size_t hayLen, const char* needle,
+                    size_t nLen, size_t& pos) {
+  if (nLen == 0 || hayLen < nLen) return false;
+  for (size_t i = 0; i + nLen <= hayLen; i++) {
+    if (memcmp(hay + i, needle, nLen) == 0) { pos = i; return true; }
+  }
+  return false;
+}
+
 // The query of the request line, verbatim and undecoded (no leading '?'), e.g.
 // "chime=0&place=Shanghai". This exact string is what the settings signature
-// covers, so it must be taken as bytes off the wire.
-static bool requestQuery(const String& req, char* out, size_t cap) {
-  int g = req.indexOf("GET ");
-  if (g < 0) return false;
-  int sp = req.indexOf(' ', g + 4);          // end of the request target
-  if (sp < 0) return false;
-  int q = req.indexOf('?', g + 4);
-  if (q < 0 || q >= sp) return false;
-  size_t n = (size_t)(sp - q - 1);
+// covers, so it must be taken as bytes off the wire. 255 bytes is the cap the
+// BLE frame shares (status_channel.h) — both transports must agree on it.
+static bool requestQuery(const char* req, size_t rlen, char* out, size_t cap) {
+  size_t g;
+  if (!memFind(req, rlen, "GET ", 4, g)) return false;
+  size_t sp = g + 4;                        // end of the request target
+  while (sp < rlen && req[sp] != ' ') sp++;
+  if (sp == rlen) return false;
+  size_t q = g + 4;                         // '?' inside the target only
+  while (q < sp && req[q] != '?') q++;
+  if (q == sp) return false;
+  size_t n = sp - q - 1;
   if (n == 0 || n + 1 > cap) return false;
-  memcpy(out, req.c_str() + q + 1, n);
+  memcpy(out, req + q + 1, n);
   out[n] = '\0';
   return true;
+}
+
+// The request head (request line + headers) lands in a fixed buffer. This is
+// where an unbounded read used to live: readStringUntil() into a String would
+// grow until a client that never sent a newline had squeezed internal RAM —
+// the pool mbedTLS and Bluedroid need on this board — dry. Every line still
+// keeps its '\n' so header lookup can scan for "\nName:" regardless of line
+// endings, and a blank "\r\n" line ends the head early. 1.5 KB and 24 lines
+// are far above what the plugin sends (request line + 3 headers ≈ 350 B).
+static const size_t HTTP_HEAD_MAX      = 1536;
+static const int    HTTP_HEAD_MAX_LINE = 24;
+
+static size_t readRequestHead(WiFiClient& client, char* head, size_t cap) {
+  size_t len = 0, lineStart = 0;
+  int lines = 0;
+  while (len + 1 < cap && lines < HTTP_HEAD_MAX_LINE) {
+    uint32_t t0 = millis();
+    while (!client.available() && millis() - t0 < 60) delay(1);
+    if (!client.available()) break;            // peer went quiet
+    int b = client.read();
+    if (b < 0) break;                          // socket timeout mid-byte
+    head[len++] = (char)b;
+    if (b == '\n') {
+      lines++;
+      if (len - lineStart == 2 && head[lineStart] == '\r') break;  // blank line
+      lineStart = len;
+    }
+  }
+  head[len] = '\0';
+  return len;
 }
 
 // ---- the channel itself (transport-neutral; see status_channel.h) ----------
@@ -323,20 +373,12 @@ extern "C" void handleHttpStatus() {
 
   client.setTimeout(50);
 
-  // Read the request head (request line + headers). Each line is appended with
-  // a '\n' so header lookup can scan for "\nName:" regardless of line endings.
-  String req;
-  for (int i = 0; i < 24; i++) {
-    uint32_t t0 = millis();
-    while (!client.available() && (millis() - t0) < 60) delay(1);
-    if (!client.available()) break;
-    String line = client.readStringUntil('\n');
-    req += line;
-    req += '\n';
-    if (line == "\r" || line.length() == 0) break;
-  }
+  // Read the request head (request line + headers) into a fixed buffer.
+  static char req[HTTP_HEAD_MAX];
+  size_t reqLen = readRequestHead(client, req, sizeof(req));
 
-  if (req.indexOf("GET ") < 0) {
+  size_t g;
+  if (!memFind(req, reqLen, "GET ", 4, g)) {
     respond(client, "405 Method Not Allowed");
     return;
   }
@@ -344,9 +386,9 @@ extern "C" void handleHttpStatus() {
   // The transport's whole job: pull the query and the HMAC pair out of the wire
   // format, then hand them to the shared handler.
   char query[256] = {0}, ts[24] = {0}, sig[80] = {0}, peer[24] = {0};
-  if (!requestQuery(req, query, sizeof(query))) query[0] = '\0';
-  headerValue(req, "X-Ts", ts, sizeof(ts));
-  headerValue(req, "X-Sig", sig, sizeof(sig));
+  if (!requestQuery(req, reqLen, query, sizeof(query))) query[0] = '\0';
+  headerValue(req, reqLen, "X-Ts", ts, sizeof(ts));
+  headerValue(req, reqLen, "X-Sig", sig, sizeof(sig));
   IPAddress ip = client.remoteIP();
   snprintf(peer, sizeof(peer), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
 

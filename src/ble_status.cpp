@@ -87,8 +87,10 @@ static uint32_t s_lastRx = 0;
 // Written on the BTC task, read on the loop task. `s_frameLen` is set last, and
 // the client is synchronous (it waits for the reply notification before writing
 // again), so a second write cannot overtake one still being handled — see
-// bleStatusUpdate(). Kept out of a queue on purpose: one small buffer is the
-// whole contract, and it is the one the protocol already implies.
+// bleStatusUpdate(). The RX characteristic enforces the same thing at the
+// protocol level by offering PROPERTY_WRITE only (no write-without-response).
+// Kept out of a queue on purpose: one small buffer is the whole contract, and
+// it is the one the protocol already implies.
 static char s_frame[BLE_FRAME_MAX];
 static volatile size_t s_frameLen = 0;
 static volatile uint8_t s_peerBda[6] = {0};
@@ -275,8 +277,17 @@ void bleStatusBegin(bool enable) {
     return;
   }
 
+  // PROPERTY_WRITE only, no write-without-response. The shared s_frame
+  // contract below is synchronous — the client waits for the reply
+  // notification before writing again — and a write-without-response would
+  // let a second frame overwrite s_frame while bleStatusUpdate() was still
+  // copying the previous one (a torn query that surfaces as an HMAC reject
+  // with no diagnostic). Declining the property makes the protocol itself
+  // stay in sync: a client that tries a write-NR gets an ATT error instead
+  // of a silently corrupted frame. tools/ble-bridge.py already writes with
+  // response.
   BLECharacteristic* rx = svc->createCharacteristic(
-      BLE_RX_UUID, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+      BLE_RX_UUID, BLECharacteristic::PROPERTY_WRITE);
   rx->setCallbacks(new StatusWriteCallbacks());
 
   s_tx = svc->createCharacteristic(BLE_TX_UUID, BLECharacteristic::PROPERTY_NOTIFY);

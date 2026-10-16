@@ -6,6 +6,7 @@
 #include <string.h>
 
 static const char* TOKENS_PATH = "/tokens.json";
+static const char* TOKENS_TMP  = "/tokens.json.tmp";
 
 bool tokenStoreLoad(TokenSet& t) {
   memset(&t, 0, sizeof(t));
@@ -38,10 +39,39 @@ bool tokenStoreSave(const TokenSet& t) {
   doc["org_id"]        = t.orgId;
   doc["expires_at"]    = t.accessExpiresAt;
 
-  File f = LittleFS.open(TOKENS_PATH, "w");
+  // Write to a temp file, verify the byte count, then rename over the live one.
+  // A LittleFS short write or a failed serialization must never truncate
+  // /tokens.json: after a reboot the device would fall back to config.json's
+  // (long-rotated) refresh token, and reusing that revokes the whole token
+  // family — the one failure mode this store exists to prevent. The byte-count
+  // check is what stands between an unchecked serializeJson() and the
+  // filesystem.
+  File f = LittleFS.open(TOKENS_TMP, "w");
   if (!f) return false;
-  serializeJson(doc, f);
+
+  const size_t want = (size_t)measureJson(doc);
+  const size_t got  = serializeJson(doc, f);
+  bool ok = want > 0 && got == want;
+  if (ok) f.flush();                      // flush the underlying stream too
+  ok = ok && f.size() == want;
   f.close();
+  if (!ok) {
+    Serial.printf("tokens: short write (%u/%u bytes); keeping the old file\n",
+                  (unsigned)got, (unsigned)want);
+    LittleFS.remove(TOKENS_TMP);
+    return false;
+  }
+
+  // LittleFS rename is itself atomic (a crash mid-rename leaves one intact
+  // file); most stacks overwrite the target, and the fallback below covers the
+  // ones that refuse rename-over-existing.
+  if (!LittleFS.rename(TOKENS_TMP, TOKENS_PATH)) {
+    LittleFS.remove(TOKENS_PATH);
+    if (!LittleFS.rename(TOKENS_TMP, TOKENS_PATH)) {
+      LittleFS.remove(TOKENS_TMP);
+      return false;
+    }
+  }
   return true;
 }
 

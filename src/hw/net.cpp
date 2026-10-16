@@ -109,6 +109,9 @@ static String bssidStr(const uint8_t* b) {
 }
 
 bool netRoam() {
+  // Everything in here delays on the calling task — loop(). One line up front,
+  // so the expected freeze is in the log even when the roam fails early.
+  Serial.println("wifi: roam: starting (loop() blocked for the whole roam)");
   char ssid[WIFI_SSID_MAX + 1], pass[WIFI_PASS_MAX + 1];
   if (!netLoadCred(ssid, sizeof(ssid), pass, sizeof(pass))) return false;
 
@@ -159,6 +162,13 @@ bool netRoam() {
   Serial.printf("wifi: roam -> %s ch%u rssi=%d (leaving %s rssi=%d)\n",
                 bssidStr(cand[best].bssid).c_str(), (unsigned)cand[best].channel,
                 (int)cand[best].rssi, bssidStr(cur).c_str(), (int)WiFi.RSSI());
+  // Say the quiet part out loud: everything below is a blocking wait on the
+  // caller's task, which is loop() — touch, the channel transports, the token
+  // flush and the wedge watchdog are all frozen until this returns. Worst case
+  // is the pinned attempt (8 s) plus the un-pinned fallback (4 s) plus the
+  // sweep before them; the diag stall reporter should never be the first to
+  // explain a freeze this code causes on purpose.
+  Serial.println("wifi: roam: loop() will stall until the new link is up");
 
   uint32_t t0 = millis();
   WiFi.begin(ssid, pass, cand[best].channel, cand[best].bssid);
@@ -166,9 +176,14 @@ bool netRoam() {
   if (WiFi.status() != WL_CONNECTED) {
     // The AP we aimed at is gone, which a scan taken seconds ago cannot rule
     // out. Fall back to un-pinned selection rather than sitting disconnected.
+    // 4 s, not the 12 s it used to get: the fallback mostly covers a momentary
+    // radio hiccup, a dead AP just fails here too, and every extra second is
+    // another second loop() is frozen. auto-reconnect picks the old AP back up
+    // on the next beacons if this attempt also misses.
     Serial.println("wifi: roam: pinned AP did not answer, retrying un-pinned");
+    uint32_t t1 = millis();
     WiFi.begin(ssid, pass);
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) delay(100);
+    while (WiFi.status() != WL_CONNECTED && millis() - t1 < 4000) delay(100);
   }
   // main.cpp's connect-once block has already run, so a roam restores the radio
   // policy itself.

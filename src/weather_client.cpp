@@ -1,18 +1,21 @@
 #include "weather_client.h"
+#include "app_defaults.h"
 #include "http_client.h"
 #include "parse/weather_parse.h"
 #include "util/loc_util.h"
 #include <Arduino.h>
 #include <string.h>
 
-// Location. main.cpp pushes config.json's values here (weatherSetLocation())
-// right after loadConfig(); until then these are the historical hard-coded
-// Beijing values, so a config without a location block behaves as before.
-static char  s_place[48]      = "Beijing";
-static float s_lat            = 39.9042f;
-static float s_lon            = 116.4074f;
-static int   s_tzOffsetMin    = 480;          // UTC+8
-static char  s_waqiStation[24] = "@3303";     // Beijing US Embassy, aqicn.org
+// Location. main.cpp pushes the loaded config over these (weatherSetLocation())
+// in setup(), before any fetch can be scheduled, so the initial values only
+// cover a fetch that somehow runs before that first call. They are the same
+// defaults config.h::configDefaults() seeds (app_defaults.h, see it), not a
+// second copy of the numbers.
+static char  s_place[48]      = DEFAULT_PLACE;
+static float s_lat            = DEFAULT_LAT;
+static float s_lon            = DEFAULT_LON;
+static int   s_tzOffsetMin    = DEFAULT_TZ_OFFSET_MIN;
+static char  s_waqiStation[24] = DEFAULT_WAQI_STATION;
 
 void weatherSetLocation(const char* place, float lat, float lon, int tzOffsetMin,
                         const char* waqiStation) {

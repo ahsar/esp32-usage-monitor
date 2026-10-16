@@ -144,10 +144,20 @@ bool fetchTaskStart(FetchJob job, const FetchSeed& seed) {
   FetchJobMsg m;
   m.job  = job;
   m.seed = seed;
-  if (xQueueSend(s_jobs, &m, 0) != pdTRUE) return false;
+  // Publish the accepted job *before* it can start running: the worker is at
+  // the same priority and may begin the job the moment xQueueSend succeeds, so
+  // a send-then-publish order would leave a window where a running job read as
+  // idle (fresh job age, stale wedged-job name). The depth-1 queue only fills
+  // if the caller has raced itself, and rolling back the flags restores the
+  // pre-call state exactly.
   s_current  = job;
   s_jobStart = millis();
   s_busy     = true;              // cleared by fetchTaskHarvest()
+  if (xQueueSend(s_jobs, &m, 0) != pdTRUE) {
+    s_busy     = false;
+    s_jobStart = 0;
+    return false;
+  }
   return true;
 }
 

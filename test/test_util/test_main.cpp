@@ -511,6 +511,22 @@ void test_usage_parse_numeric_micros(void) {
   TEST_ASSERT_EQUAL_INT(100, u.weeklyPercent);
 }
 
+void test_usage_parse_negative_micros(void) {
+  // Negative micro-cents are a server bug, not an unsigned wrap: "-5" through
+  // strtoull is ~1.8e19, which once parsed into an astronomic percent. Signed
+  // input (string or JSON number) reads as 0.
+  UsageData u;
+  const char* json =
+      "{\"access\":{\"meters\":{"
+      "\"fiveHour\":{\"usedMicroCents\":\"-5\",\"limitMicroCents\":\"10000000\"},"
+      "\"week\":{\"usedMicroCents\":-5,\"limitMicroCents\":\"10000000\"}}}}";
+  TEST_ASSERT_TRUE(usageParse(json, 0, u));
+  TEST_ASSERT_EQUAL_UINT64(0ULL, u.rollingUsedMicroCents);
+  TEST_ASSERT_EQUAL_UINT64(0ULL, u.weeklyUsedMicroCents);
+  TEST_ASSERT_EQUAL_INT(0, u.rollingPercent);
+  TEST_ASSERT_EQUAL_INT(0, u.weeklyPercent);
+}
+
 void test_usage_parse_reset_in_past_or_unset_clock(void) {
   const char* json =
       "{\"access\":{\"meters\":{"
@@ -811,6 +827,7 @@ int main(int, char**) {
   RUN_TEST(test_usage_parse_meters_not_object);
   RUN_TEST(test_usage_parse_numeric_micros);
   RUN_TEST(test_usage_parse_reset_in_past_or_unset_clock);
+  RUN_TEST(test_usage_parse_negative_micros);
   RUN_TEST(test_weather_parse_line);
   RUN_TEST(test_weather_parse_too_few_fields);
   RUN_TEST(test_weather_parse_no_input);

@@ -1,4 +1,5 @@
 #include "clock_sync.h"
+#include "app_defaults.h"
 #include "hw/rtc.h"
 #include "util/time_util.h"
 #include <Arduino.h>
@@ -7,8 +8,11 @@
 
 // The NTP/display timezone, in seconds. Set from config (clockSyncSetOffset())
 // before the first sync. The RTC is written in local wall time, so seeding the
-// system clock from it has to subtract this to get UTC epoch seconds.
-static int s_tzOffsetSec = 8 * 3600;
+// system clock from it has to subtract this to get UTC epoch seconds. The
+// pre-config value is the same default the config comes up with
+// (DEFAULT_TZ_OFFSET_MIN), so the restore agrees with whichever offset
+// clockSyncSetOffset() installs.
+static int s_tzOffsetSec = DEFAULT_TZ_OFFSET_MIN * 60;
 
 static bool     s_started = false;
 static bool     s_valid   = false;   // plausible wall clock (RTC or NTP)

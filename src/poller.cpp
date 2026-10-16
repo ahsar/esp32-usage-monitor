@@ -4,17 +4,19 @@
 // is unchanged: the same `Interval` timers, the same usage → weather → moon →
 // air priority, and the same exponential backoff caps.
 #include "poller.h"
+#include "app_defaults.h"
 
 namespace {
 
 PollerConfig g_cfg;
 
 // Fallback periods, overwritten by pollerInit(). Kept so a timer that somehow
-// runs before init() still behaves like the old main.cpp literals.
-Interval s_ivUsage(60000);
-Interval s_ivWeather(1800000);
-Interval s_ivMoon(43200000);
-Interval s_ivAir(3600000);
+// runs before init() still behaves like the loaded config's periods; the
+// numbers are the constants from app_defaults.h, not a second copy of them.
+Interval s_ivUsage(DEFAULT_POLL_USAGE_S * 1000u);
+Interval s_ivWeather(DEFAULT_POLL_WEATHER_S * 1000u);
+Interval s_ivMoon(DEFAULT_POLL_MOON_S * 1000u);
+Interval s_ivAir(DEFAULT_POLL_AIR_S * 1000u);
 
 // Indexed by FetchJob (1..FETCH_AIR); slot 0 is unused.
 uint32_t s_failStreak[FETCH_AIR + 1];

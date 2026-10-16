@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <string.h>
 #include "storage.h"
+#include "app_defaults.h"
 
 struct AppConfig {
   char workspace_id[128];
@@ -63,16 +64,16 @@ struct AppConfig {
 inline void configDefaults(AppConfig& cfg) {  memset(&cfg, 0, sizeof(cfg));
   // The location defaults are the ones this firmware was written around, so a
   // config.json without the location block behaves exactly as it always has.
-  strlcpy(cfg.place,        "Beijing", sizeof(cfg.place));
-  cfg.lat           = 39.9042f;
-  cfg.lon           = 116.4074f;
-  cfg.tz_offset_min = 480;             // UTC+8
-  strlcpy(cfg.waqi_station, "@3303",   sizeof(cfg.waqi_station));
-  cfg.poll_usage_s      = 60;
-  cfg.poll_usage_idle_s = 180;
-  cfg.poll_weather_s    = 1800;
-  cfg.poll_air_s        = 3600;
-  cfg.poll_moon_s       = 43200;
+  strlcpy(cfg.place,        DEFAULT_PLACE,         sizeof(cfg.place));
+  cfg.lat           = DEFAULT_LAT;
+  cfg.lon           = DEFAULT_LON;
+  cfg.tz_offset_min = DEFAULT_TZ_OFFSET_MIN;
+  strlcpy(cfg.waqi_station, DEFAULT_WAQI_STATION, sizeof(cfg.waqi_station));
+  cfg.poll_usage_s      = DEFAULT_POLL_USAGE_S;
+  cfg.poll_usage_idle_s = DEFAULT_POLL_USAGE_IDLE_S;
+  cfg.poll_weather_s    = DEFAULT_POLL_WEATHER_S;
+  cfg.poll_air_s        = DEFAULT_POLL_AIR_S;
+  cfg.poll_moon_s       = DEFAULT_POLL_MOON_S;
   cfg.chime             = true;
   cfg.ble_status        = (bool)DEFAULT_BLE_STATUS;
 }

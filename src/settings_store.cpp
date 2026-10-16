@@ -9,6 +9,7 @@
 // (which settingsFromJson() would then reject at the next boot).
 static const size_t SETTINGS_JSON_CAP = 512;
 static const char*  SETTINGS_PATH     = "/settings.json";
+static const char*  SETTINGS_TMP      = "/settings.json.tmp";
 
 bool settingsLoad(DeviceSettings& out) {
   settingsClear(out);
@@ -44,16 +45,29 @@ bool settingsSave(const DeviceSettings& s) {
   }
   size_t len = strlen(buf);
 
-  File f = LittleFS.open(SETTINGS_PATH, "w");
+  // Same pattern as tokenStoreSave(): temp file, verified bytes, rename over
+  // the live one. A settings file lost to a short write just reverts every
+  // override at the next boot — but the failure is invisible (the device then
+  // claims values it no longer has), so it is worth the two extra lines.
+  File f = LittleFS.open(SETTINGS_TMP, "w");
   if (!f) {
-    Serial.println("settings: cannot open /settings.json for writing");
+    Serial.println("settings: cannot open /settings.json.tmp for writing");
     return false;
   }
   size_t n = f.write((const uint8_t*)buf, len);
   f.close();
   if (n != len) {
-    Serial.println("settings: short write; settings will not survive a reboot");
+    Serial.println("settings: short write; keeping the old overrides");
+    LittleFS.remove(SETTINGS_TMP);
     return false;
+  }
+  if (!LittleFS.rename(SETTINGS_TMP, SETTINGS_PATH)) {
+    LittleFS.remove(SETTINGS_PATH);
+    if (!LittleFS.rename(SETTINGS_TMP, SETTINGS_PATH)) {
+      LittleFS.remove(SETTINGS_TMP);
+      Serial.println("settings: rename over /settings.json failed");
+      return false;
+    }
   }
   return true;
 }
