@@ -215,11 +215,18 @@ def capture(path, port, minutes, drive, interval):
 def capture_cycles(path, port, cycles, seconds):
     """Density mode: one reset per sample.
 
-    Opening the port resets the board (USB CDC), and boot forces all four pollers
-    (`pollerForceAll()` in main.cpp), so a cycle buys ~4 attempts plus an
-    rssi/BSSID line in ~25 s, instead of waiting out 60 s idle-paced polls. It
-    re-associates every cycle, so this measures "what a cold boot gets", not the
-    steady state — which is also what makes it good at exposing a bad AP choice.
+    Boot forces all four pollers (`pollerForceAll()` in main.cpp), so a cycle buys
+    ~4 attempts plus an rssi/BSSID line in ~25 s, instead of waiting out 60 s
+    idle-paced polls. It re-associates every cycle, so this measures "what a cold
+    boot gets", not the steady state — which is also what makes it good at
+    exposing a bad AP choice.
+
+    NOTE: the reset this relies on does **not** happen on the native-USB boards
+    (the S3 AMOLED 2.16 with ARDUINO_USB_CDC_ON_BOOT). DTR/RTS are deasserted
+    below and nothing else pulls EN, so the board keeps running and measured `t=`
+    climbing straight through a `serial_capture.py` session. Treat this mode as
+    "N samples", not "N cold boots", until a reset that actually works is wired in
+    (esptool's `--after hard_reset`, or pressing the button).
     """
     import serial
 

@@ -2,10 +2,18 @@
 """Capture the ESP32 serial port, surviving chip resets / power cycles.
 
 Usage:
-  serial_capture.py [port] [seconds] [--jtag-reset|--no-reset]
+  serial_capture.py [port] [seconds] [--reset-run|--jtag-reset]
 
 The port is reopened automatically if the board resets or powers off (the USB
 CDC device disappears), so a power-cycle is captured from boot #N onwards.
+
+Note that opening the port does *not* reset this board (the S3 AMOLED 2.16 with
+ARDUINO_USB_CDC_ON_BOOT), so a boot log needs one of the two reset flags:
+  --reset-run   IO0 high: reboots into the application, which is what a boot log
+                wants (and what pressing RESET does).
+  --jtag-reset  IO0 low: reboots into the ROM download mode, i.e. it leaves the
+                chip waiting to be flashed. Useful when a flash needs the board
+                put into download mode without touching it.
 """
 import sys
 import time
@@ -49,6 +57,20 @@ if "--jtag-reset" in flags:
     ser.setRTS(True); ser.setDTR(False); ser.setRTS(True)
     time.sleep(0.1)
     ser.setDTR(False); ser.setRTS(False)
+    time.sleep(0.05)
+
+# A *run*-mode reset: the same control lines, but IO0 is left high, so the chip
+# boots the application instead of stopping in the ROM download mode that
+# --jtag-reset lands in. This is what you want to capture a boot log: this board
+# has no working "opening the port resets it" behaviour, and `pio run -t upload`
+# cannot be used for it because it needs the port this tool is holding.
+#
+#   tools/serial_capture.py /dev/cu.usbmodem1101 25 --reset-run
+if "--reset-run" in flags:
+    ser.dtr = False   # IO0 high  → boot from flash
+    ser.rts = True    # EN low    → hold in reset
+    time.sleep(0.1)
+    ser.rts = False   # EN high   → run
     time.sleep(0.05)
 
 while time.time() - t0 < secs:

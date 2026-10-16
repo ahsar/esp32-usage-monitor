@@ -34,6 +34,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The device channel over BLE, for a host the LAN cannot reach.** `?state=` and
+  the settings channel are now served over a GATT service as well as HTTP
+  (`src/ble_status.cpp`), so a PC that cannot reach the device over IP — a VLAN
+  boundary, a blocked mDNS, an AP that associates and then carries nothing — can
+  still drive it. Scope is only what the *host* initiates: usage/weather/moon/air
+  are fetches the device makes to the internet and still need WiFi, and OTA
+  remains LAN/USB.
+
+  Both transports hand a query plus its HMAC pair to `statusChannelHandle()`
+  (`src/status_channel.h`), so the auth rules, the settings validation and the
+  state machine are one implementation rather than two. **No pairing**: the
+  service asks for no bonding and holds no encrypted characteristics, so a macOS
+  app connects and writes without the system ever showing a dialog — what bonding
+  would have bought is already the application-layer HMAC, which the frame
+  carries instead of relying on the link.
+
+  On the PC side `tools/ble-bridge.py` holds the link and serves the same channel
+  on `http://127.0.0.1:8098`, and the plugin's single `url` became an ordered
+  `urls` ladder (the LAN first, then any other address, then the bridge) with a
+  penalty box for a transport that failed, and in-order delivery so overlapping
+  events cannot each pay the same dead transport's timeout.
+
+  What this cost, all measured on the device: the advertisement has to be built by
+  hand — the library's implicit scan response copies `service_uuid_len` into
+  itself and comes out 36 bytes with a 128-bit service UUID, over the 31-byte
+  limit, at which point IDF rejects it and `start()` returns *before* calling
+  `esp_ble_gap_start_advertising()` (silently: `CORE_DEBUG_LEVEL=0` compiles that
+  `log_e` out) — the device also advertises a manufacturer marker because macOS
+  does not report 128-bit service UUIDs reliably, the advertiser must not be
+  re-armed periodically (it churns `ADV_START_COMPLETE` and makes the device
+  *less* visible), and a cold BLE connect costs 8-15 s against ~0.5 s warm, so the
+  client's fallback budget is 30 s and the bridge keeps the link. The stack takes
+  ~68 KB of internal RAM (228 KB → 159 KB at bring-up), which is affordable here
+  but not tunable — it lives in the prebuilt platform libraries. `ble_status` in
+  `config.json` turns the peripheral off (`-DDEFAULT_BLE_STATUS=0` does it for a
+  build, without the `uploadfs` that editing the config would need).
+- **The clock page shows the LAN address and whether the BLE fallback came up.**
+  mDNS does not cross a VLAN boundary, so `usage-monitor.local` can simply not
+  resolve, and the address was otherwise only in the boot log. It is packed into
+  `UiEnv::ipv4` and mixed into `uiFrameKey()`, so a DHCP change repaints the page
+  on its own.
+- `tools/serial_capture.py --reset-run` reboots the board into the application.
+  Reading `/dev/cu.usbmodem*` does **not** reset this board, and `pio run -t
+  upload` cannot be used while a capture holds the port, so there was no way to
+  capture a boot log without pressing the button.
+- The `diag:` line carries `iheap=` (internal heap — `heap=` is PSRAM-dominated
+  and says nothing about what Bluedroid and mbedTLS compete for) and `ble=` (`off`
+  / `failed` / `up`), and the BLE info characteristic reports `fw=… ip=… auth=…
+  ble=… iheap=… bt=…`, so the device can be interrogated without a serial console
+  at all.
+
 - **A signed settings channel on the status endpoint.** The chime, the awake
   brightness and the whole location can now be changed over the network instead
   of by editing `data/config.json` and running `uploadfs` (which erases the
