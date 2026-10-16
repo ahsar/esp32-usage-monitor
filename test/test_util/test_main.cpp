@@ -243,6 +243,27 @@ void test_settings_query_multi_and_encoding(void) {
   TEST_ASSERT_EQUAL_STRING("New York", s.place);
 }
 
+void test_settings_query_volume(void) {
+  DeviceSettings s;
+  uint16_t changed = SET_NONE;
+  TEST_ASSERT_TRUE(settingsQuery("volume=0", s, changed));
+  TEST_ASSERT_EQUAL_HEX16(SET_VOLUME, changed);
+  TEST_ASSERT_EQUAL_INT(0, s.volume);
+  TEST_ASSERT_TRUE(settingsQuery("volume=5", s, changed));
+  TEST_ASSERT_EQUAL_INT(5, s.volume);
+
+  char err[96];
+  TEST_ASSERT_FALSE(settingsQuery("volume=6", s, changed, err, sizeof(err)));
+  TEST_ASSERT_FALSE(settingsQuery("volume=-1", s, changed, err, sizeof(err)));
+  TEST_ASSERT_FALSE(settingsQuery("volume=2x", s, changed, err, sizeof(err)));
+
+  // Empty value clears it, like every other field.
+  TEST_ASSERT_TRUE(settingsQuery("volume=3", s, changed));
+  TEST_ASSERT_TRUE(settingsFromQuery("volume=", s, changed, nullptr, 0));
+  TEST_ASSERT_EQUAL_HEX16(SET_VOLUME, changed);
+  TEST_ASSERT_EQUAL_HEX16(SET_NONE, s.set);
+}
+
 void test_settings_query_location_group(void) {
   DeviceSettings s;
   uint16_t changed = SET_NONE;
@@ -354,13 +375,13 @@ void test_settings_query_all_fields_at_once(void) {
   char err[96];
   char q[256];
   snprintf(q, sizeof(q),
-           "chime=1&brightness=4&place=%s&lat=-89.9999&lon=-179.9999"
+           "chime=1&brightness=4&volume=5&place=%s&lat=-89.9999&lon=-179.9999"
            "&tz_offset_min=-960&waqi_station=%s&air_label=%s",
            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
            "@1234567890123456789012",
            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
   TEST_ASSERT_TRUE(settingsQuery(q, s, changed, err, sizeof(err)));
-  TEST_ASSERT_EQUAL_HEX16(SET_CHIME | SET_BRIGHTNESS | SET_PLACE | SET_COORDS |
+  TEST_ASSERT_EQUAL_HEX16(SET_CHIME | SET_BRIGHTNESS | SET_VOLUME | SET_PLACE | SET_COORDS |
                           SET_TZ | SET_STATION | SET_AIR_LABEL, changed);
   TEST_ASSERT_EQUAL_INT(47, (int)strlen(s.place));
 }
@@ -369,7 +390,7 @@ void test_settings_json_round_trip(void) {
   DeviceSettings s, back;
   uint16_t changed = SET_NONE;
   TEST_ASSERT_TRUE(settingsQuery(
-      "chime=0&brightness=4&place=Shanghai&lat=31.2304&lon=121.4737"
+      "chime=0&brightness=4&volume=2&place=Shanghai&lat=31.2304&lon=121.4737"
       "&tz_offset_min=480&waqi_station=@1437&air_label=Shanghai%20US", s, changed));
 
   char json[512];
@@ -383,6 +404,7 @@ void test_settings_json_round_trip(void) {
   TEST_ASSERT_EQUAL_HEX16(s.set, back.set);
   TEST_ASSERT_EQUAL_INT(s.chime, back.chime);
   TEST_ASSERT_EQUAL_INT(s.brightness, back.brightness);
+  TEST_ASSERT_EQUAL_INT(s.volume, back.volume);
   TEST_ASSERT_EQUAL_STRING(s.place, back.place);
   TEST_ASSERT_FLOAT_WITHIN(0.001f, s.lat, back.lat);
   TEST_ASSERT_FLOAT_WITHIN(0.001f, s.lon, back.lon);
@@ -415,6 +437,7 @@ void test_settings_json_rejects_bad_documents(void) {
   TEST_ASSERT_FALSE(settingsFromJson("not json", s, changed));
   TEST_ASSERT_FALSE(settingsFromJson("[1,2]", s, changed));            // not an object
   TEST_ASSERT_FALSE(settingsFromJson("{\"brightness\":9}", s, changed));
+  TEST_ASSERT_FALSE(settingsFromJson("{\"volume\":6}", s, changed));
   TEST_ASSERT_FALSE(settingsFromJson("{\"chime\":\"maybe\"}", s, changed));
   TEST_ASSERT_FALSE(settingsFromJson("{\"lat\":31.2}", s, changed));   // half a location
   TEST_ASSERT_EQUAL_HEX16(SET_NONE, s.set);
@@ -425,9 +448,10 @@ void test_settings_json_rejects_bad_documents(void) {
   TEST_ASSERT_EQUAL_HEX16(SET_PLACE, s.set);
   TEST_ASSERT_EQUAL_STRING("Oslo", s.place);
 
-  TEST_ASSERT_TRUE(settingsFromJson("{\"chime\":true,\"brightness\":2}", s, changed));
+  TEST_ASSERT_TRUE(settingsFromJson("{\"chime\":true,\"brightness\":2,\"volume\":1}", s, changed));
   TEST_ASSERT_EQUAL_INT(1, s.chime);
   TEST_ASSERT_EQUAL_INT(2, s.brightness);
+  TEST_ASSERT_EQUAL_INT(1, s.volume);
 }
 
 void test_settings_describe(void) {
@@ -438,9 +462,10 @@ void test_settings_describe(void) {
   TEST_ASSERT_EQUAL_STRING("no overrides (everything follows config.json)\n", out);
 
   uint16_t changed = SET_NONE;
-  TEST_ASSERT_TRUE(settingsQuery("chime=0&place=Shanghai&tz_offset_min=480", s, changed));
+  TEST_ASSERT_TRUE(settingsQuery("chime=0&volume=2&place=Shanghai&tz_offset_min=480", s, changed));
   settingsDescribe(s, out, sizeof(out));
   TEST_ASSERT_TRUE(strstr(out, "chime          = off") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "volume         = 2") != nullptr);
   TEST_ASSERT_TRUE(strstr(out, "place          = Shanghai") != nullptr);
   TEST_ASSERT_TRUE(strstr(out, "tz_offset_min  = 480") != nullptr);
   TEST_ASSERT_TRUE(strstr(out, "brightness") == nullptr);   // unset: not listed
@@ -807,6 +832,7 @@ int main(int, char**) {
   RUN_TEST(test_moon_api_path);
   RUN_TEST(test_settings_query_single);
   RUN_TEST(test_settings_query_multi_and_encoding);
+  RUN_TEST(test_settings_query_volume);
   RUN_TEST(test_settings_query_location_group);
   RUN_TEST(test_settings_query_empty_value_clears);
   RUN_TEST(test_settings_query_rejects_unknown_key);

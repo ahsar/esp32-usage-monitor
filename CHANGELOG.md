@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Chimes are struck notes now, not beeps — and their loudness is a setting.**
+  The old cue was a flat, equal-level tone at 1320 Hz with 12 ms edges, which is
+  close to worst case for a tiny speaker and read as an alarm. `src/voice/chime.cpp`
+  now synthesises a *struck* note: 8 ms attack, exponential decay over ~a third of
+  the note, and a little 2nd/3rd harmonic over the fundamental (a pure sine is what
+  made it sound electronic). Pitches came down — `done` is 660 → 990 Hz,
+  `failed` a single 330 Hz note with a long decay, `waiting` two soft 880 Hz taps —
+  and the default amplitude is `0.40` versus the old fixed `0.75` — and since the
+  envelope decays, a cue now carries roughly **11 dB less energy** than the beeps
+  it replaces (measured: peak 0.30 vs 0.75 full scale, and no clipping at any
+  level).
+  Loudness is now `chime_volume` in `config.json` or the `?volume=` setting
+  (0..5, default 3), applied live over the settings channel, so it can be tuned
+  without touching the filesystem. This supersedes the "plain buzzer beeps" entry
+  below.
 - **Chimes no longer crackle, and are plain buzzer beeps.** The distortion was
   the ES8311 DAC volume: reg `0x32` is dB-scaled (`0x00` = −95.5 dB, `0xBF` =
   0 dB, `0xFF` = +32 dB), and `src/voice/i2s_audio.cpp` wrote `0xD8` — which is

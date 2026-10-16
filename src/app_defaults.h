@@ -23,3 +23,4 @@
 #define DEFAULT_POLL_WEATHER_S   1800
 #define DEFAULT_POLL_AIR_S       3600
 #define DEFAULT_POLL_MOON_S      43200
+#define DEFAULT_CHIME_VOLUME     3           // index into chime.cpp's amplitude table

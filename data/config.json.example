@@ -20,5 +20,6 @@
   "poll_moon_s": 43200,
 
   "chime": true,
+  "chime_volume": 3,
   "ble_status": true
 }

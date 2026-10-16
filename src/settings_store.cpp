@@ -76,6 +76,7 @@ void settingsOverlay(const DeviceSettings& s, AppConfig& cfg) {
   // Brightness has no AppConfig field: it is a display knob owned by main.cpp,
   // which applies it live (see applyDeviceSettings()) rather than at boot only.
   if (s.set & SET_CHIME)     cfg.chime = s.chime != 0;
+  if (s.set & SET_VOLUME)    cfg.chime_volume = (uint8_t)s.volume;
   if (s.set & SET_PLACE)     strlcpy(cfg.place, s.place, sizeof(cfg.place));
   if (s.set & SET_COORDS)    { cfg.lat = s.lat; cfg.lon = s.lon; }
   if (s.set & SET_TZ)        cfg.tz_offset_min = s.tz_offset_min;

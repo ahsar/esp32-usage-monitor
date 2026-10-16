@@ -52,8 +52,9 @@ current weather card. These are real captures from the device — see
   "Thinking…" animation while the agent works, "Needs you" plus an attention
   beep when it asks for permission, and a two-beep / low-beep cue when a session
   succeeds or fails.
-- **Chimes** are synthesised at boot on the ES8311 codec — nothing to upload.
-- **Remote settings** — chime, brightness and the whole location (place,
+- **Chimes** are synthesised at boot on the ES8311 codec — nothing to upload. Soft
+  struck notes rather than beeps, with a loudness (`volume`) you can set live.
+- **Remote settings** — chime (and its volume), brightness and the whole location (place,
   coordinates, timezone, air station) are changeable over the status endpoint
   with `tools/status-settings.sh`, so tuning the device never means another
   `uploadfs`.
@@ -328,6 +329,7 @@ tools/status-settings.sh place=              # clear it: back to config.json
 | Key | Value |
 |---|---|
 | `chime` | `0` / `1` |
+| `volume` | `0`–`5` chime loudness (the default is `3`; `chime=0` is off, not `volume=0`) |
 | `brightness` | `1`–`4` (the awake panel level; `0` is the idle-dim level) |
 | `place` | city for wttr.in and the status bar |
 | `lat`, `lon` | moonrise/moonset coordinates (set together) |

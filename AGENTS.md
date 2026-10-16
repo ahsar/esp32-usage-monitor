@@ -47,7 +47,7 @@ pio run -e esp32-usage-monitor -t uploadfs
 ```
 
 `workspace_id` (the `wrk_...` org id) is the only required base field. After
-editing config, re-run `uploadfs` — except for chime, brightness, the location
+editing config, re-run `uploadfs` — except for chime, its volume, brightness, the location
 (place/coords/tz/air station): those are also settable at runtime over the
 settings channel, which needs no `uploadfs` at all (docs/pc-bridge.md).
 
@@ -208,7 +208,7 @@ Read the relevant one before changing that area:
 - `tools/monitor-send.sh` — the transport ladder as one command (HTTP last-good →
   learned/BLE IP → configured URLs → BLE one-shot); what the plugin spawns
 - `tools/status-ping.sh` — signed status ping, for testing the device by hand
-- `tools/status-settings.sh` — read/change chime, brightness and the location over the
+- `tools/status-settings.sh` — read/change chime, its volume, brightness and the location over the
   signed settings channel (no `uploadfs`)
 - `tools/status_stub.py` — local stand-in for the status endpoint (tests the plugin,
   `tools/status-settings.sh` and both HMAC forms)

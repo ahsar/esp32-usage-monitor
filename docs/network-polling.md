@@ -2,8 +2,8 @@
 
 Poll periods live in `data/config.json` (`poll_usage_s`, `poll_usage_idle_s`,
 `poll_weather_s`, `poll_air_s`, `poll_moon_s`). Defaults: usage 60 s, weather
-30 min, air 60 min, moon 12 h. One feature toggle lives there too: `chime`
-(completion cues), default `true`. `status_key` is the HMAC secret for the
+30 min, air 60 min, moon 12 h. Two audio knobs live there too: `chime`
+(completion cues), default `true`, and `chime_volume` (0..5, default 3). `status_key` is the HMAC secret for the
 status endpoint (empty = auth off). Changing `status_key` needs an `uploadfs` —
 run `python3 tools/authorize.py` first, because `uploadfs` erases the device's
 rotated tokens (the pre-hook in `tools/uploadfs_guard.py` will insist on it).

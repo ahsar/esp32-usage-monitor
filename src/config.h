@@ -40,6 +40,10 @@ struct AppConfig {
 
   // Feature toggles.
   bool chime;          // play a chime when the agent finishes / needs you
+  // How loud that chime is: an index into chime.cpp's amplitude table, 0..5.
+  // 3 is the default; the table's top is still softer than the flat beeps the
+  // percussive tones replaced. Settable live over the settings channel.
+  uint8_t chime_volume;
   // Serve the device channel over Bluetooth LE as well as HTTP (ble_status.h):
   // the fallback for when the PC cannot reach the device over the LAN. Costs
   // advertising plus the stack's RAM, so it is a toggle rather than a given.
@@ -75,6 +79,7 @@ inline void configDefaults(AppConfig& cfg) {  memset(&cfg, 0, sizeof(cfg));
   cfg.poll_air_s        = DEFAULT_POLL_AIR_S;
   cfg.poll_moon_s       = DEFAULT_POLL_MOON_S;
   cfg.chime             = true;
+  cfg.chime_volume      = DEFAULT_CHIME_VOLUME;
   cfg.ble_status        = (bool)DEFAULT_BLE_STATUS;
 }
 
@@ -113,6 +118,7 @@ inline bool loadConfig(AppConfig& cfg) {
   cfg.poll_air_s        = doc["poll_air_s"]        | cfg.poll_air_s;
   cfg.poll_moon_s       = doc["poll_moon_s"]       | cfg.poll_moon_s;
   cfg.chime             = doc["chime"]             | cfg.chime;
+  cfg.chime_volume      = doc["chime_volume"]      | cfg.chime_volume;
   cfg.ble_status        = doc["ble_status"]        | cfg.ble_status;
   return true;
 }

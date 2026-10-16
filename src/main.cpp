@@ -183,6 +183,7 @@ static bool applyDeviceSettings(const DeviceSettings& st, uint16_t changed) {
     s_cfg = s_cfgBase;
     settingsOverlay(st, s_cfg);
     s_chimeEnabled = s_cfg.chime;
+    chimeSetVolume(s_cfg.chime_volume);
 
     if (changed & SET_BRIGHTNESS) {
         // A cleared override goes back to the factory level, not to 0 (the dim
@@ -516,6 +517,7 @@ void setup() {
     clockSyncRestoreFromRtc();
 
     s_chimeEnabled = s_cfg.chime;
+    chimeSetVolume(s_cfg.chime_volume);
     // Token store + the background fetch task. Every HTTPS fetch — including
     // the blocking TLS connect and any token refresh — runs there, so loop()
     // never waits on the network (see fetch_task.h for the threading rules).

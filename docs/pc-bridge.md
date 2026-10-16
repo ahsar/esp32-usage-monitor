@@ -34,11 +34,13 @@ heavier follow-up if that matters. **With an empty
 is a local stand-in for the endpoint that reimplements the check, so the plugin
 can be exercised without hardware.
 
-**Chimes.** Synthesised at boot (`src/voice/chime.*`) into a 500 ms PCM buffer
+**Chimes.** Synthesised at boot (`src/voice/chime.*`) into a 700 ms PCM buffer
 and streamed from `loop()`; there is no raw file, so activating a chime never
 requires an `uploadfs` (which would erase the device's rotated tokens). The three
-cues are plain click-free beeps — a rising two-beep on success, one longer low
-beep on failure and a double blip when you are needed.
+cues are struck notes (fast attack, exponential decay, a touch of 2nd/3rd
+harmonic) — a rising 660→990 Hz pair on success, one long low 330 Hz note on
+failure and two soft 880 Hz taps when you are needed. Their loudness is the
+`?volume=` setting (0..5, default 3), applied on the next cue.
 
 ## Settings over the same endpoint
 
@@ -50,6 +52,7 @@ running `uploadfs`, which **erases the device's rotated OAuth token** (see
 | Request | Meaning |
 |---|---|
 | `?chime=0` / `?chime=1` | chime on completion / needs-you |
+| `?volume=0..5` | chime loudness (0 is the quietest step, not silence; default 3) |
 | `?brightness=1..4` | awake panel level (index into `BRIGHT_LUT`; 0 is the dim level, so it is not settable) |
 | `?place=CITY` | wttr.in query and status-bar title |
 | `?lat=..&lon=..` | moonrise/moonset coordinates (must be given together) |

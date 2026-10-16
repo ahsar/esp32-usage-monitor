@@ -15,6 +15,7 @@
 // device's rotated OAuth token) can be changed over the network:
 //
 //   ?chime=0&brightness=4        set overrides (see settings_parse.h for keys)
+//   ?volume=2                    chime loudness, 0..5
 //   ?settings                    read them back
 //   ?place=Shanghai&lat=31.2304&lon=121.4737&tz_offset_min=480
 //

@@ -25,6 +25,7 @@ enum SettingsField : uint16_t {
   SET_TZ         = 1u << 4,
   SET_STATION    = 1u << 5,
   SET_AIR_LABEL  = 1u << 6,
+  SET_VOLUME     = 1u << 7,
 };
 
 // Field limits. Brightness is 1..4: 0 is the idle-dim level (BRIGHT_LUT[0]), so
@@ -34,6 +35,10 @@ constexpr int SETTINGS_BRIGHTNESS_MIN = 1;
 constexpr int SETTINGS_BRIGHTNESS_MAX = 4;
 constexpr int SETTINGS_TZ_MIN         = -16 * 60;
 constexpr int SETTINGS_TZ_MAX         =  16 * 60;
+// Chime loudness: an index into chime.cpp's amplitude table. 0 is the quietest
+// step (not silence — that is `chime=0`), 5 the loudest.
+constexpr int SETTINGS_VOLUME_MIN     = 0;
+constexpr int SETTINGS_VOLUME_MAX     = 5;
 
 // Buffer sizes shared with AppConfig's location fields, so an override can never
 // be longer than the value it replaces.
@@ -45,6 +50,7 @@ struct DeviceSettings {
   uint16_t set = SET_NONE;     // which fields below are overridden
   int   chime = 0;             // 0/1
   int   brightness = 0;        // BRIGHT_LUT index, 1..4
+  int   volume = 0;            // chime loudness index, 0..5
   char  place[SETTINGS_PLACE_CAP] = {0};
   float lat = 0, lon = 0;
   int   tz_offset_min = 0;
@@ -60,6 +66,9 @@ inline bool settingsBrightnessOk(int v) {
   return v >= SETTINGS_BRIGHTNESS_MIN && v <= SETTINGS_BRIGHTNESS_MAX;
 }
 inline bool settingsChimeOk(int v) { return v == 0 || v == 1; }
+inline bool settingsVolumeOk(int v) {
+  return v >= SETTINGS_VOLUME_MIN && v <= SETTINGS_VOLUME_MAX;
+}
 inline bool settingsTzOk(int v) { return v >= SETTINGS_TZ_MIN && v <= SETTINGS_TZ_MAX; }
 inline bool settingsLatOk(float v) { return v >= -90.0f && v <= 90.0f; }
 inline bool settingsLonOk(float v) { return v >= -180.0f && v <= 180.0f; }
@@ -167,6 +176,15 @@ inline bool settingsFromQuery(const char* query, DeviceSettings& s, uint16_t& ch
         next.brightness = (int)n; next.set |= SET_BRIGHTNESS;
       }
       touched |= SET_BRIGHTNESS;
+    } else if (!strcmp(key, "volume")) {
+      if (!v[0]) { next.set &= (uint16_t)~SET_VOLUME; next.volume = 0; }
+      else {
+        long n = 0;
+        if (!settingsParseInt(v, n) || !settingsVolumeOk((int)n))
+          return fail("volume must be 0..5 (chime=0 turns chimes off)");
+        next.volume = (int)n; next.set |= SET_VOLUME;
+      }
+      touched |= SET_VOLUME;
     } else if (!strcmp(key, "place")) {
       if (!v[0]) { next.set &= (uint16_t)~SET_PLACE; next.place[0] = '\0'; }
       else {
@@ -236,6 +254,7 @@ inline bool settingsToJson(const DeviceSettings& s, char* out, size_t cap) {
   JsonObject o = doc.to<JsonObject>();   // without this an empty set serializes as "null"
   if (s.set & SET_CHIME)      o["chime"]          = s.chime;
   if (s.set & SET_BRIGHTNESS) o["brightness"]     = s.brightness;
+  if (s.set & SET_VOLUME)     o["volume"]         = s.volume;
   if (s.set & SET_PLACE)      o["place"]          = s.place;
   if (s.set & SET_COORDS)     { o["lat"] = s.lat; o["lon"] = s.lon; }
   if (s.set & SET_TZ)         o["tz_offset_min"]  = s.tz_offset_min;
@@ -274,6 +293,10 @@ inline bool settingsFromJson(const char* json, DeviceSettings& s, uint16_t& chan
       int n = v.as<int>();
       if (!v.is<int>() || !settingsBrightnessOk(n)) return false;
       next.brightness = n; next.set |= SET_BRIGHTNESS; touched |= SET_BRIGHTNESS;
+    } else if (!strcmp(k, "volume")) {
+      int n = v.as<int>();
+      if (!v.is<int>() || !settingsVolumeOk(n)) return false;
+      next.volume = n; next.set |= SET_VOLUME; touched |= SET_VOLUME;
     } else if (!strcmp(k, "place")) {
       const char* p = v.as<const char*>();
       if (!p || !p[0] || !settingsCopyStr(next.place, sizeof(next.place), p)) return false;
@@ -343,6 +366,10 @@ inline void settingsDescribe(const DeviceSettings& s, char* out, size_t cap) {
   }
   if (s.set & SET_BRIGHTNESS) {
     snprintf(line, sizeof(line), "  brightness     = %d\n", s.brightness);
+    n = settingsAppend(out, cap, n, line);
+  }
+  if (s.set & SET_VOLUME) {
+    snprintf(line, sizeof(line), "  volume         = %d\n", s.volume);
     n = settingsAppend(out, cap, n, line);
   }
   if (s.set & SET_PLACE) {
