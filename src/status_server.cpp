@@ -1,4 +1,5 @@
 #include "status_server.h"
+#include "status_channel.h"
 #include "clock_sync.h"
 #include <Arduino.h>
 #include <WiFi.h>
@@ -97,15 +98,14 @@ static bool headerValue(const String& req, const char* name, char* out, size_t o
   return false;
 }
 
-// True when the request is allowed to change state. `payload` is what gets
-// signed: the state name for `?state=`, the raw query string for settings.
-static bool authorize(const String& req, const char* payload) {
+// True when `sig` is a valid HMAC over "<payload>|<ts>". `payload` is what gets
+// signed: the state name for `?state=`, the raw query string for settings. The
+// HMAC pair itself comes from the transport (the X-Ts/X-Sig headers over HTTP,
+// the first two space-separated fields of a BLE frame) — that is the only part
+// of auth that is not shared, so it is the only part that lives in a transport.
+static bool authorizePayload(const char* payload, const char* ts, const char* sig) {
   if (!statusServerAuthEnabled()) return true;   // dev mode, warned at boot
-
-  char ts[24], sig[80];
-  if (!headerValue(req, "X-Ts", ts, sizeof(ts))) return false;
-  if (!headerValue(req, "X-Sig", sig, sizeof(sig))) return false;
-  if (ts[0] == 0) return false;
+  if (!payload || !ts || !ts[0] || !sig || !sig[0]) return false;
 
   // Sized for a full settings query: the longest place/station/air_label plus the
   // keys and separators, which is what the client hashes too.
@@ -117,6 +117,7 @@ static bool authorize(const String& req, const char* payload) {
   hmacSha256(s_key, s_keyLen, msg, strlen(msg), mac);
   if (!hexToBytes(sig, got, 32)) return false;
   if (!ctEqual(mac, got, 32)) return false;
+
 
   // Freshness is best-effort: enforced once NTP has set the clock. Before that
   // a captured request could in principle be replayed, but it still needs the
@@ -200,55 +201,121 @@ static bool requestQuery(const String& req, char* out, size_t cap) {
   return true;
 }
 
+// ---- the channel itself (transport-neutral; see status_channel.h) ----------
+
+static void setBody(char* body, size_t cap, const char* text) {
+  if (!body || !cap) return;
+  size_t n = strlen(text);
+  if (n > cap - 1) n = cap - 1;
+  memcpy(body, text, n);
+  body[n] = '\0';
+}
+
+// A client with the wrong key would otherwise fill the console. One line every
+// few seconds is enough to notice, and a BLE peer retrying on every write is no
+// different from a host retrying on every request.
+static void logReject(const char* what, const char* peer) {
+  if (millis() - s_lastRejectLog < 5000) return;
+  s_lastRejectLog = millis();
+  Serial.printf("%s: REJECTED from %s (bad/missing signature)\n", what, peer);
+}
+
 // A settings request: everything except a `?state=` (which keeps the original
 // value-only signature so the OpenCode plugin is untouched). `?settings` on its
 // own reads the current overrides back.
-static void handleSettings(WiFiClient& client, const String& req, const char* query) {
+static const char* channelSettings(const StatusReq& r, char* body, size_t cap) {
   if (!statusServerAuthEnabled()) {
     Serial.println("settings: REFUSED (no status_key configured)");
-    respond(client, "403 Forbidden", "settings require status_key\n");
-    return;
+    setBody(body, cap, "settings require status_key\n");
+    return "403 Forbidden";
   }
 
   // Auth before parsing: an unauthenticated request gets no feedback about the
   // parser at all, and the signature covers the raw query either way.
-  if (!authorize(req, query)) {
-    if (millis() - s_lastRejectLog > 5000) {
-      s_lastRejectLog = millis();
-      Serial.printf("settings: REJECTED from %s (bad/missing signature)\n",
-                    client.remoteIP().toString().c_str());
-    }
-    respond(client, "401 Unauthorized");
-    return;
+  if (!authorizePayload(r.query, r.ts, r.sig)) {
+    logReject("settings", r.peer);
+    setBody(body, cap, "OK");   // the body a rejected request has always had
+    return "401 Unauthorized";
   }
 
-  bool readOnly = !strcmp(query, "settings");
+  bool readOnly = !strcmp(r.query, "settings");
   DeviceSettings next = s_settings;
   uint16_t changed = SET_NONE;
   char err[96] = {0};
 
-  if (!readOnly && !settingsFromQuery(query, next, changed, err, sizeof(err)))
-    return respond(client, "400 Bad Request", err[0] ? err : "bad settings query");
+  if (!readOnly && !settingsFromQuery(r.query, next, changed, err, sizeof(err))) {
+    setBody(body, cap, err[0] ? err : "bad settings query");
+    return "400 Bad Request";
+  }
 
   if (readOnly || !s_settingsCb) {
-    char body[512];
-    settingsDescribe(s_settings, body, sizeof(body));
-    respond(client, "200 OK", body);
-    return;
+    settingsDescribe(s_settings, body, cap);
+    return "200 OK";
   }
 
   if (!s_settingsCb(next, changed)) {
-    Serial.printf("settings: apply failed for query '%s'\n", query);
-    respond(client, "500 Internal Server Error", "could not store settings\n");
-    return;
+    Serial.printf("settings: apply failed for query '%s'\n", r.query);
+    setBody(body, cap, "could not store settings\n");
+    return "500 Internal Server Error";
   }
 
   s_settings = next;
-  Serial.printf("settings: %s\n", query);
-  char body[512];
-  settingsDescribe(s_settings, body, sizeof(body));
-  respond(client, "200 OK", body);
+  Serial.printf("settings: %s\n", r.query);
+  settingsDescribe(s_settings, body, cap);
+  return "200 OK";
 }
+
+const char* statusChannelHandle(const StatusReq& r, char* body, size_t cap) {
+  const char* q = r.query ? r.query : "";
+  if (!q[0]) {                        // no query at all: health probe
+    setBody(body, cap, "OK");
+    return "200 OK";
+  }
+
+  // Settings first: a `?state=` request keeps the original protocol, anything
+  // else that is a query is the settings channel.
+  if (strncmp(q, "state=", 6) != 0) return channelSettings(r, body, cap);
+
+  // Here — and only here — the signature covers the *value*, not the query, so
+  // the original leniency is kept: the state name is matched anywhere in the
+  // query and signed on its own. A settings request signs the whole query
+  // instead, which is why that rule belongs to the request rather than to a
+  // transport.
+  const char* st = nullptr;
+  if      (strstr(q, "state=running") != nullptr) st = "running";
+  else if (strstr(q, "state=waiting") != nullptr) st = "waiting";
+  else if (strstr(q, "state=done")    != nullptr) st = "done";
+  else if (strstr(q, "state=failed")  != nullptr) st = "failed";
+
+  if (!st) {                          // health probe / unknown: nothing to do
+    setBody(body, cap, "OK");
+    return "200 OK";
+  }
+
+  if (!authorizePayload(st, r.ts, r.sig)) {
+    logReject(st, r.peer);
+    setBody(body, cap, "OK");
+    return "401 Unauthorized";
+  }
+
+  if (!strcmp(st, "running")) {
+    enterActive(ST_RUNNING);
+  } else if (!strcmp(st, "waiting")) {
+    if (s_state != ST_WAITING) s_pending = STATUS_EV_WAITING;
+    enterActive(ST_WAITING);
+  } else {
+    bool failed = !strcmp(st, "failed");
+    // Only chime for a real transition; a duplicate/stale report stays silent.
+    if (s_state != ST_IDLE) s_pending = failed ? STATUS_EV_FAILED : STATUS_EV_DONE;
+    s_state = ST_IDLE;
+  }
+  Serial.printf("state=%s\n", st);
+
+  setBody(body, cap, "OK");
+  return "200 OK";
+}
+
+// ---- the HTTP transport ---------------------------------------------------
 
 extern "C" void handleHttpStatus() {
   WiFiClient client = s_server.accept();
@@ -274,48 +341,17 @@ extern "C" void handleHttpStatus() {
     return;
   }
 
-  // Settings first: a `?state=` request keeps the original protocol, anything
-  // else that is a query is the settings channel.
-  char query[256];
-  bool hasQuery = requestQuery(req, query, sizeof(query));
-  if (hasQuery && strncmp(query, "state=", 6) != 0) {
-    handleSettings(client, req, query);
-    return;
-  }
+  // The transport's whole job: pull the query and the HMAC pair out of the wire
+  // format, then hand them to the shared handler.
+  char query[256] = {0}, ts[24] = {0}, sig[80] = {0}, peer[24] = {0};
+  if (!requestQuery(req, query, sizeof(query))) query[0] = '\0';
+  headerValue(req, "X-Ts", ts, sizeof(ts));
+  headerValue(req, "X-Sig", sig, sizeof(sig));
+  IPAddress ip = client.remoteIP();
+  snprintf(peer, sizeof(peer), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
 
-  const char* st = nullptr;
-  if (req.indexOf("state=running") >= 0)       st = "running";
-  else if (req.indexOf("state=waiting") >= 0)  st = "waiting";
-  else if (req.indexOf("state=done") >= 0)     st = "done";
-  else if (req.indexOf("state=failed") >= 0)   st = "failed";
-
-  if (!st) {
-    respond(client, "200 OK");   // health probe / unknown: nothing to do
-    return;
-  }
-
-  if (!authorize(req, st)) {
-    if (millis() - s_lastRejectLog > 5000) {
-      s_lastRejectLog = millis();
-      Serial.printf("status: REJECTED state=%s from %s (bad/missing signature)\n",
-                    st, client.remoteIP().toString().c_str());
-    }
-    respond(client, "401 Unauthorized");
-    return;
-  }
-
-  if (strcmp(st, "running") == 0) {
-    enterActive(ST_RUNNING);
-  } else if (strcmp(st, "waiting") == 0) {
-    if (s_state != ST_WAITING) s_pending = STATUS_EV_WAITING;
-    enterActive(ST_WAITING);
-  } else {
-    bool failed = strcmp(st, "failed") == 0;
-    // Only chime for a real transition; a duplicate/stale report stays silent.
-    if (s_state != ST_IDLE) s_pending = failed ? STATUS_EV_FAILED : STATUS_EV_DONE;
-    s_state = ST_IDLE;
-  }
-  Serial.printf("state=%s\n", st);
-
-  respond(client, "200 OK");
+  char body[512];
+  StatusReq r{query, ts, sig, peer};
+  respond(client, statusChannelHandle(r, body, sizeof(body)), body);
 }
+

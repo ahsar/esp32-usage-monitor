@@ -155,6 +155,7 @@ the build today.
 | `poll_air_s` | `3600` | Air-quality poll period |
 | `poll_moon_s` | `43200` | Moon poll period |
 | `chime` | `true` | Play a chime when the agent finishes or needs you |
+| `ble_status` | `true` | Also serve the status/settings channel over BLE, as a fallback for a host the LAN cannot reach |
 
 The location block is optional: leave it out and the device keeps the defaults
 above. Changing `tz_offset_min` needs a note of its own — the PCF85063 stores
@@ -301,6 +302,15 @@ in `X-Sig` / `X-Ts`; a bad or missing signature gets `401` and changes nothing,
 and a ±60 s window blocks replays. See
 [`tools/opencode-plugin/README.md`](tools/opencode-plugin/README.md) for setup,
 and `tools/status-ping.sh` to drive the endpoint by hand.
+
+The same channel is also served over BLE, for a host the LAN cannot reach (VLAN
+boundaries, a network that blocks mDNS, an AP that carries nothing). The plugin
+tries the LAN first and falls back to it; `tools/ble-bridge.py` is the PC end. It
+needs **no pairing** — the HMAC is what authorises a request, not the link — and no
+configuration. See [docs/pc-bridge.md](docs/pc-bridge.md#the-same-channel-over-ble-when-the-lan-cannot-carry-it).
+
+> BLE only carries what the host initiates (state + settings). The device's own
+> usage/weather/moon/air fetches go to the internet and still need WiFi.
 
 ### Tuning it over HTTP
 

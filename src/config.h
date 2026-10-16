@@ -39,12 +39,28 @@ struct AppConfig {
 
   // Feature toggles.
   bool chime;          // play a chime when the agent finishes / needs you
+  // Serve the device channel over Bluetooth LE as well as HTTP (ble_status.h):
+  // the fallback for when the PC cannot reach the device over the LAN. Costs
+  // advertising plus the stack's RAM, so it is a toggle rather than a given.
+  bool ble_status;
 };
+
+// `ble_status` builds in on by default, but can be turned off for a whole build
+// without touching the filesystem — which is the point: the alternative,
+// editing data/config.json, needs an `uploadfs`, and that erases the device's
+// rotated OAuth tokens (AGENTS.md). It is also the only way to A/B the BLE
+// stack's cost, e.g. to see what it does to the internal heap the pollers and
+// mbedTLS share:
+//
+//   PLATFORMIO_BUILD_FLAGS='-DDEFAULT_BLE_STATUS=0' \
+//     pio run -e esp32-usage-monitor -t clean -t upload
+#ifndef DEFAULT_BLE_STATUS
+#define DEFAULT_BLE_STATUS 1
+#endif
 
 // Fill in every field with a sane default. Called before parsing so a missing
 // or malformed config.json still leaves a usable configuration.
-inline void configDefaults(AppConfig& cfg) {
-  memset(&cfg, 0, sizeof(cfg));
+inline void configDefaults(AppConfig& cfg) {  memset(&cfg, 0, sizeof(cfg));
   // The location defaults are the ones this firmware was written around, so a
   // config.json without the location block behaves exactly as it always has.
   strlcpy(cfg.place,        "Beijing", sizeof(cfg.place));
@@ -58,6 +74,7 @@ inline void configDefaults(AppConfig& cfg) {
   cfg.poll_air_s        = 3600;
   cfg.poll_moon_s       = 43200;
   cfg.chime             = true;
+  cfg.ble_status        = (bool)DEFAULT_BLE_STATUS;
 }
 
 // Copy an optional string field, keeping whatever configDefaults() wrote when
@@ -95,5 +112,6 @@ inline bool loadConfig(AppConfig& cfg) {
   cfg.poll_air_s        = doc["poll_air_s"]        | cfg.poll_air_s;
   cfg.poll_moon_s       = doc["poll_moon_s"]       | cfg.poll_moon_s;
   cfg.chime             = doc["chime"]             | cfg.chime;
+  cfg.ble_status        = doc["ble_status"]        | cfg.ble_status;
   return true;
 }

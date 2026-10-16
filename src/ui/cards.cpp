@@ -278,6 +278,20 @@ void uiDrawClock(int ox, int oy) {
   textAt(F_BODY, COL_DIM, SAFE_L, 156, buf);
 
   roundBar(SAFE_L, 160, SAFE_W, 12, g_env.batteryPct, bcol);
+
+  // Device identity, at the bottom of its own page. Kept above y≈205 because
+  // uiDrawPageDots() puts the page dots at SAFE_B - 5 (= 211), centred — the one
+  // place on this page that is already spoken for.
+  if (g_env.ipv4) {
+    snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
+             (unsigned)((g_env.ipv4 >> 24) & 0xFF), (unsigned)((g_env.ipv4 >> 16) & 0xFF),
+             (unsigned)((g_env.ipv4 >> 8) & 0xFF),  (unsigned)(g_env.ipv4 & 0xFF));
+  } else {
+    snprintf(buf, sizeof(buf), "no IP");
+  }
+  textCenter(F_BODY, COL_DIM, HW_W / 2, 190, buf);
+  textCenter(F_SMALL, g_env.bleUp ? COL_GREEN : COL_MUTED, HW_W / 2, 203,
+             g_env.bleUp ? "BLE on" : "BLE off");
 }
 
 // ---------------------------------------------------------------------------

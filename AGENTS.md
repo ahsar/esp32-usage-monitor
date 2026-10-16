@@ -86,6 +86,8 @@ x86_64-only binary and needs an arm64 replacement) is in the README,
 | `src/usage_history.{h,cpp}` | RAM-only ring of rolling spend samples feeding the trend page. |
 | `src/fetch_task.{h,cpp}` | Background FreeRTOS worker: job/result queues, token hand-off. Threading rules in the header. |
 | `src/status_server.{h,cpp}` | HTTP status endpoint (`?state=…`) + the signed settings channel (`?chime=…`, `?place=…`, `?settings`), HMAC auth, chime events. |
+| `src/status_channel.h` | The transport-neutral device channel: the seam both `status_server` and `ble_status` go through. Add a request kind here, once. |
+| `src/ble_status.{h,cpp}` | The same channel over a BLE GATT service — the fallback for a host the LAN cannot reach. Deliberately unpaired. |
 | `src/api_client.{h,cpp}` | opencode console REST client (usage + token refresh). |
 | `src/weather_client.{h,cpp}` | Weather (wttr.in), moon (MET Norway), air (waqi) transport. Location comes from `weatherSetLocation()`. |
 | `src/http_client.{h,cpp}` | Shared **blocking** HTTPS helper: DNS/handshake/read deadlines, CA-bundle verification. |
@@ -162,6 +164,14 @@ linked deep dive before changing the area.
   on the loop task (the HTTP handler), like the token flush — never the fetch task.
 - **`uploadfs` erases the device's rotated tokens.** Run `authorize.py` first
   (see the token-lifecycle warning above); the `uploadfs` guard enforces it.
+- **The device channel is one implementation with two transports.** `status_server.cpp`
+  (HTTP) and `ble_status.cpp` (BLE) both hand a query + HMAC pair to
+  `statusChannelHandle()`; auth, settings validation and the state machine live there
+  and nowhere else. BLE is unencrypted on purpose — the HMAC is what authorises a
+  request, so bonding would buy nothing and would only reintroduce the pairing
+  ceremony this exists to avoid. A BLE write arrives on the BT task: copy it there,
+  handle it in `loop()` (`bleStatusUpdate()`), exactly like an HTTP request, because
+  a settings write is flash.
 - **`src/diag.*` is temporary but load-bearing** — it is what makes a wedged
   fetch or a frozen UI diagnosable over USB CDC. Don't delete it while the
   watchdog still relies on its breadcrumbs.
@@ -176,7 +186,7 @@ linked deep dive before changing the area.
 
 Read the relevant one before changing that area:
 
-- [docs/ui-navigation.md](docs/ui-navigation.md) — pages, weather cards, trend page, no-IMU note.
+- [docs/ui-navigation.md](docs/ui-navigation.md) — pages, weather cards, the clock page's device identity (LAN address + BLE state), trend page, no-IMU note.
 - [docs/power.md](docs/power.md) — power key, display power/heat, dim rules, radio.
 - [docs/text-lvgl.md](docs/text-lvgl.md) — the LVGL rasteriser, fonts, `fonts/` build hook.
 - [docs/threading-fetch.md](docs/threading-fetch.md) — fetch task, bounded blocking, safety nets.
@@ -200,6 +210,9 @@ Read the relevant one before changing that area:
   signed settings channel (no `uploadfs`)
 - `tools/status_stub.py` — local stand-in for the status endpoint (tests the plugin,
   `tools/status-settings.sh` and both HMAC forms)
+- `tools/ble-bridge.py` — BLE side of the same channel (`ble_status.cpp`): holds the
+  link and serves it on `http://127.0.0.1:8098`, so the plugin's last transport in
+  `urls` is an ordinary HTTP endpoint; `--scan` / `--once` test it by hand
 - `tools/check-hosts.sh` — verify the firmware's CA bundle still covers every host it talks to
   (reads the bundle out of the *built* library). Exits non-zero when a host needs a firmware update.
 - `tools/build_fonts.py` — PRE `extra_scripts` hook that compiles `fonts/`.

@@ -37,4 +37,11 @@ struct UiEnv {
   bool usbPresent;
   const char* city;        // status-bar title on the Weather page
   const char* airLabel;    // Air card subtitle (the monitoring station)
+
+  // Device identity, drawn on the clock page — the one page that describes the
+  // device itself (time, battery), so it is where the LAN address belongs: mDNS
+  // does not cross a VLAN boundary, and reaching for a serial console to read an
+  // IP off the boot log is exactly what this avoids.
+  uint32_t ipv4;           // 0 = no address yet (WiFi down or still associating)
+  bool     bleUp;          // the BLE fallback came up; NOT proof it is advertising
 };

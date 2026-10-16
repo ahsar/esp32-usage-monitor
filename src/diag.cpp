@@ -1,5 +1,6 @@
 // TEMPORARY diagnostics for the boot/fetch freeze. See diag.h.
 #include "diag.h"
+#include "ble_status.h"   // bleStatusStateName(): which state the BLE bring-up reached
 #include "fetch_task.h"
 #include "ota.h"
 #include <Arduino.h>
@@ -234,7 +235,7 @@ void diagLoopTick(uint32_t now, uint32_t iter) {
     s_periodic = now;
     Serial.printf("diag: t=%us iter=%u maxIterGap=%ums pushMax=%ums busy=%d "
                   "job=%s age=%lums fbc=%s host=%s jobsQ=%u resQ=%u heap=%u "
-                  "psram=%u online=%u wifi=%u rssi=%d\n",
+                  "psram=%u iheap=%u ble=%s online=%u wifi=%u rssi=%d\n",
                   (unsigned)(now / 1000), (unsigned)iter,
                   (unsigned)s_iterMaxGap, (unsigned)s_d.pushMax,
                   fetchTaskBusy() ? 1 : 0, fetchJobName(fetchTaskCurrentJob()),
@@ -244,6 +245,12 @@ void diagLoopTick(uint32_t now, uint32_t iter) {
                   (unsigned)fetchTaskPendingResults(),
                   (unsigned)esp_get_free_heap_size(),
                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                  // `heap` above is dominated by PSRAM and says nothing about the
+                  // memory the BLE stack and mbedTLS actually compete for; the
+                  // internal figure is the one to watch. `ble` is the state
+                  // ble_status brought the peripheral up to.
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  bleStatusStateName(),
                   (unsigned)s_d.online, (unsigned)s_d.wifiStatus,
                   (int)s_d.rssi);
     s_iterMaxGap = 0;

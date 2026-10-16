@@ -26,6 +26,34 @@ dependency so `pager.cpp` can reason about pages without pulling in the display.
 Text is rendered with LVGL Montserrat (anti-aliased, all copy in English) — see
 [text-lvgl.md](text-lvgl.md). Text helpers take and return **logical** units.
 
+## Clock page (device identity)
+
+The Clock page is the device's own status page — the clock, the date, the battery
+— so it is also where the device says **how to reach it**:
+
+```
+      192.168.20.31        ← the LAN address, or "no IP" while offline
+         BLE on            ← the fallback came up (green) / did not (muted)
+```
+
+The address is packed into `UiEnv::ipv4` and mixed into `uiFrameKey()`, so a DHCP
+change repaints the page on its own and the page still costs nothing when nothing
+changed. It is here rather than in the status bar because that bar is per-card and
+already carries the online dot, the title and the clock; and it is here rather than
+behind a gesture because reading an address off a screen should not require knowing
+a secret. It is also the answer to a real problem: mDNS does not cross a VLAN
+boundary, so `usage-monitor.local` can simply not resolve on a segmented network,
+and this saves reaching for a serial console to find the IP.
+
+Two things to keep in mind when editing this page:
+
+- **`uiDrawPageDots()` draws across it.** The page dots sit at `SAFE_B - 5`
+  (= 211) centred, so this page's content has to stay above y≈205.
+- **`BLE on` is not "advertising".** It means the peripheral was brought up
+  (controller running, service registered). The BLE library keeps no advertising
+  state and exposes nothing to query (its GAP handlers are empty), so a scan from
+  the PC — `tools/ble-bridge.py --scan` — remains the only real test.
+
 ## Trend page
 
 The Trend page (`src/ui/trend.cpp`) plots the rolling (5-hour) meter as cost:

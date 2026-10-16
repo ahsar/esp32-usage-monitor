@@ -13,6 +13,7 @@
 #include "wifi_setup.h"
 #include "pager.h"
 #include "status_server.h"
+#include "ble_status.h"
 #include "ota.h"
 #include "clock_sync.h"
 #include "usage_history.h"
@@ -162,6 +163,12 @@ static void refreshEnv(uint32_t now) {
     s_env.usbPresent = bat.usbPresent;
     s_env.city     = s_cfg.place;
     s_env.airLabel = s_cfg.air_label[0] ? s_cfg.air_label : s_cfg.place;
+    // Packed, not formatted: the renderer formats it, and the frame key needs
+    // something cheap to compare so a DHCP change repaints the clock page.
+    IPAddress ip = WiFi.localIP();
+    s_env.ipv4 = ((uint32_t)ip[0] << 24) | ((uint32_t)ip[1] << 16) |
+                 ((uint32_t)ip[2] << 8)  |  (uint32_t)ip[3];
+    s_env.bleUp = (bleStatusState() == BLE_STATE_UP);
     diagSetNet(s_env.online, (int)WiFi.status(), (int)WiFi.RSSI());
     uiSetEnv(s_env);
 }
@@ -241,6 +248,11 @@ static uint32_t uiFrameKey() {
     h = hashMix(h, (uint32_t)s_env.hh);
     h = hashMix(h, (uint32_t)s_env.mm);
     h = hashMix(h, (uint32_t)s_env.batteryPct);
+    // The clock page shows these, and a DHCP lease can change both without any
+    // other input, so they have to move the key or the page would keep rendering
+    // the old address.
+    h = hashMix(h, s_env.ipv4);
+    h = hashMix(h, s_env.bleUp ? 1u : 0u);
     h = hashMix(h, s_dataRev);
     return h;
 }
@@ -546,6 +558,11 @@ void setup() {
     }
     statusServerSetWakeCallback(screenWake);
 
+    // The same channel over BLE, for when the PC cannot reach us over the LAN
+    // (ble_status.h). Started here — after the key and the settings callback —
+    // because it serves that channel, and it only ever runs on this task.
+    bleStatusBegin(s_cfg.ble_status);
+
     // Wireless update path (ArduinoOTA). Wired up in setup() so the endpoints
     // exist before WiFi associates; the server itself starts on connect below.
     otaSetProgressCallback(otaDrawProgress);
@@ -584,6 +601,9 @@ void loop() {
     diagLoopTick(millis(), ++s_iter);
     hwInputUpdate();
     handleHttpStatus();
+    // The same channel's other transport: never fetches anything itself, so it
+    // sits next to the HTTP server rather than near the pollers.
+    bleStatusUpdate();
     // Wireless firmware update. Blocks for the whole transfer (see ota.h) —
     // the OTA module paints the panel and pauses the pollers for its duration.
     otaUpdate();
