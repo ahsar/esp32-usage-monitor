@@ -20,9 +20,8 @@ and after a long idle all four pollers are due back to back.
   and `serviceFetch()` republishes them without bumping `s_dataRev` — the same
   behaviour as the old in-place mutation.
 - The fetch task owns the OAuth `TokenSet` (refresh included). LittleFS is not
-  thread-safe and the 555 artwork is read from `loop()`, so
-  rotated tokens are handed back via `fetchTaskPendingSave()` and written to
-  flash by `serviceFetch()`.
+  thread-safe and is owned by `loop()`, so rotated tokens are handed back via
+  `fetchTaskPendingSave()` and written to flash by `serviceFetch()`.
 - `handleHttpStatus()` is now called only from `loop()` (every ~16 ms), i.e.
   *more* often than the old 100 ms in-request pump.
 - `uiFrame(now)` (`main.cpp`) still owns activity/idle, Key1, the pager, render

@@ -7,8 +7,8 @@ plugin, `session.execution.*` / `permission.asked` events) is the client:
 | Request | State | Device |
 |---|---|---|
 | `?state=running` | agent working | "Thinking…" animation, wakes the panel |
-| `?state=waiting` | permission/question | "Needs you" animation + attention chime |
-| `?state=done` / `?state=failed` | finished / errored | rising / falling chime |
+| `?state=waiting` | permission/question | "Needs you" animation + attention beep |
+| `?state=done` / `?state=failed` | finished / errored | rising two-beep / low beep |
 
 `done`/`failed` only chime on a real transition, and never for the Key1 dismiss,
 so hand-dismissing the animation stays silent. Do **not** rely on V1 event names
@@ -32,7 +32,9 @@ can be exercised without hardware.
 
 **Chimes.** Synthesised at boot (`src/voice/chime.*`) into a 500 ms PCM buffer
 and streamed from `loop()`; there is no raw file, so activating a chime never
-requires an `uploadfs` (which would erase the device's rotated tokens).
+requires an `uploadfs` (which would erase the device's rotated tokens). The three
+cues are plain click-free beeps — a rising two-beep on success, one longer low
+beep on failure and a double blip when you are needed.
 
 ## Settings over the same endpoint
 

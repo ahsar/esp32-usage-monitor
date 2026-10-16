@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Chimes no longer crackle, and are plain buzzer beeps.** The distortion was
+  the ES8311 DAC volume: reg `0x32` is dB-scaled (`0x00` = −95.5 dB, `0xBF` =
+  0 dB, `0xFF` = +32 dB), and `src/voice/i2s_audio.cpp` wrote `0xD8` — which is
+  **+12.5 dB of digital gain ahead of the DAC**, clipping every waveform
+  regardless of its amplitude. It now writes `0xBF` (0 dB) and the synth drives a
+  near-full-scale PCM instead. On top of that the synthesis is a flat tone with a
+  raised-cosine fade in/out, one longer low beep for `failed` and a rising
+  two-beep / double-blip pattern for `done` / `waiting`; only one cue plays at a
+  time and the PA is held open until the DMA has drained on silence, so there is
+  no overlap or click.
+- **"Thinking…" / "Needs you" breathe instead of strobing.** Both agent-activity
+  screens are now a soft ring (a dim halo plus a brighter core) whose radius and
+  brightness rise and fall on a sine — a cool blue for running, amber for
+  waiting. The old 5 Hz on/off blink and the 900 ms hard blink are gone.
+
+### Removed
+
+- **The 555 clip-art.** `data/555.raw`, the `loadImg555()` blitter in
+  `src/ui/cards.cpp`, and the leftover source assets `tools/555.png` /
+  `tools/555.mp3` are deleted, along with the now-unused
+  `ScaledCanvas::draw16bitRGBBitmap()` wrapper. The "Thinking…" screen no longer
+  reads the filesystem at all.
+
 ### Added
 
 - **A signed settings channel on the status endpoint.** The chime, the awake

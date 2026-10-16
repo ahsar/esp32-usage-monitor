@@ -1,32 +1,50 @@
 #include "voice/chime.h"
 #include "voice/i2s_audio.h"
 #include <Arduino.h>
-#include <math.h>
+#include <cmath>
 #include <stdlib.h>
 #include <string.h>
 
 // 16 kHz / mono / 16-bit, matching the I2S + ES8311 configuration in
-// i2s_audio.cpp. 500 ms covers the longest sound (two notes + trailing
-// silence) with room to spare.
+// i2s_audio.cpp. 500 ms covers the longest pattern (two beeps + the silent
+// drain tail) with room to spare.
 static const uint32_t SR          = 16000;
 static const size_t   MAX_SAMPLES = 8000;   // 500 ms
 static const size_t   CHUNK       = 256;    // 16 ms per loop() push
 
-static int16_t* s_buf   = nullptr;
-static size_t   s_len   = 0;
-static size_t   s_pos   = 0;
-static bool     s_playing = false;
+// The I2S DMA holds a few descriptors of audio that is queued but not yet
+// played (I2S_CHANNEL_DEFAULT_CONFIG → 6×240 frames ≈ 90 ms at 16 kHz). Muting
+// the PA the instant the last sample is *queued* chops that tail and pops.
+// So every pattern gets a long silent tail and the PA is held on a little
+// longer, guaranteeing the queue always drains on silence.
+static const float    TAIL_MS  = 150.0f;   // silence after the last beep
+static const uint32_t DRAIN_MS = 170;      // …and how long to wait before mute
 
-// Append one plucked note (fast attack, exponential decay).
-static size_t addTone(size_t at, float freq, float ms, float amp) {
+static int16_t* s_buf = nullptr;
+static size_t   s_len = 0;
+static size_t   s_pos = 0;
+
+// Mirror of audioTxStart()/audioTxStop(): PLAY streams the buffer, DRAIN keeps
+// the PA on while the last queued samples play out, then mutes.
+enum Phase : uint8_t { PH_IDLE, PH_PLAY, PH_DRAIN };
+static Phase    s_phase   = PH_IDLE;
+static uint32_t s_drainAt = 0;
+
+// One plain beep: a flat tone with a raised-cosine fade in/out, so there is no
+// click at either edge. `amp` sits just under full scale — with the DAC volume
+// at 0 dB (i2s_audio.cpp) that is the loudest clean output; the old crackle came
+// from the codec's +12.5 dB digital gain, not the waveform.
+static size_t addBeep(size_t at, float freq, float ms, float amp) {
   size_t n = (size_t)((float)SR * ms / 1000.0f);
   if (at + n > MAX_SAMPLES) n = MAX_SAMPLES - at;
-  const float step = 2.0f * 3.14159265f * freq / (float)SR;
+  const float step = 2.0f * (float)M_PI * freq / (float)SR;
+  size_t fade = (size_t)((float)SR * 0.012f);   // 12 ms
+  if (fade * 2 > n) fade = n / 2;
   float phase = 0.0f;
   for (size_t i = 0; i < n; i++) {
-    float u = (float)i / (float)n;
-    float env = expf(-4.0f * u);
-    if (u < 0.02f) env *= (u / 0.02f);            // ~1 ms attack ramp
+    float env = 1.0f;
+    if (i < fade)            env = 0.5f - 0.5f * cosf((float)M_PI * (float)i / (float)fade);
+    else if (i >= n - fade)  env = 0.5f - 0.5f * cosf((float)M_PI * (float)(n - 1 - i) / (float)fade);
     phase += step;
     s_buf[at + i] = (int16_t)(amp * env * sinf(phase) * 32767.0f);
   }
@@ -50,44 +68,58 @@ bool chimeInit() {
 }
 
 void chimeStop() {
-  if (!s_playing) return;
-  s_playing = false;
+  if (s_phase == PH_IDLE) return;
+  s_phase = PH_IDLE;
   s_pos = s_len;
   audioTxStop();
 }
 
 void chimePlay(ChimeKind kind) {
   if (!s_buf) return;
+  // One chime at a time: restarting while the buffer is still playing (or
+  // draining) would mix the two into the DMA and sound like a glitch. The
+  // status server only fires on real transitions, so dropping a rare overlap is
+  // the safe call.
+  if (s_phase != PH_IDLE) return;
 
   size_t at = 0;
   switch (kind) {
-    case CHIME_DONE:
-      at = addTone(at, 880.0f, 150.0f, 0.55f);     // A5
-      at = addTone(at, 1318.5f, 220.0f, 0.60f);    // E6
+    case CHIME_DONE:                          // rising two-beep "ok"
+      at = addBeep(at,  880.0f, 110.0f, 0.75f);
+      at = addSilence(at, 40.0f);
+      at = addBeep(at, 1320.0f, 170.0f, 0.75f);
       break;
-    case CHIME_FAILED:
-      at = addTone(at, 660.0f, 150.0f, 0.55f);     // E5
-      at = addTone(at, 440.0f, 240.0f, 0.60f);     // A4
+    case CHIME_FAILED:                        // one longer low beep
+      at = addBeep(at, 440.0f, 260.0f, 0.75f);
       break;
-    case CHIME_WAITING:
-      at = addTone(at, 1046.5f, 90.0f, 0.50f);     // C6
+    case CHIME_WAITING:                       // double blip "needs you"
+      at = addBeep(at, 1320.0f, 80.0f, 0.75f);
       at = addSilence(at, 70.0f);
-      at = addTone(at, 1046.5f, 90.0f, 0.50f);     // C6
+      at = addBeep(at, 1320.0f, 80.0f, 0.75f);
       break;
   }
-  at = addSilence(at, 40.0f);   // let the DMA drain before the PA is muted
+  at = addSilence(at, TAIL_MS);
   if (at == 0) return;
 
   s_len = at;
   s_pos = 0;
-  s_playing = true;
+  s_phase = PH_PLAY;
   audioTxStart();
 }
 
-bool chimeActive() { return s_playing; }
+bool chimeActive() { return s_phase != PH_IDLE; }
 
-void chimeUpdate(uint32_t /*now*/) {
-  if (!s_playing) return;
+void chimeUpdate(uint32_t now) {
+  if (s_phase == PH_IDLE) return;
+
+  if (s_phase == PH_DRAIN) {
+    if ((int32_t)(now - s_drainAt) >= 0) {
+      s_phase = PH_IDLE;
+      audioTxStop();
+    }
+    return;
+  }
+
   size_t remaining = s_len - s_pos;
   size_t n = remaining < CHUNK ? remaining : CHUNK;
   if (n > 0) {
@@ -95,7 +127,7 @@ void chimeUpdate(uint32_t /*now*/) {
     s_pos += n;
   }
   if (s_pos >= s_len) {
-    s_playing = false;
-    audioTxStop();
+    s_phase   = PH_DRAIN;
+    s_drainAt = now + DRAIN_MS;
   }
 }

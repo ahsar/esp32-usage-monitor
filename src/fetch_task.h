@@ -83,8 +83,8 @@ bool fetchTaskHarvest(FetchResult& out);
 uint32_t fetchTaskPendingJobs();
 uint32_t fetchTaskPendingResults();
 
-// Rotated-token hand-off: the worker never writes to LittleFS (loop() reads
-// files from it — the 555 artwork — and LittleFS is not thread-safe). Non-null
-// = persist this snapshot, then call fetchTaskSaveDone().
+// Rotated-token hand-off: the worker never writes to LittleFS (loop() owns it
+// and LittleFS is not thread-safe). Non-null = persist this snapshot, then call
+// fetchTaskSaveDone().
 const TokenSet* fetchTaskPendingSave();
 void fetchTaskSaveDone();

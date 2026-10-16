@@ -90,8 +90,13 @@ static bool initEs8311() {
     es8311WriteReg(0x17, 0xC8);
     es8311WriteReg(0x14, 0x1A);
 
-    // DAC output volume ~85%.
-    es8311WriteReg(0x32, 0xD8);
+    // DAC output volume. Reg 0x32 is dB-scaled, NOT a percentage:
+    // 0x00 = -95.5 dB, 0xBF = 0 dB, 0xFF = +32 dB (0.5 dB/step). The Waveshare
+    // reference "volume 85%" → 0xD8 is +12.5 dB of *digital* gain ahead of the
+    // DAC, which hard-clips every waveform (this was the "呲音" on all chimes).
+    // 0 dB + a near-full-scale PCM is the loudest clean setting; loudness past
+    // that has to come from the analogue amp, not digital gain.
+    es8311WriteReg(0x32, 0xBF);
 
     Serial.println("i2s_audio: ES8311 configured for DAC");
     return true;

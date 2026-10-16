@@ -29,6 +29,10 @@ constexpr uint16_t COL_SNOW   = 0xE73F;
 constexpr uint16_t COL_MOON   = 0xEF7D;
 constexpr uint16_t COL_MOONDK = 0x39E7;
 
+// Agent-activity animations: a cool blue "Thinking..." breathing ring, against
+// the amber "Needs you" one (which reuses COL_ORANGE/COL_YELLOW below).
+constexpr uint16_t COL_THINK  = 0x5DBE;
+
 // Buttons / accents (WiFi setup).
 constexpr uint16_t COL_BTN    = 0x2108;
 constexpr uint16_t COL_ACCENT = 0x3949;

@@ -30,8 +30,6 @@ constexpr int SAFE_H     = HW_H - 2 * SAFE_INSET;
 // ScaledCanvas — a thin view over the physical Arduino_Canvas that multiplies
 // every coordinate/size by UI_SCALE, so all existing UI code can keep drawing
 // in 184×224 logical units while the pixels are rasterised at 368×448.
-// Bitmaps are expected to already be pre-scaled by UI_SCALE (only used by the
-// 555 artwork), so their width/height are multiplied too.
 // ---------------------------------------------------------------------------
 class ScaledCanvas {
 public:
@@ -101,10 +99,6 @@ public:
     _c->fillTriangle((int16_t)(x0 * _s), (int16_t)(y0 * _s),
                      (int16_t)(x1 * _s), (int16_t)(y1 * _s),
                      (int16_t)(x2 * _s), (int16_t)(y2 * _s), c);
-  }
-  void draw16bitRGBBitmap(int16_t x, int16_t y, uint16_t* bmp, int16_t w, int16_t h) {
-    _c->draw16bitRGBBitmap((int16_t)(x * _s), (int16_t)(y * _s),
-                           bmp, (int16_t)(w * _s), (int16_t)(h * _s));
   }
 
   uint16_t* getFramebuffer() { return _c->getFramebuffer(); }

@@ -1,7 +1,7 @@
 # esp32-usage-monitor — OpenCode plugin
 
 Pushes OpenCode's agent activity to the ESP32 usage monitor so its panel shows
-a **Thinking…** / **Needs you** animation and plays a completion chime.
+a **Thinking…** / **Needs you** animation and plays a completion beep.
 
 The device runs a tiny HTTP server on port 80 (`src/status_server.cpp`); this
 plugin is the client. It is the *missing half* — without it nothing ever drives
@@ -12,10 +12,10 @@ the device's status endpoint.
 | OpenCode V2 event | Device request | Effect |
 | --- | --- | --- |
 | `session.execution.started` | `GET /?state=running` | "Thinking…" animation, wakes the panel |
-| `permission.asked` | `GET /?state=waiting` | "Needs you" animation + attention chime |
-| `session.execution.succeeded` | `GET /?state=done` | rising chime |
-| `session.execution.interrupted` | `GET /?state=done` | rising chime |
-| `session.execution.failed` | `GET /?state=failed` | falling chime |
+| `permission.asked` | `GET /?state=waiting` | "Needs you" animation + attention beep |
+| `session.execution.succeeded` | `GET /?state=done` | rising two-beep cue |
+| `session.execution.interrupted` | `GET /?state=done` | rising two-beep cue |
+| `session.execution.failed` | `GET /?state=failed` | low beep |
 | `permission.replied` / `permission.rejected` | `GET /?state=running` | back to working |
 
 Only *transitions* are sent (duplicate states are dropped), and each request is

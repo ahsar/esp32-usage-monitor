@@ -1,13 +1,11 @@
-// UI cards: usage / weather / clock pages plus the 555 artwork.
+// UI cards: usage / weather / clock pages plus the agent-activity animations.
 #include "ui/ui_internal.h"
 #include "usage_display.h"
 #include "ui/theme.h"
 #include "util/value_util.h"
 #include <cstdio>
 #include <cstring>
-#include <cstdlib>
 #include <cmath>
-#include <LittleFS.h>
 
 using namespace ui_theme;
 
@@ -283,70 +281,60 @@ void uiDrawClock(int ox, int oy) {
 }
 
 // ---------------------------------------------------------------------------
-// 555 artwork (used by the "Thinking..." animation)
+// Agent-activity animations
+//
+// Both "Thinking..." (running) and "Needs you" (waiting) are a soft breathing
+// ring: a dim halo plus a brighter core outline whose radius and brightness
+// rise and fall on a sine, so the panel glows like a breathing light instead of
+// strobing. There is no bitmap here any more — the old 555 clip-art is gone.
 // ---------------------------------------------------------------------------
 
-static uint16_t* s_img555 = nullptr;
-static int s_img555W = 0, s_img555H = 0;
+// Scale an RGB565 colour towards black (0..1). The background is black, so this
+// is a pure brightness ramp — enough for a glowing ring with no alpha blend.
+static uint16_t dim565(uint16_t c, float f) {
+  if (f < 0.0f) f = 0.0f;
+  if (f > 1.0f) f = 1.0f;
+  int r = (int)(((c >> 11) & 0x1F) * f + 0.5f);
+  int g = (int)(((c >>  5) & 0x3F) * f + 0.5f);
+  int b = (int)(( c        & 0x1F) * f + 0.5f);
+  return (uint16_t)((r << 11) | (g << 5) | b);
+}
 
-static bool loadImg555() {
-  if (s_img555) return true;
-  File f = LittleFS.open("/555.raw", "r");
-  if (!f) return false;
-  const int SRC_W = 160, SRC_H = 26;
-  const int S = BOARD_DISPLAY_UI_SCALE;
-  const size_t srcSz = (size_t)SRC_W * SRC_H * 2;
-  uint16_t* tmp = (uint16_t*)malloc(srcSz);
-  if (!tmp) { f.close(); return false; }
-  if (f.read((uint8_t*)tmp, srcSz) != srcSz) { free(tmp); f.close(); return false; }
-  f.close();
-#if BOARD_DISPLAY_UI_SCALE > 1
-  // Pre-scale the artwork so the ScaledCanvas blit (which multiplies position
-  // and size) lands it at the right physical size. Nearest-neighbour is fine
-  // for this chunky logo.
-  s_img555 = (uint16_t*)malloc(srcSz * S * S);
-  if (!s_img555) { free(tmp); return false; }
-  for (int y = 0; y < SRC_H; y++) {
-    for (int x = 0; x < SRC_W; x++) {
-      uint16_t c = tmp[y * SRC_W + x];
-      for (int dy = 0; dy < S; dy++) {
-        uint16_t* drow = s_img555 + (y * S + dy) * (SRC_W * S) + x * S;
-        for (int dx = 0; dx < S; dx++) drow[dx] = c;
-      }
-    }
+// One full breath over `periodMs`, in [0,1]; smooth at both ends (no strobe).
+static float breathe01(uint32_t elapsedMs, uint32_t periodMs) {
+  float phase = (float)(elapsedMs % periodMs) / (float)periodMs;
+  return 0.5f - 0.5f * cosf(2.0f * (float)M_PI * phase);
+}
+
+// A breathing ring at logical centre (cx, cy): three dim halo outlines plus a
+// brighter core, all growing and brightening together. The core never reaches
+// black, so the ring glows dimly at the trough of the breath rather than
+// blinking out.
+static void drawBreathingRing(int cx, int cy, int baseR, uint16_t col, float b) {
+  int r = baseR + (int)(5.0f * b);
+  for (int i = 3; i >= 1; i--) {
+    spr.drawCircle(cx, cy, r + i * 3, dim565(col, (0.10f + 0.35f * b) / (float)i));
   }
-  free(tmp);
-#else
-  s_img555 = tmp;
-#endif
-  s_img555W = SRC_W;
-  s_img555H = SRC_H;
-  return true;
+  spr.drawCircle(cx, cy, r, dim565(col, 0.25f + 0.75f * b));
 }
 
 void usageDisplayDrawThinking(uint32_t elapsedMs) {
-  if (!loadImg555()) { spr.fillScreen(COL_BG); return; }
+  g_ox = 0; g_oy = 0;
   spr.fillScreen(COL_BG);
-  uint32_t cycle = elapsedMs % 200;
-  if (cycle < 100) {
-    spr.draw16bitRGBBitmap(HW_W / 2 - s_img555W / 2, SAFE_T + 40,
-                           s_img555, s_img555W, s_img555H);
-  }
+  drawBreathingRing(HW_W / 2, SAFE_T + 66, 30, COL_THINK,
+                    breathe01(elapsedMs, 2200));
   textCenter(F_HEAD, COL_TEXT, HW_W / 2, SAFE_T + 150, "Thinking...");
 }
 
-// Agent is blocked on a permission / question. Distinct from "Thinking...":
-// an amber pulsing ring plus a bang, so a glance tells "it needs you".
+// Agent is blocked on a permission / question. Same breathing ring, but amber
+// and a touch faster and stronger, with a bang in the middle, so a glance still
+// says "it needs you" rather than "it is working".
 void usageDisplayDrawWaiting(uint32_t elapsedMs) {
+  g_ox = 0; g_oy = 0;
   spr.fillScreen(COL_BG);
-  uint32_t cycle = elapsedMs % 900;
-  bool on = cycle < 500;
-
-  int cx = HW_W / 2, cy = SAFE_T + 72;
-  for (int r = 36; r >= 28; r--) {
-    spr.drawCircle(cx, cy, r, on ? COL_YELLOW : COL_MAROON);
-  }
-  textCenter(F_BIG, on ? COL_YELLOW : COL_ORANGE, cx, cy + 20, "!");
+  float b = breathe01(elapsedMs, 1300);
+  drawBreathingRing(HW_W / 2, SAFE_T + 72, 34, COL_ORANGE, b);
+  textCenter(F_BIG, dim565(COL_YELLOW, 0.65f + 0.35f * b), HW_W / 2, SAFE_T + 92, "!");
   textCenter(F_HEAD, COL_TEXT, HW_W / 2, SAFE_T + 168, "Needs you");
 }
 

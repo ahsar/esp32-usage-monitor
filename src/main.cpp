@@ -401,7 +401,7 @@ static void uiFrame(uint32_t now) {
 // never blocks.
 static void serviceFetch() {
     // Flash writes stay on this task: the fetch task must not touch LittleFS
-    // (the 555 artwork is read from here, and LittleFS is not thread-safe).
+    // (loop() owns it — config, tokens, settings — and it is not thread-safe).
     if (const TokenSet* pending = fetchTaskPendingSave()) {
         tokenStoreSave(*pending);
         fetchTaskSaveDone();

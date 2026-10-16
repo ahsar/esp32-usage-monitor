@@ -50,7 +50,7 @@ current weather card. These are real captures from the device — see
   RAM-only, so it starts empty on every boot and fills as polls land.
 - **Status bridge** — an OpenCode plugin drives the device over HTTP: a
   "Thinking…" animation while the agent works, "Needs you" plus an attention
-  chime when it asks for permission, and rising / falling chimes when a session
+  beep when it asks for permission, and a two-beep / low-beep cue when a session
   succeeds or fails.
 - **Chimes** are synthesised at boot on the ES8311 codec — nothing to upload.
 - **Remote settings** — chime, brightness and the whole location (place,
@@ -201,7 +201,7 @@ pio run -e esp32-usage-monitor
 # upload firmware
 pio run -e esp32-usage-monitor -t upload
 
-# upload filesystem (config.json, 555 artwork)
+# upload filesystem (config.json)
 pio run -e esp32-usage-monitor -t uploadfs
 
 # upload both
@@ -292,9 +292,9 @@ agent's state:
 | OpenCode V2 event | Request | Device |
 |---|---|---|
 | `session.execution.started` | `?state=running` | "Thinking…" animation, wakes the panel |
-| `permission.asked` | `?state=waiting` | "Needs you" animation + attention chime |
-| `session.execution.succeeded` / `interrupted` | `?state=done` | rising chime |
-| `session.execution.failed` | `?state=failed` | falling chime |
+| `permission.asked` | `?state=waiting` | "Needs you" animation + attention beep |
+| `session.execution.succeeded` / `interrupted` | `?state=done` | rising two-beep cue |
+| `session.execution.failed` | `?state=failed` | low beep |
 
 Every request is signed with `HMAC-SHA256(status_key, "<state>|<unixSeconds>")`
 in `X-Sig` / `X-Ts`; a bad or missing signature gets `401` and changes nothing,
@@ -336,8 +336,7 @@ unauthenticated write. See [docs/pc-bridge.md](docs/pc-bridge.md#settings-over-t
 ```
 ├── data/
 │   ├── config.json          # runtime config (gitignored)
-│   ├── config.json.example  # config template
-│   └── 555.raw              # 555 artwork (Thinking… animation)
+│   └── config.json.example  # config template
 ├── src/
 │   ├── main.cpp             # setup/loop, UI frame gate, idle/dim, wiring
 │   ├── poller.cpp/h         # poll schedule + backoff + wedge ladder (tested)

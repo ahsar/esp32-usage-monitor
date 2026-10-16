@@ -27,8 +27,8 @@ the `die()` report) goes through LVGL now.
   `platformio.ini`) adds them to the build. A repo-root `.ignore` also keeps
   them out of ripgrep/fd results. **Never edit anything in `fonts/` by hand** —
   regenerate with the `lv_font_conv` recipe above.
-- Everything else (bars, icons, moon, dots, the 555 logo) is still drawn directly
-  with Arduino_GFX into the same buffer; only *text* goes through LVGL.
+- Everything else (bars, icons, moon, dots, the breathing ring) is still drawn
+  directly with Arduino_GFX into the same buffer; only *text* goes through LVGL.
 - `ScaledCanvas` (`hw/display.h`) routes its own `setFont`/`setCursor`/`print`/
   `printf` through LVGL too, so the WiFi setup screen and the shutdown banner
   share the same pipeline. Its cursor is a logical baseline and `print()`
