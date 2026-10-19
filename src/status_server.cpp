@@ -1,185 +1,18 @@
+// The HTTP transport for the device channel — see status_server.h. Everything
+// about *what a request means* (auth, the state machine, settings/WiFi parsing)
+// lives in status_channel.cpp; this file only accepts the connection, reads a
+// bounded request head and frames the query + HMAC pair for it.
 #include "status_server.h"
 #include "status_channel.h"
-#include "clock_sync.h"
+#include "parse/http_request.h"
 #include <Arduino.h>
 #include <WiFi.h>
-#include <mbedtls/md.h>
-#include <string.h>
 #include <stdio.h>
-#include <ctype.h>
-#include <time.h>
+#include <string.h>
 
 static WiFiServer s_server(80);
 
-// ---------------------------------------------------------------------------
-// Auth
-// ---------------------------------------------------------------------------
-
-static uint8_t s_key[80];
-static size_t  s_keyLen = 0;
-
-void statusServerSetKey(const char* key) {
-  s_keyLen = 0;
-  if (!key) return;
-  size_t n = strlen(key);
-  if (n > sizeof(s_key)) n = sizeof(s_key);
-  memcpy(s_key, key, n);
-  s_keyLen = n;
-}
-
-bool statusServerAuthEnabled() { return s_keyLen > 0; }
-
-static void hmacSha256(const uint8_t* key, size_t keyLen,
-                       const char* msg, size_t msgLen, uint8_t out[32]) {
-  const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-  mbedtls_md_context_t ctx;
-  mbedtls_md_init(&ctx);
-  if (!info || mbedtls_md_setup(&ctx, info, 1) != 0) {
-    mbedtls_md_free(&ctx);
-    memset(out, 0, 32);
-    return;
-  }
-  mbedtls_md_hmac_starts(&ctx, key, keyLen);
-  mbedtls_md_hmac_update(&ctx, (const uint8_t*)msg, msgLen);
-  mbedtls_md_hmac_finish(&ctx, out);
-  mbedtls_md_free(&ctx);
-}
-
-static int hexVal(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return -1;
-}
-
-static bool hexToBytes(const char* hex, uint8_t* out, size_t n) {
-  if (strlen(hex) != n * 2) return false;
-  for (size_t i = 0; i < n; i++) {
-    int hi = hexVal(hex[2 * i]), lo = hexVal(hex[2 * i + 1]);
-    if (hi < 0 || lo < 0) return false;
-    out[i] = (uint8_t)((hi << 4) | lo);
-  }
-  return true;
-}
-
-// Constant-time compare so a wrong signature can't be brute-forced by timing.
-static bool ctEqual(const uint8_t* a, const uint8_t* b, size_t n) {
-  uint8_t d = 0;
-  for (size_t i = 0; i < n; i++) d |= (uint8_t)(a[i] ^ b[i]);
-  return d == 0;
-}
-
-// Case-insensitive header lookup over the raw request head. Lines are
-// newline-separated in `req` (each keeps its trailing '\r'). `req` is a plain
-// buffer handed over by readRequestHead(); a stray NUL byte on the wire just
-// ends matching early, and the request degrades to a health probe or a 405.
-static bool headerValue(const char* req, size_t rlen, const char* name,
-                        char* out, size_t outLen) {
-  char needle[40];
-  snprintf(needle, sizeof(needle), "\n%s:", name);
-  const size_t nlen = strlen(needle);
-  if (rlen < nlen) return false;
-
-  for (size_t i = 0; i + nlen <= rlen; i++) {
-    size_t j = 0;
-    for (; j < nlen; j++) {
-      if (tolower((unsigned char)req[i + j]) != tolower((unsigned char)needle[j])) break;
-    }
-    if (j != nlen) continue;
-
-    size_t v = i + nlen;
-    while (v < rlen && (req[v] == ' ' || req[v] == '\t')) v++;
-    size_t e = v;
-    while (e < rlen && req[e] != '\r' && req[e] != '\n') e++;
-    size_t len = e - v;
-    if (len >= outLen) len = outLen - 1;
-    memcpy(out, req + v, len);
-    out[len] = 0;
-    return true;
-  }
-  return false;
-}
-
-// True when `sig` is a valid HMAC over "<payload>|<ts>". `payload` is what gets
-// signed: the state name for `?state=`, the raw query string for settings. The
-// HMAC pair itself comes from the transport (the X-Ts/X-Sig headers over HTTP,
-// the first two space-separated fields of a BLE frame) — that is the only part
-// of auth that is not shared, so it is the only part that lives in a transport.
-static bool authorizePayload(const char* payload, const char* ts, const char* sig) {
-  if (!statusServerAuthEnabled()) return true;   // dev mode, warned at boot
-  if (!payload || !ts || !ts[0] || !sig || !sig[0]) return false;
-
-  // Sized for the query cap requestQuery() uses: 255 bytes of query + '|' +
-  // a ≤20-digit timestamp + NUL = 277, and 288 keeps a little slack. The client
-  // hashes the same "<query>|<ts>" string, so both sides build it the same way.
-  // A long place name (URL-encoded, so Chinese names grow 3×) is what makes the
-  // cap reachable — rejecting a *validly signed* request over buffer sizing
-  // read like a bug in the client, so the cap has to exceed the query cap.
-  char msg[288];
-  int n = snprintf(msg, sizeof(msg), "%s|%s", payload, ts);
-  if (n <= 0 || (size_t)n >= sizeof(msg)) return false;   // too long to sign
-
-  uint8_t mac[32], got[32];
-  hmacSha256(s_key, s_keyLen, msg, strlen(msg), mac);
-  if (!hexToBytes(sig, got, 32)) return false;
-  if (!ctEqual(mac, got, 32)) return false;
-
-
-  // Freshness is best-effort: enforced once NTP has set the clock. Before that
-  // a captured request could in principle be replayed, but it still needs the
-  // key to have been forged in the first place.
-  if (clockSyncValid()) {
-    long long t   = atoll(ts);
-    long long now = (long long)time(nullptr);
-    if (t < now - 60 || t > now + 60) return false;
-  }
-  return true;
-}
-
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
-
-enum St : uint8_t { ST_IDLE, ST_RUNNING, ST_WAITING };
-static St s_state = ST_IDLE;
-static uint32_t s_since = 0;
-static StatusEvent s_pending = STATUS_EV_NONE;
-static void (*s_wakeCb)() = nullptr;
-static DeviceSettings s_settings;
-static bool (*s_settingsCb)(const DeviceSettings&, uint16_t) = nullptr;
-static bool (*s_wifiCb)(const WifiCred&) = nullptr;
-static uint32_t s_lastRejectLog = 0;
-
 void statusServerBegin() { s_server.begin(); }
-void statusServerSetWakeCallback(void (*cb)()) { s_wakeCb = cb; }
-void statusServerSetSettings(const DeviceSettings& s) { s_settings = s; }
-void statusServerSetSettingsCallback(bool (*cb)(const DeviceSettings&, uint16_t)) {
-  s_settingsCb = cb;
-}
-void statusServerSetWifiCallback(bool (*cb)(const WifiCred&)) { s_wifiCb = cb; }
-
-bool statusServerThinking() {
-  return s_state == ST_RUNNING || s_state == ST_WAITING;
-}
-bool     statusServerWaiting()      { return s_state == ST_WAITING; }
-uint32_t statusServerThinkingSince() { return s_since; }
-
-void statusServerClearThinking() {
-  s_state = ST_IDLE;
-}
-
-StatusEvent statusServerTakeEvent() {
-  StatusEvent e = s_pending;
-  s_pending = STATUS_EV_NONE;
-  return e;
-}
-
-static void enterActive(St next) {
-  if (s_state == next) return;
-  s_state = next;
-  s_since = millis();
-  if (s_wakeCb) s_wakeCb();
-}
 
 static void respond(WiFiClient& client, const char* status, const char* body = "OK") {
   client.print("HTTP/1.1 ");
@@ -192,48 +25,6 @@ static void respond(WiFiClient& client, const char* status, const char* body = "
   client.stop();
 }
 
-// Bounded helpers over the raw head buffer (no String, so no unbounded growth
-// anywhere in the request path).
-static bool memFind(const char* hay, size_t hayLen, const char* needle,
-                    size_t nLen, size_t& pos) {
-  if (nLen == 0 || hayLen < nLen) return false;
-  for (size_t i = 0; i + nLen <= hayLen; i++) {
-    if (memcmp(hay + i, needle, nLen) == 0) { pos = i; return true; }
-  }
-  return false;
-}
-
-// The query of the request line, verbatim and undecoded (no leading '?'), e.g.
-// "chime=0&place=Shanghai". This exact string is what the settings and WiFi
-// signatures cover, so it must be taken as bytes off the wire.
-//
-// `tooLong` distinguishes the two reasons this can fail — "no query at all" (a
-// health probe) from "the query does not fit in `cap`" — because they deserve
-// different answers: a probe gets 200, an oversized request must not be silently
-// ignored. The cap is the caller's: `handleHttpStatus()` sizes it to the longest
-// request either channel takes and `ble_status.cpp` sizes its frame to match.
-static bool requestQuery(const char* req, size_t rlen, char* out, size_t cap,
-                         bool* tooLong = nullptr) {
-  if (tooLong) *tooLong = false;
-  size_t g;
-  if (!memFind(req, rlen, "GET ", 4, g)) return false;
-  size_t sp = g + 4;                        // end of the request target
-  while (sp < rlen && req[sp] != ' ') sp++;
-  if (sp == rlen) return false;
-  size_t q = g + 4;                         // '?' inside the target only
-  while (q < sp && req[q] != '?') q++;
-  if (q == sp) return false;
-  size_t n = sp - q - 1;
-  if (n == 0) return false;
-  if (n + 1 > cap) {
-    if (tooLong) *tooLong = true;
-    return false;
-  }
-  memcpy(out, req + q + 1, n);
-  out[n] = '\0';
-  return true;
-}
-
 // The request head (request line + headers) lands in a fixed buffer. This is
 // where an unbounded read used to live: readStringUntil() into a String would
 // grow until a client that never sent a newline had squeezed internal RAM —
@@ -241,16 +32,26 @@ static bool requestQuery(const char* req, size_t rlen, char* out, size_t cap,
 // keeps its '\n' so header lookup can scan for "\nName:" regardless of line
 // endings, and a blank "\r\n" line ends the head early. 1.5 KB and 24 lines
 // are far above what the plugin sends (request line + 3 headers ≈ 350 B).
-static const size_t HTTP_HEAD_MAX      = 1536;
-static const int    HTTP_HEAD_MAX_LINE = 24;
+static const size_t   HTTP_HEAD_MAX       = 1536;
+static const int      HTTP_HEAD_MAX_LINE  = 24;
+// Wall-clock bound for the whole head, not just per byte. The per-byte wait
+// below alone only bounds a *silent* client: a peer that dribbles one byte every
+// 50 ms could hold loop() for 1536 × 60 ms ≈ 90 s — a frozen UI and no fetch,
+// which is exactly what this server must never be able to cause. A normal LAN
+// request arrives in a few ms, but a station in power save on a congested AP can
+// take a few hundred ms to deliver the head after accept() — 1 s bounds the stall
+// while leaving room for that, instead of making a legitimate host fall back to
+// BLE.
+static const uint32_t HTTP_HEAD_DEADLINE_MS = 1000;
 
 static size_t readRequestHead(WiFiClient& client, char* head, size_t cap) {
   size_t len = 0, lineStart = 0;
   int lines = 0;
+  const uint32_t t0 = millis();
   while (len + 1 < cap && lines < HTTP_HEAD_MAX_LINE) {
-    uint32_t t0 = millis();
-    while (!client.available() && millis() - t0 < 60) delay(1);
-    if (!client.available()) break;            // peer went quiet
+    if (millis() - t0 >= HTTP_HEAD_DEADLINE_MS) break;
+    while (!client.available() && millis() - t0 < HTTP_HEAD_DEADLINE_MS) delay(1);
+    if (!client.available()) break;            // peer went quiet or deadline hit
     int b = client.read();
     if (b < 0) break;                          // socket timeout mid-byte
     head[len++] = (char)b;
@@ -262,169 +63,6 @@ static size_t readRequestHead(WiFiClient& client, char* head, size_t cap) {
   }
   head[len] = '\0';
   return len;
-}
-
-// ---- the channel itself (transport-neutral; see status_channel.h) ----------
-
-static void setBody(char* body, size_t cap, const char* text) {
-  if (!body || !cap) return;
-  size_t n = strlen(text);
-  if (n > cap - 1) n = cap - 1;
-  memcpy(body, text, n);
-  body[n] = '\0';
-}
-
-// A client with the wrong key would otherwise fill the console. One line every
-// few seconds is enough to notice, and a BLE peer retrying on every write is no
-// different from a host retrying on every request.
-static void logReject(const char* what, const char* peer) {
-  if (millis() - s_lastRejectLog < 5000) return;
-  s_lastRejectLog = millis();
-  Serial.printf("%s: REJECTED from %s (bad/missing signature)\n", what, peer);
-}
-
-// A settings request: everything except a `?state=` (which keeps the original
-// value-only signature so the OpenCode plugin is untouched). `?settings` on its
-// own reads the current overrides back.
-static const char* channelSettings(const StatusReq& r, char* body, size_t cap) {
-  if (!statusServerAuthEnabled()) {
-    Serial.println("settings: REFUSED (no status_key configured)");
-    setBody(body, cap, "settings require status_key\n");
-    return "403 Forbidden";
-  }
-
-  // Auth before parsing: an unauthenticated request gets no feedback about the
-  // parser at all, and the signature covers the raw query either way.
-  if (!authorizePayload(r.query, r.ts, r.sig)) {
-    logReject("settings", r.peer);
-    setBody(body, cap, "OK");   // the body a rejected request has always had
-    return "401 Unauthorized";
-  }
-
-  bool readOnly = !strcmp(r.query, "settings");
-  DeviceSettings next = s_settings;
-  uint16_t changed = SET_NONE;
-  char err[96] = {0};
-
-  if (!readOnly && !settingsFromQuery(r.query, next, changed, err, sizeof(err))) {
-    setBody(body, cap, err[0] ? err : "bad settings query");
-    return "400 Bad Request";
-  }
-
-  if (readOnly || !s_settingsCb) {
-    settingsDescribe(s_settings, body, cap);
-    return "200 OK";
-  }
-
-  if (!s_settingsCb(next, changed)) {
-    Serial.printf("settings: apply failed for query '%s'\n", r.query);
-    setBody(body, cap, "could not store settings\n");
-    return "500 Internal Server Error";
-  }
-
-  s_settings = next;
-  Serial.printf("settings: %s\n", r.query);
-  settingsDescribe(s_settings, body, cap);
-  return "200 OK";
-}
-
-// A WiFi credentials request: associate with what it carries, or drop what is
-// stored (`?wifi_ssid=&wifi_pass=`). Everything else about it is the same policy
-// as settings — auth required, signature over the whole query, no unauthenticated
-// write path — because pointing a device at an attacker's AP is worse than
-// changing its brightness.
-static const char* channelWifi(const StatusReq& r, char* body, size_t cap) {
-  if (!statusServerAuthEnabled()) {
-    Serial.println("wifi: REFUSED (no status_key configured)");
-    setBody(body, cap, "wifi credentials require status_key\n");
-    return "403 Forbidden";
-  }
-
-  if (!authorizePayload(r.query, r.ts, r.sig)) {
-    logReject("wifi", r.peer);
-    setBody(body, cap, "OK");   // the body a rejected request has always had
-    return "401 Unauthorized";
-  }
-
-  WifiCred cred;
-  char err[96] = {0};
-  if (!wifiCredFromQuery(r.query, cred, err, sizeof(err))) {
-    setBody(body, cap, err[0] ? err : "bad wifi query");
-    return "400 Bad Request";
-  }
-
-  if (!s_wifiCb) {
-    setBody(body, cap, "wifi channel is not wired up\n");
-    return "503 Service Unavailable";
-  }
-
-  if (!s_wifiCb(cred)) {
-    setBody(body, cap, "could not store credentials\n");
-    return "500 Internal Server Error";
-  }
-
-  // Never the raw query here, unlike the settings line above: it holds the
-  // passphrase. wifiCredDescribe() redacts it for the same reason.
-  char line[160];
-  wifiCredDescribe(cred, line, sizeof(line));
-  Serial.printf("%s", line);
-  wifiCredDescribe(cred, body, cap);
-  return "200 OK";
-}
-
-const char* statusChannelHandle(const StatusReq& r, char* body, size_t cap) {
-  const char* q = r.query ? r.query : "";
-  if (!q[0]) {                        // no query at all: health probe
-    setBody(body, cap, "OK");
-    return "200 OK";
-  }
-
-  // WiFi credentials: their own kind, not a settings field (wifi_cred_parse.h).
-  // Checked before the settings branch because this is the request a device with
-  // no IP address has to be able to take.
-  if (strncmp(q, "wifi_", 5) == 0) return channelWifi(r, body, cap);
-
-  // Settings next: a `?state=` request keeps the original protocol, anything
-  // else that is a query is the settings channel.
-  if (strncmp(q, "state=", 6) != 0) return channelSettings(r, body, cap);
-
-  // Here — and only here — the signature covers the *value*, not the query, so
-  // the original leniency is kept: the state name is matched anywhere in the
-  // query and signed on its own. A settings request signs the whole query
-  // instead, which is why that rule belongs to the request rather than to a
-  // transport.
-  const char* st = nullptr;
-  if      (strstr(q, "state=running") != nullptr) st = "running";
-  else if (strstr(q, "state=waiting") != nullptr) st = "waiting";
-  else if (strstr(q, "state=done")    != nullptr) st = "done";
-  else if (strstr(q, "state=failed")  != nullptr) st = "failed";
-
-  if (!st) {                          // health probe / unknown: nothing to do
-    setBody(body, cap, "OK");
-    return "200 OK";
-  }
-
-  if (!authorizePayload(st, r.ts, r.sig)) {
-    logReject(st, r.peer);
-    setBody(body, cap, "OK");
-    return "401 Unauthorized";
-  }
-
-  if (!strcmp(st, "running")) {
-    enterActive(ST_RUNNING);
-  } else if (!strcmp(st, "waiting")) {
-    if (s_state != ST_WAITING) s_pending = STATUS_EV_WAITING;
-    enterActive(ST_WAITING);
-  } else {
-    bool failed = !strcmp(st, "failed");
-    // Only chime for a real transition; a duplicate/stale report stays silent.
-    if (s_state != ST_IDLE) s_pending = failed ? STATUS_EV_FAILED : STATUS_EV_DONE;
-    s_state = ST_IDLE;
-  }
-  Serial.printf("state=%s\n", st);
-
-  setBody(body, cap, "OK");
-  return "200 OK";
 }
 
 // ---- the HTTP transport ---------------------------------------------------
@@ -440,31 +78,31 @@ extern "C" void handleHttpStatus() {
   size_t reqLen = readRequestHead(client, req, sizeof(req));
 
   size_t g;
-  if (!memFind(req, reqLen, "GET ", 4, g)) {
+  if (!httpMemFind(req, reqLen, "GET ", 4, g)) {
     respond(client, "405 Method Not Allowed");
     return;
   }
 
   // The transport's whole job: pull the query and the HMAC pair out of the wire
-  // format, then hand them to the shared handler. The buffer is sized for the
-  // largest request either channel accepts — a WiFi one is an SSID plus a
-  // passphrase with every byte percent-encoded (32*3 + 63*3 + the key names).
-  char query[384] = {0}, ts[24] = {0}, sig[80] = {0}, peer[24] = {0};
+  // format, then hand them to the shared handler. The buffers are sized from the
+  // channel's own caps (status_channel.h), so a WiFi request — an SSID plus a
+  // passphrase with every byte percent-encoded — fits on both transports.
+  char query[STATUS_QUERY_MAX] = {0};
+  char ts[STATUS_TS_MAX] = {0}, sig[STATUS_SIG_MAX] = {0}, peer[24] = {0};
   bool tooLong = false;
-  if (!requestQuery(req, reqLen, query, sizeof(query), &tooLong)) query[0] = '\0';
+  if (!httpQueryFromHead(req, reqLen, query, sizeof(query), &tooLong)) query[0] = '\0';
   if (tooLong) {
     // Say so instead of answering the health-probe body: a request that was cut
     // to an empty query would come back "200 OK" and quietly do nothing.
     respond(client, "414 URI Too Long");
     return;
   }
-  headerValue(req, reqLen, "X-Ts", ts, sizeof(ts));
-  headerValue(req, reqLen, "X-Sig", sig, sizeof(sig));
+  httpHeaderValue(req, reqLen, "X-Ts", ts, sizeof(ts));
+  httpHeaderValue(req, reqLen, "X-Sig", sig, sizeof(sig));
   IPAddress ip = client.remoteIP();
   snprintf(peer, sizeof(peer), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
 
-  char body[512];
+  char body[STATUS_BODY_MAX];
   StatusReq r{query, ts, sig, peer};
   respond(client, statusChannelHandle(r, body, sizeof(body)), body);
 }
-

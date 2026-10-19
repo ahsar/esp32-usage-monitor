@@ -13,6 +13,7 @@
 #include "wifi_setup.h"
 #include "pager.h"
 #include "status_server.h"
+#include "status_channel.h"
 #include "ble_status.h"
 #include "ota.h"
 #include "clock_sync.h"
@@ -49,7 +50,7 @@ static Interval s_ivEnv(1000);
 static WifiState s_wifi;
 
 // ---- WiFi credentials from the device channel ------------------------------
-// status_server/ble_status hand these over on the loop task, and the handler
+// status_channel/ble_status hand these over on the loop task, and the handler
 // must not touch the radio: associating blocks (WiFi.begin() waits up to 1 s to
 // tear down the current link) and, over HTTP, the reply that authorised the
 // request is travelling over the very link the change would drop. So the
@@ -216,7 +217,7 @@ static void refreshEnv(uint32_t now) {
     uiSetEnv(s_env);
 }
 
-// The settings channel's actor (status_server.cpp calls this with a validated,
+// The settings channel's actor (status_channel.cpp calls this with a validated,
 // range-checked set of overrides and the fields the request touched): store them
 // first, then apply them live. Storing first means the device never claims a
 // change it cannot reproduce after a reboot.
@@ -382,10 +383,10 @@ static void uiFrame(uint32_t now) {
 
     screenIdleUpdate();
 
-    bool thinking = statusServerThinking();
+    bool thinking = statusChannelThinking();
     if (hwBtnA().wasPressed && !s_swallowKey) {
         if (thinking) {
-            statusServerClearThinking();
+            statusChannelClearThinking();
             thinking = false;
         } else {
             pagerAdvance();
@@ -421,7 +422,7 @@ static void uiFrame(uint32_t now) {
 
     // Re-read after Key1 may have dismissed it: a manual dismiss must not leave
     // the waiting animation on screen.
-    bool waiting = statusServerWaiting();
+    bool waiting = statusChannelWaiting();
 
     bool animated = thinking;
 
@@ -433,9 +434,9 @@ static void uiFrame(uint32_t now) {
         // tens of ms, so cap the cadence instead of re-pushing identical frames.
         if (now - s_lastPush >= ANIM_FRAME_MS) {
             if (waiting) {
-                usageDisplayDrawWaiting(now - statusServerThinkingSince());
+                usageDisplayDrawWaiting(now - statusChannelThinkingSince());
             } else {
-                usageDisplayDrawThinking(now - statusServerThinkingSince());
+                usageDisplayDrawThinking(now - statusChannelThinkingSince());
             }
             diagMark(DIAG_UI_PUSH, 0xFFFFFFFEu);
             hwDisplayPush();
@@ -533,7 +534,7 @@ static void serviceFetch() {
     }
 }
 
-// The WiFi credentials channel's actor (status_server.cpp calls this with a
+// The WiFi credentials channel's actor (status_channel.cpp calls this with a
 // validated request). Nothing is stored here: the request is only recorded, and
 // loop() acts on it after both transports have sent their replies — see the note
 // on s_wifiCredPending. The passphrase itself is written to NVS once the link
@@ -640,19 +641,19 @@ void setup() {
 
     pagerInit();
     trendReset();
-    statusServerSetKey(s_cfg.status_key);
-    statusServerSetSettings(st);
-    statusServerSetSettingsCallback(applyDeviceSettings);
+    statusChannelSetKey(s_cfg.status_key);
+    statusChannelSetSettings(st);
+    statusChannelSetSettingsCallback(applyDeviceSettings);
     // The credentials channel (docs/pc-bridge.md): how a PC gives the device its
     // WiFi passphrase instead of the setup screen's character grid. The actor only
     // records the request; loop() applies it once the reply is out.
-    statusServerSetWifiCallback(applyWifiCred);
-    if (statusServerAuthEnabled()) {
+    statusChannelSetWifiCallback(applyWifiCred);
+    if (statusChannelAuthEnabled()) {
         Serial.println("status auth: HMAC-SHA256 enabled");
     } else {
         Serial.println("status auth: DISABLED (set status_key in config.json)");
     }
-    statusServerSetWakeCallback(screenWake);
+    statusChannelSetWakeCallback(screenWake);
 
     // The same channel over BLE, for when the PC cannot reach us over the LAN
     // (ble_status.h). Started here — after the key and the settings callback —
@@ -759,7 +760,7 @@ void loop() {
     // one chunk per loop() iteration cannot keep the I2S DMA fed.
     if (s_chimeEnabled) {
         if (s_authCue) { s_authCue = false; chimePlay(CHIME_FAILED); }
-        switch (statusServerTakeEvent()) {
+        switch (statusChannelTakeEvent()) {
             case STATUS_EV_DONE:    chimePlay(CHIME_DONE);    break;
             case STATUS_EV_FAILED:  chimePlay(CHIME_FAILED);  break;
             case STATUS_EV_WAITING: chimePlay(CHIME_WAITING); break;
@@ -767,7 +768,7 @@ void loop() {
         }
     } else {
         s_authCue = false;
-        statusServerTakeEvent();   // drop it rather than fire it late
+        statusChannelTakeEvent();   // drop it rather than fire it late
     }
 
     refreshEnv(now);

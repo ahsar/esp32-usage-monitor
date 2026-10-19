@@ -26,7 +26,7 @@ IP instead.
 
 **Auth.** Port 80 is reachable by anyone on the LAN, so the endpoint takes an
 HMAC-SHA256 signature over `"<state>|<unixSeconds>"` in `X-Sig` / `X-Ts`
-(`status_server.cpp`), verified in constant time against the `status_key` from
+(`status_channel.cpp`), verified in constant time against the `status_key` from
 `config.json`. With the clock NTP-synced, a ±60 s window blocks replay; a bad or
 missing signature gets `401` and changes nothing. The transport stays plain HTTP,
 but the key never goes on the wire (only the signature and the timestamp), so it
@@ -157,7 +157,7 @@ not take.
   `hw/net.h` (`netSaveCred()` / `netForgetCred()`, which also clears the driver's
   own copy of the AP config). `/settings.json` is a readable record of overrides,
   and a passphrase does not belong in one; it is also why this is its own request
-  kind (`src/parse/wifi_cred_parse.h`, `channelWifi()` in `status_server.cpp`)
+  kind (`src/parse/wifi_cred_parse.h`, `channelWifi()` in `status_channel.cpp`)
   rather than another settings field.
 
 Nothing about the setup screen is removed: the grid is still the path that works

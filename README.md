@@ -163,6 +163,13 @@ the build today.
 | `chime` | `true` | Play a chime when the agent finishes or needs you |
 | `ble_status` | `true` | Also serve the status/settings channel over BLE, as a fallback for a host the LAN cannot reach |
 
+Numeric values are validated: a non-numeric or out-of-range `lat`/`lon`/`tz_offset_min`
+or poll period is ignored (the default is kept) and the reason is printed as a
+`config:` line on the serial console. The same range table (`src/util/config_limits.h`)
+backs the settings channel, so `config.json` and `?lat=…` cannot disagree about
+what is valid — in particular a zero poll period is rejected rather than turning
+the fetch queue into a busy loop.
+
 The location block is optional: leave it out and the device keeps the defaults
 above. Changing `tz_offset_min` needs a note of its own — the PCF85063 stores
 *local* wall time, so the first boot after the change reads the old offset's time
@@ -386,7 +393,9 @@ all. See
 │   ├── ui_compose.cpp/h     # picks the page/cards to draw for the pager state
 │   ├── ui_model.h           # neutral UiPage / UiWeatherCard enums + UiEnv
 │   ├── pager.cpp/h          # page/card gesture + animation state machine
-│   ├── status_server.cpp/h  # HTTP status endpoint (signed state + settings + wifi)
+│   ├── status_channel.cpp/h # device channel: HMAC auth, state machine, settings, wifi
+│   ├── status_server.cpp/h  # HTTP transport for that channel (port 80)
+│   ├── ble_status.cpp/h     # the same channel over a BLE GATT service
 │   ├── clock_sync.cpp/h     # NTP bootstrap + RTC resync scheduling
 │   ├── usage_history.cpp/h  # RAM ring of spend samples (Trend page)
 │   ├── storage.cpp/h        # LittleFS mount helper
@@ -417,10 +426,11 @@ all. See
 ## Tests
 
 The pure helpers under `src/util/` (epoch/date parsing, weather-icon kind, moon
-phase, AQI label, trend math, `Interval`), the header-only
-parsers under `src/parse/` (usage meters, wttr one-line, moon/air JSON) and the
-poll scheduler in `src/poller.cpp` are free of Arduino and hardware dependencies
-and covered by host unit tests — no hardware needed:
+phase, AQI label, trend math, `Interval`, the shared config/settings ranges), the
+header-only parsers under `src/parse/` (usage meters, wttr one-line, moon/air
+JSON, the settings/WiFi requests, the HTTP and BLE framings and the agent state
+machine) and the poll scheduler in `src/poller.cpp` are free of Arduino and
+hardware dependencies and covered by host unit tests — no hardware needed:
 
 ```bash
 pio test -e native

@@ -1,6 +1,6 @@
 #pragma once
 // Device settings: the runtime overrides of config.json that the HTTP settings
-// channel writes (see status_server.h). Header-only and ArduinoJson-based like
+// channel writes (see status_channel.h). Header-only and ArduinoJson-based like
 // the other payload parsers, so the whole "what did the request mean, is it in
 // range, what do we store" decision is host-tested (test/test_util) and the
 // firmware side only has to apply the result.
@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "util/config_limits.h"
 #include "util/url_util.h"
 
 enum SettingsField : uint16_t {
@@ -33,8 +34,9 @@ enum SettingsField : uint16_t {
 // offset ranges are the real-world ones; anything outside is a typo.
 constexpr int SETTINGS_BRIGHTNESS_MIN = 1;
 constexpr int SETTINGS_BRIGHTNESS_MAX = 4;
-constexpr int SETTINGS_TZ_MIN         = -16 * 60;
-constexpr int SETTINGS_TZ_MAX         =  16 * 60;
+// Shared with config.h's loader — see util/config_limits.h.
+constexpr int SETTINGS_TZ_MIN         = config_limits::TZ_MIN;
+constexpr int SETTINGS_TZ_MAX         = config_limits::TZ_MAX;
 // Chime loudness: an index into chime.cpp's amplitude table. 0 is the quietest
 // step (not silence — that is `chime=0`), 5 the loudest.
 constexpr int SETTINGS_VOLUME_MIN     = 0;
@@ -69,9 +71,20 @@ inline bool settingsChimeOk(int v) { return v == 0 || v == 1; }
 inline bool settingsVolumeOk(int v) {
   return v >= SETTINGS_VOLUME_MIN && v <= SETTINGS_VOLUME_MAX;
 }
-inline bool settingsTzOk(int v) { return v >= SETTINGS_TZ_MIN && v <= SETTINGS_TZ_MAX; }
-inline bool settingsLatOk(float v) { return v >= -90.0f && v <= 90.0f; }
-inline bool settingsLonOk(float v) { return v >= -180.0f && v <= 180.0f; }
+inline bool settingsTzOk(int v) { return config_limits::tzOk(v); }
+inline bool settingsLatOk(float v) { return config_limits::latOk(v); }
+inline bool settingsLonOk(float v) { return config_limits::lonOk(v); }
+
+// A JSON *number*, not just something convertible to one. ArduinoJson's
+// as<float>() turns a string into 0, which would pass the range checks above and
+// silently relocate the device to 0,0; and is<float>() alone rejects integers
+// (they are stored as integers), so both numeric forms are accepted here and
+// nothing else. The `|` fallback used by the config loader has the same trap.
+inline bool settingsJsonNumber(const JsonVariant& v, double& out) {
+  if (!v.is<int>() && !v.is<float>()) return false;
+  out = v.as<double>();
+  return true;
+}
 
 // "1"/"true"/"on" and "0"/"false"/"off" -> 0/1; anything else -> -1.
 inline int settingsParseBool(const char* v) {
@@ -143,10 +156,10 @@ inline bool settingsFromQuery(const char* query, DeviceSettings& s, uint16_t& ch
     const char* amp = strchr(p, '&');
     size_t pairLen = amp ? (size_t)(amp - p) : strlen(p);
 
-    // Sized to the whole query the transport accepts (status_server caps it at
-    // 384 to fit a WiFi credentials request, which this parser never sees — a
-    // settings pair is far shorter), so "too long" is reported as such rather
-    // than as a malformed pair.
+    // Sized to the whole query the transport accepts (STATUS_QUERY_MAX in
+    // status_channel.h is 384, to fit a WiFi credentials request, which this
+    // parser never sees — a settings pair is far shorter), so "too long" is
+    // reported as such rather than as a malformed pair.
     char pair[256], key[40], rawVal[160];
     if (pairLen == 0) return fail("malformed settings query");
     if (pairLen >= sizeof(pair)) return fail("settings query too long");
@@ -304,16 +317,18 @@ inline bool settingsFromJson(const char* json, DeviceSettings& s, uint16_t& chan
       if (!p || !p[0] || !settingsCopyStr(next.place, sizeof(next.place), p)) return false;
       next.set |= SET_PLACE; touched |= SET_PLACE;
     } else if (!strcmp(k, "lat") || !strcmp(k, "lon")) {
-      float f = v.as<float>();
+      double d = 0;
+      if (!settingsJsonNumber(v, d)) return false;
+      float f = (float)d;
       bool isLat = (k[1] == 'a');
       if (isLat ? !settingsLatOk(f) : !settingsLonOk(f)) return false;
       if (isLat) { next.lat = f; haveLat = true; }
       else       { next.lon = f; haveLon = true; }
       next.set |= SET_COORDS; touched |= SET_COORDS;
     } else if (!strcmp(k, "tz_offset_min")) {
-      int n = v.as<int>();
-      if (!settingsTzOk(n)) return false;
-      next.tz_offset_min = n; next.set |= SET_TZ; touched |= SET_TZ;
+      double d = 0;
+      if (!settingsJsonNumber(v, d) || !settingsTzOk((int)d)) return false;
+      next.tz_offset_min = (int)d; next.set |= SET_TZ; touched |= SET_TZ;
     } else if (!strcmp(k, "waqi_station")) {
       const char* p = v.as<const char*>();
       if (!p || !p[0] || !settingsCopyStr(next.waqi_station, sizeof(next.waqi_station), p))

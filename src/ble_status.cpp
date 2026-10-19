@@ -1,6 +1,6 @@
 #include "ble_status.h"
+#include "parse/ble_frame.h"
 #include "status_channel.h"
-#include "status_server.h"
 #include "version.h"
 
 #include <Arduino.h>
@@ -49,12 +49,18 @@
 #define BLE_MTU 517
 
 // A request frame is "<ts> <sig> <query>": at most 10 + 1 + 64 + 1 plus the
-// longest query a transport accepts — 383 bytes for a WiFi credentials request
-// with every byte percent-encoded (status_server.cpp sizes the same string).
-// A reply is "<len4><code3><body>" and is kept to a single notification
-// (see notifyReply) rather than chunked, so the client needs no reassembly.
-#define BLE_FRAME_MAX 480
-#define BLE_BODY_MAX  512
+// longest query a transport accepts (STATUS_QUERY_MAX in status_channel.h — a
+// WiFi credentials request with every byte percent-encoded). The static_assert
+// keeps this framing from drifting below the shared cap when either side grows.
+// A reply is "<len4><code3><body>" and is kept to a single notification (see
+// notifyReply) rather than chunked, so the client needs no reassembly.
+#define BLE_FRAME_MAX 512
+static_assert(BLE_FRAME_MAX >= 10 + 1 + 64 + 1 + STATUS_QUERY_MAX,
+              "BLE_FRAME_MAX must fit a fully encoded WiFi credentials query");
+
+// "<len4><code3>" prefixes every reply notification; the body gets what is left
+// of the ATT payload (see notifyReply/bleStatusUpdate).
+static const size_t BLE_REPLY_HEAD = 7;
 
 // Backstop only: the PC-side bridge drops its own link well before this, and this
 // bounds how long a *vanished* central can keep the device out of the air — a
@@ -86,40 +92,22 @@ static volatile bool s_connected = false;
 static uint16_t s_connId = 0;
 static uint32_t s_lastRx = 0;
 
-// Written on the BTC task, read on the loop task. `s_frameLen` is set last, and
-// the client is synchronous (it waits for the reply notification before writing
-// again), so a second write cannot overtake one still being handled — see
-// bleStatusUpdate(). The RX characteristic enforces the same thing at the
-// protocol level by offering PROPERTY_WRITE only (no write-without-response).
-// Kept out of a queue on purpose: one small buffer is the whole contract, and
-// it is the one the protocol already implies.
+// Written on the BTC task, read on the loop task. The copy on both sides is a
+// short critical section rather than a bare memcpy: PROPERTY_WRITE (not
+// write-without-response) keeps a well-behaved client in step with our reply
+// notification, but the ATT stack acknowledges a write as soon as it accepts it,
+// so a retrying or misbehaving peer can still overwrite s_frame while loop() is
+// copying the previous frame. That tore the query and surfaced as an HMAC reject
+// with no diagnostic. The critical section is only around the copy — the channel
+// (auth, a possible flash write) never runs in it.
 static char s_frame[BLE_FRAME_MAX];
 static volatile size_t s_frameLen = 0;
+static portMUX_TYPE s_frameMux = portMUX_INITIALIZER_UNLOCKED;
 static volatile uint8_t s_peerBda[6] = {0};
 
 static void peerString(char* out, size_t cap) {
   const uint8_t* b = (const uint8_t*)s_peerBda;
   snprintf(out, cap, "%02x:%02x:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3], b[4], b[5]);
-}
-
-// "<ts> <sig> <query>" -> a pointer to the query (which may itself contain
-// spaces, '&' and '=' freed), or nullptr when the frame is not shaped like one.
-// `buf` is modified in place; ts/sig are copied out first.
-static const char* parseFrame(char* buf, char* ts, size_t tsCap, char* sig, size_t sigCap) {
-  char* sp1 = strchr(buf, ' ');
-  if (!sp1) return nullptr;
-  *sp1 = '\0';
-  char* sp2 = strchr(sp1 + 1, ' ');
-  if (!sp2) return nullptr;
-  *sp2 = '\0';
-
-  size_t nTs = strlen(buf), nSig = strlen(sp1 + 1);
-  if (nTs == 0 || nTs >= tsCap || nSig == 0 || nSig >= sigCap) return nullptr;
-  memcpy(ts, buf, nTs + 1);
-  memcpy(sig, sp1 + 1, nSig + 1);
-
-  const char* q = sp2 + 1;
-  return q[0] ? q : nullptr;
 }
 
 // "<len4><code3><body>", in one notification. The length is what the client
@@ -134,13 +122,15 @@ static void notifyReply(const char* status, const char* body) {
   if (room > BLE_FRAME_MAX) room = BLE_FRAME_MAX;
 
   size_t bodyLen = strlen(body);
-  if (7 + bodyLen > room) bodyLen = (room > 7) ? room - 7 : 0;
+  if (BLE_REPLY_HEAD + bodyLen > room) {
+    bodyLen = (room > BLE_REPLY_HEAD) ? room - BLE_REPLY_HEAD : 0;
+  }
 
   char frame[BLE_FRAME_MAX + 8];
-  size_t total = 7 + bodyLen;
+  size_t total = BLE_REPLY_HEAD + bodyLen;
   snprintf(frame, 5, "%04x", (unsigned)total);  // 4 hex digits + NUL
   memcpy(frame + 4, status, 3);                 // "200 OK" -> "200"
-  memcpy(frame + 7, body, bodyLen);
+  memcpy(frame + BLE_REPLY_HEAD, body, bodyLen);
 
   s_tx->setValue((uint8_t*)frame, total);
   s_tx->notify();
@@ -163,7 +153,7 @@ static void refreshInfo() {
   char line[128];
   snprintf(line, sizeof(line), "fw=%s ip=%u.%u.%u.%u auth=%s ble=%s iheap=%u bt=%d",
            FW_VERSION, ip[0], ip[1], ip[2], ip[3],
-           statusServerAuthEnabled() ? "hmac" : "off",
+           statusChannelAuthEnabled() ? "hmac" : "off",
            bleStatusStateName(),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (int)s_initDelta);
   s_info->setValue((uint8_t*)line, strlen(line));
@@ -199,8 +189,10 @@ class StatusWriteCallbacks : public BLECharacteristicCallbacks {
     // BTC task: copy only — no flash, no Serial-heavy work, no channel state.
     size_t n = c->getLength();
     if (n == 0 || n > sizeof(s_frame)) return;
+    portENTER_CRITICAL(&s_frameMux);
     memcpy(s_frame, c->getData(), n);
     s_frameLen = n;   // set last: this is what publishes the frame
+    portEXIT_CRITICAL(&s_frameMux);
   }
 };
 
@@ -387,17 +379,27 @@ void bleStatusUpdate() {
     refreshInfo();
   }
 
-  size_t n = s_frameLen;
+  // Take the pending write under the same lock onWrite uses. One short critical
+  // section for the copy, then handle it on this (the loop) task with the lock
+  // released: the channel may write flash, and the BTC task must never wait for
+  // that.
+  char frame[BLE_FRAME_MAX];
+  size_t n = 0;
+  portENTER_CRITICAL(&s_frameMux);
+  n = s_frameLen;
   if (n) {
-    char frame[BLE_FRAME_MAX];
     if (n > sizeof(frame)) n = sizeof(frame);
     memcpy(frame, s_frame, n);
-    frame[n] = '\0';
     s_frameLen = 0;   // taken: the client is waiting for the reply, not writing
+  }
+  portEXIT_CRITICAL(&s_frameMux);
+
+  if (n) {
+    frame[n] = '\0';
     s_lastRx = now;
 
-    char ts[24] = {0}, sig[80] = {0};
-    const char* q = parseFrame(frame, ts, sizeof(ts), sig, sizeof(sig));
+    char ts[STATUS_TS_MAX] = {0}, sig[STATUS_SIG_MAX] = {0};
+    const char* q = bleFrameParse(frame, ts, sizeof(ts), sig, sizeof(sig));
 
     if (!q) {
       Serial.println("ble: malformed frame (want \"<ts> <sig> <query>\")");
@@ -411,10 +413,10 @@ void bleStatusUpdate() {
       // settingsDescribe() cap the HTTP path already applies.
       uint16_t mtu = s_server ? s_server->getPeerMTU(s_connId) : 23;
       if (mtu < 23) mtu = 23;
-      size_t bodyCap = (size_t)mtu - 10;   // 4 length + 3 code
-      if (bodyCap > BLE_BODY_MAX) bodyCap = BLE_BODY_MAX;
+      size_t bodyCap = (size_t)mtu - BLE_REPLY_HEAD;
+      if (bodyCap > STATUS_BODY_MAX) bodyCap = STATUS_BODY_MAX;
 
-      char body[BLE_BODY_MAX];
+      char body[STATUS_BODY_MAX];
       StatusReq r{q, ts, sig, peer};
       const char* status = statusChannelHandle(r, body, bodyCap);
       // Redacted for the one request kind that carries a secret: the shared

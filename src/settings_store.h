@@ -3,7 +3,7 @@
 #include "parse/settings_parse.h"
 
 // Device settings: the runtime overrides of config.json that the HTTP settings
-// channel writes (status_server.h). They live in their own file, /settings.json,
+// channel writes (status_channel.h). They live in their own file, /settings.json,
 // rather than being written back into config.json:
 //
 //   - config.json is the *packed* file (it ships inside the LittleFS image from

@@ -85,14 +85,14 @@ x86_64-only binary and needs an arm64 replacement) is in the README,
 | `src/ui/` | Drawing impl: `cards`, `trend`, `primitives` (fonts + text helpers), `icons`, `lvgl_text`, shared palette `theme.h`. |
 | `src/usage_history.{h,cpp}` | RAM-only ring of rolling spend samples feeding the trend page. |
 | `src/fetch_task.{h,cpp}` | Background FreeRTOS worker: job/result queues, token hand-off. Threading rules in the header. |
-| `src/status_server.{h,cpp}` | HTTP status endpoint (`?state=…`) + the signed settings channel (`?chime=…`, `?place=…`, `?settings`) and the WiFi credentials request (`?wifi_ssid=…`, `tools/wifi-setup.sh`), HMAC auth, chime events. |
-| `src/status_channel.h` | The transport-neutral device channel: the seam both `status_server` and `ble_status` go through. Add a request kind here, once. |
+| `src/status_channel.{h,cpp}` | The transport-neutral device channel: HMAC auth, the agent state machine, settings validation/dispatch and the WiFi credentials request. Both transports call `statusChannelHandle()`. **Add a request kind here, once.** |
+| `src/status_server.{h,cpp}` | The HTTP transport for that channel: port 80, a bounded request-head read, then the query + `X-Ts`/`X-Sig` pair handed to `statusChannelHandle()`. |
 | `src/ble_status.{h,cpp}` | The same channel over a BLE GATT service — the fallback for a host the LAN cannot reach… and the *only* transport that exists on a device with no WiFi credentials yet. Deliberately unpaired. |
 | `src/api_client.{h,cpp}` | opencode console REST client (usage + token refresh). |
 | `src/weather_client.{h,cpp}` | Weather (wttr.in), moon (MET Norway), air (waqi) transport. Location comes from `weatherSetLocation()`. |
 | `src/http_client.{h,cpp}` | Shared **blocking** HTTPS helper: DNS/handshake/read deadlines, CA-bundle verification. |
-| `src/parse/` | Header-only, host-testable payload parsers (usage/wttr/moon/air/settings) and the WiFi credentials request (`wifi_cred_parse.h`). Pure functions — test them here. |
-| `src/util/` | Dependency-free helpers (time/value/interval/trend/loc/url), host-unit-tested. |
+| `src/parse/` | Header-only, host-testable payload parsers (usage/wttr/moon/air/settings) and the WiFi credentials request (`wifi_cred_parse.h`), plus the transport framings (`http_request.h`, `ble_frame.h`) and the agent state machine (`status_machine.h`). Pure functions — test them here. |
+| `src/util/` | Dependency-free helpers (time/value/interval/trend/loc/url, and `config_limits.h` — the range table both `config.json` and the settings channel use), host-unit-tested. |
 | `src/config.h` | `AppConfig` + LittleFS JSON loader (`/config.json`). Add a config field here. |
 | `src/storage.{h,cpp}` | One-shot LittleFS mount helper. |
 | `src/token_store.{h,cpp}` | OAuth tokens in `/tokens.json` + config fallback. |
@@ -177,11 +177,12 @@ linked deep dive before changing the area.
   `loop()`, after the reply that authorised them is out.
 - **`uploadfs` erases the device's rotated tokens.** Run `authorize.py` first
   (see the token-lifecycle warning above); the `uploadfs` guard enforces it.
-- **The device channel is one implementation with two transports.** `status_server.cpp`
-  (HTTP) and `ble_status.cpp` (BLE) both hand a query + HMAC pair to
-  `statusChannelHandle()`; auth, settings validation and the state machine live there
-  and nowhere else. Adding a request kind means one branch in `statusChannelHandle()`,
-  not one per transport — the WiFi credentials request
+- **The device channel is one implementation with two transports.** `status_channel.cpp`
+  is the shared implementation (HMAC auth, state machine, settings/WiFi dispatch);
+  `status_server.cpp` (HTTP) and `ble_status.cpp` (BLE) are thin transports that
+  hand it a query + HMAC pair. Auth, validation and transitions live in
+  `status_channel.cpp` and nowhere else. Adding a request kind means one branch in
+  `statusChannelHandle()`, not one per transport — the WiFi credentials request
   (`src/parse/wifi_cred_parse.h`) is the worked example, and it is also why a
   transport must never log a raw query it does not understand (`wifiQueryForLog()`).
   BLE is unencrypted on purpose — the HMAC is what authorises a

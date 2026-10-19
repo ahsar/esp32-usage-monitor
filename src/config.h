@@ -5,6 +5,7 @@
 #include <string.h>
 #include "storage.h"
 #include "app_defaults.h"
+#include "util/config_limits.h"
 
 struct AppConfig {
   char workspace_id[128];
@@ -90,6 +91,30 @@ static inline void cfgStr(const JsonVariant v, char* dst, size_t cap) {
   if (s && s[0]) strlcpy(dst, s, cap);
 }
 
+// Is this JSON value a *number*? The `|` operator converts a string to 0, which
+// is a valid coordinate and a valid timezone — so `"lat": "north"` used to be
+// accepted as 0,0. is<float>() alone rejects JSON integers (ArduinoJson stores
+// them separately), hence both forms.
+static inline bool cfgNumber(JsonVariantConst v, double& out) {
+  if (!v.is<int>() && !v.is<float>()) return false;
+  out = v.as<double>();
+  return true;
+}
+
+// Load `key` into `out` only when it is a JSON number that `ok` accepts. A
+// rejected value keeps the default configDefaults() wrote and says so, rather
+// than silently clamping or turning a typo into 0. Absent keys are not changes:
+// configDefaults() is what supplies those.
+static inline void cfgLoadNumber(const JsonDocument& doc, const char* key,
+                                 double& out, bool (*ok)(double)) {
+  JsonVariantConst v = doc[key];
+  if (v.isNull()) return;
+  double n = 0;
+  if (cfgNumber(v, n) && ok(n)) { out = n; return; }
+  Serial.printf("config: %s is not a valid number in range; keeping %.6g\n",
+                key, out);
+}
+
 inline bool loadConfig(AppConfig& cfg) {
   configDefaults(cfg);
   if (!storageMount()) return false;
@@ -109,14 +134,41 @@ inline bool loadConfig(AppConfig& cfg) {
   cfgStr(doc["place"],        cfg.place,        sizeof(cfg.place));
   cfgStr(doc["waqi_station"], cfg.waqi_station, sizeof(cfg.waqi_station));
   cfgStr(doc["air_label"],    cfg.air_label,    sizeof(cfg.air_label));
-  cfg.lat           = doc["lat"]           | cfg.lat;
-  cfg.lon           = doc["lon"]           | cfg.lon;
-  cfg.tz_offset_min = doc["tz_offset_min"] | cfg.tz_offset_min;
-  cfg.poll_usage_s      = doc["poll_usage_s"]      | cfg.poll_usage_s;
-  cfg.poll_usage_idle_s = doc["poll_usage_idle_s"] | cfg.poll_usage_idle_s;
-  cfg.poll_weather_s    = doc["poll_weather_s"]    | cfg.poll_weather_s;
-  cfg.poll_air_s        = doc["poll_air_s"]        | cfg.poll_air_s;
-  cfg.poll_moon_s       = doc["poll_moon_s"]       | cfg.poll_moon_s;
+  // Numbers go through the same range table as the settings channel
+  // (util/config_limits.h): two entry points into one field must not disagree
+  // about what is valid, and 0 for a poll period is a busy loop, not "off".
+  double n = cfg.lat;
+  cfgLoadNumber(doc, "lat", n, config_limits::latOk);
+  cfg.lat = (float)n;
+
+  n = cfg.lon;
+  cfgLoadNumber(doc, "lon", n, config_limits::lonOk);
+  cfg.lon = (float)n;
+
+  n = cfg.tz_offset_min;
+  cfgLoadNumber(doc, "tz_offset_min", n, config_limits::tzOk);
+  cfg.tz_offset_min = (int)n;
+
+  n = cfg.poll_usage_s;
+  cfgLoadNumber(doc, "poll_usage_s", n, config_limits::usagePollOk);
+  cfg.poll_usage_s = (uint16_t)n;
+
+  n = cfg.poll_usage_idle_s;
+  cfgLoadNumber(doc, "poll_usage_idle_s", n, config_limits::usagePollOk);
+  cfg.poll_usage_idle_s = (uint16_t)n;
+
+  n = cfg.poll_weather_s;
+  cfgLoadNumber(doc, "poll_weather_s", n, config_limits::otherPollOk);
+  cfg.poll_weather_s = (uint16_t)n;
+
+  n = cfg.poll_air_s;
+  cfgLoadNumber(doc, "poll_air_s", n, config_limits::otherPollOk);
+  cfg.poll_air_s = (uint16_t)n;
+
+  n = cfg.poll_moon_s;
+  cfgLoadNumber(doc, "poll_moon_s", n, config_limits::otherPollOk);
+  cfg.poll_moon_s = (uint16_t)n;
+
   cfg.chime             = doc["chime"]             | cfg.chime;
   cfg.chime_volume      = doc["chime_volume"]      | cfg.chime_volume;
   cfg.ble_status        = doc["ble_status"]        | cfg.ble_status;

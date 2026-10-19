@@ -281,6 +281,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A slow HTTP client can no longer freeze the panel.** `readRequestHead()`
+  bounded each byte (60 ms) but not the whole head, so a peer dribbling one byte
+  at a time could hold `loop()` for ~90 s — a frozen UI with no fetch in flight,
+  the one thing the fetch-task split exists to prevent. The head now has a 1 s
+  wall-clock deadline; a normal LAN request uses a few milliseconds of it.
+
+- **`config.json` and the settings channel now agree on what a number is.**
+  The settings path range-checked everything; the config loader took
+  `doc["lat"] | cfg.lat`, and ArduinoJson's `|` turns `"north"` into `0` — a
+  valid coordinate. Both paths now share `src/util/config_limits.h` for
+  lat/lon/tz and the poll periods, and the loader keeps the default (with a
+  `config:` line) instead of accepting a typo. A zero poll period is rejected
+  rather than turning the fetch queue into a busy loop. `/settings.json` gets
+  the same treatment: a non-numeric `lat`/`lon`/`tz_offset_min` now fails the
+  load instead of silently becoming 0.
+
+- **A validly signed WiFi request could be rejected for being long.**
+  `authorizePayload()` built `"<query>|<ts>"` in a fixed 288-byte buffer, while a
+  fully percent-encoded 32-byte SSID + 63-byte passphrase query reaches ~317 —
+  so the HMAC of a correct request could not be computed and the device answered
+  `401`. The buffer is now sized from the shared `STATUS_QUERY_MAX`.
+
+- **A BLE write can no longer tear the frame `loop()` is copying.** The ATT stack
+  acknowledges a write as soon as it accepts it, so "write with response" keeps a
+  well-behaved client in step but does not stop a retrying one; the copy is now
+  one short critical section on both sides. The channel itself (auth, a possible
+  flash write) still runs outside it.
+
+- **The device channel has a home.** Auth, the state machine and the
+  settings/WiFi dispatch moved out of `status_server.cpp` into
+  `status_channel.cpp`; `ble_status.cpp` no longer includes the HTTP server's
+  header to ask whether auth is on. The request-head parser, the BLE framing and
+  the state transitions are header-only and host-tested (the security-critical
+  routing now has tests instead of only a comment).
+
 - **A failed weather poll no longer costs 30 minutes.** `pollerResult()` applied
   only a cooldown and never re-armed the job's own timer, so the gap between
   attempts was `max(cooldown, interval)`. Since the weather/air/moon intervals

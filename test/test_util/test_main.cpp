@@ -16,6 +16,10 @@
 #include "parse/wifi_cred_parse.h"
 #include "parse/usage_parse.h"
 #include "parse/weather_parse.h"
+#include "parse/http_request.h"
+#include "parse/ble_frame.h"
+#include "parse/status_machine.h"
+#include "util/config_limits.h"
 #include "util/trend_util.h"
 #include "ui_model.h"
 
@@ -929,6 +933,202 @@ void test_ui_model_card_wrap(void) {
   TEST_ASSERT_EQUAL_INT(0, uiCardPrev(1));
 }
 
+// ---- http_request (the request head parser both transports rely on) --------
+
+static const char* kHead =
+    "GET /?chime=0&place=New+York HTTP/1.1\r\n"
+    "Host: usage-monitor.local\r\n"
+    "X-Ts: 1791436863\r\n"
+    "x-siG:   deadbeef\r\n"
+    "\r\n";
+
+void test_http_query_from_head(void) {
+  char q[128] = {0};
+  bool tooLong = true;
+  TEST_ASSERT_TRUE(httpQueryFromHead(kHead, strlen(kHead), q, sizeof(q), &tooLong));
+  TEST_ASSERT_EQUAL_STRING("chime=0&place=New+York", q);
+  TEST_ASSERT_FALSE(tooLong);
+
+  // A health probe (no '?') is not an error — it just has no query.
+  const char* probe = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+  TEST_ASSERT_FALSE(httpQueryFromHead(probe, strlen(probe), q, sizeof(q), &tooLong));
+  TEST_ASSERT_FALSE(tooLong);
+
+  // A query that does not fit is reported separately from "no query": the HTTP
+  // transport answers 414 instead of the health-probe body.
+  char tiny[8];
+  TEST_ASSERT_FALSE(httpQueryFromHead(kHead, strlen(kHead), tiny, sizeof(tiny), &tooLong));
+  TEST_ASSERT_TRUE(tooLong);
+
+  // A '?' after the request target (in a header) must not be mistaken for one.
+  const char* headerQ = "GET /x HTTP/1.1\r\nReferer: /?not=a-query\r\n\r\n";
+  TEST_ASSERT_FALSE(httpQueryFromHead(headerQ, strlen(headerQ), q, sizeof(q)));
+
+  // Not a GET: the transport decides that before calling this, but the parser
+  // must not invent a query out of some other method.
+  const char* post = "POST /?a=1 HTTP/1.1\r\n\r\n";
+  TEST_ASSERT_FALSE(httpQueryFromHead(post, strlen(post), q, sizeof(q)));
+}
+
+void test_http_header_value(void) {
+  char out[32] = {0};
+  TEST_ASSERT_TRUE(httpHeaderValue(kHead, strlen(kHead), "X-Ts", out, sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("1791436863", out);
+
+  // Case-insensitive, and whitespace after the colon is skipped.
+  TEST_ASSERT_TRUE(httpHeaderValue(kHead, strlen(kHead), "x-SIG", out, sizeof(out)));
+  TEST_ASSERT_EQUAL_STRING("deadbeef", out);
+
+  TEST_ASSERT_FALSE(httpHeaderValue(kHead, strlen(kHead), "X-Missing", out, sizeof(out)));
+
+  // A value longer than the buffer is truncated, never overrun.
+  char small[5];
+  TEST_ASSERT_TRUE(httpHeaderValue(kHead, strlen(kHead), "X-Ts", small, sizeof(small)));
+  TEST_ASSERT_EQUAL_STRING("1791", small);
+}
+
+// ---- ble_frame (the BLE transport's "<ts> <sig> <query>" framing) ----------
+
+void test_ble_frame_parse(void) {
+  char ts[24] = {0}, sig[80] = {0};
+  char ok[] = "1791436863 abcdef0123 chime=0&place=New+York";
+  const char* q = bleFrameParse(ok, ts, sizeof(ts), sig, sizeof(sig));
+  TEST_ASSERT_NOT_NULL(q);
+  TEST_ASSERT_EQUAL_STRING("1791436863", ts);
+  TEST_ASSERT_EQUAL_STRING("abcdef0123", sig);
+  TEST_ASSERT_EQUAL_STRING("chime=0&place=New+York", q);
+
+  // The query may contain spaces; only the first two separate fields.
+  char spaced[] = "1 ab state=done&place=New York";
+  q = bleFrameParse(spaced, ts, sizeof(ts), sig, sizeof(sig));
+  TEST_ASSERT_NOT_NULL(q);
+  TEST_ASSERT_EQUAL_STRING("state=done&place=New York", q);
+
+  char missing[] = "1onlyonefield";
+  TEST_ASSERT_NULL(bleFrameParse(missing, ts, sizeof(ts), sig, sizeof(sig)));
+
+  char noQuery[] = "1 ab ";
+  TEST_ASSERT_NULL(bleFrameParse(noQuery, ts, sizeof(ts), sig, sizeof(sig)));
+
+  char noSig[] = "1  q";
+  TEST_ASSERT_NULL(bleFrameParse(noSig, ts, sizeof(ts), sig, sizeof(sig)));
+
+  char longTs[] = "1234567890123456789012345 ab q";
+  char tinyTs[8];
+  TEST_ASSERT_NULL(bleFrameParse(longTs, tinyTs, sizeof(tinyTs), sig, sizeof(sig)));
+}
+
+// ---- status_machine (the state machine status_channel.cpp drives) ----------
+
+void test_status_machine_transitions(void) {
+  StatusMachine m;
+
+  // A start wakes the panel and seeds the animation clock.
+  TEST_ASSERT_TRUE(statusMachineApply(m, "running", 100));
+  TEST_ASSERT_EQUAL_INT(STATUS_RUNNING, m.state);
+  TEST_ASSERT_EQUAL_UINT32(100, m.since);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_NONE, m.pending);
+  TEST_ASSERT_TRUE(statusMachineThinking(m));
+
+  // A duplicate is not a transition: no wake, and the clock is not restarted.
+  TEST_ASSERT_FALSE(statusMachineApply(m, "running", 200));
+  TEST_ASSERT_EQUAL_UINT32(100, m.since);
+
+  // Permission asked → needs-you animation, one waiting cue.
+  TEST_ASSERT_TRUE(statusMachineApply(m, "waiting", 300));
+  TEST_ASSERT_TRUE(statusMachineWaiting(m));
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_WAITING, m.pending);
+
+  // Still waiting: no second cue, no wake.
+  TEST_ASSERT_FALSE(statusMachineApply(m, "waiting", 400));
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_WAITING, m.pending);
+
+  // A completion from an active state queues exactly one event and goes idle.
+  TEST_ASSERT_FALSE(statusMachineApply(m, "done", 500));
+  TEST_ASSERT_EQUAL_INT(STATUS_IDLE, m.state);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_DONE, m.pending);
+  TEST_ASSERT_FALSE(statusMachineThinking(m));
+
+  // The event is consumed once, by loop().
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_DONE, statusMachineTakeEvent(m));
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_NONE, statusMachineTakeEvent(m));
+
+  // A duplicate report while idle must not chime.
+  TEST_ASSERT_FALSE(statusMachineApply(m, "done", 600));
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_NONE, m.pending);
+
+  // Failure after a real start is a failure cue, not a success one.
+  TEST_ASSERT_TRUE(statusMachineApply(m, "running", 700));
+  TEST_ASSERT_FALSE(statusMachineApply(m, "failed", 800));
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_FAILED, m.pending);
+
+  // Key1's dismiss is silent and leaves any pending event alone (the failure
+  // cue from the step above is still queued).
+  TEST_ASSERT_TRUE(statusMachineApply(m, "running", 900));
+  statusMachineClear(m);
+  TEST_ASSERT_EQUAL_INT(STATUS_IDLE, m.state);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_FAILED, m.pending);
+  statusMachineTakeEvent(m);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_NONE, m.pending);
+
+  // Unknown/absent state names are no-ops.
+  TEST_ASSERT_FALSE(statusMachineApply(m, "nonsense", 1000));
+  TEST_ASSERT_FALSE(statusMachineApply(m, nullptr, 1000));
+}
+
+// ---- config_limits (the shared config.json / settings range table) ---------
+
+void test_config_limits(void) {
+  TEST_ASSERT_TRUE(config_limits::latOk(-90));
+  TEST_ASSERT_TRUE(config_limits::latOk(39.9042));
+  TEST_ASSERT_TRUE(config_limits::latOk(90));
+  TEST_ASSERT_FALSE(config_limits::latOk(90.1));
+  TEST_ASSERT_FALSE(config_limits::latOk(-91));
+
+  TEST_ASSERT_TRUE(config_limits::lonOk(-180));
+  TEST_ASSERT_TRUE(config_limits::lonOk(180));
+  TEST_ASSERT_FALSE(config_limits::lonOk(181));
+
+  TEST_ASSERT_TRUE(config_limits::tzOk(-960));
+  TEST_ASSERT_TRUE(config_limits::tzOk(480));
+  TEST_ASSERT_TRUE(config_limits::tzOk(960));
+  TEST_ASSERT_FALSE(config_limits::tzOk(961));
+
+  // Zero is the one that matters: Interval(0) is due on every iteration.
+  TEST_ASSERT_FALSE(config_limits::usagePollOk(0));
+  TEST_ASSERT_FALSE(config_limits::usagePollOk(9));
+  TEST_ASSERT_TRUE(config_limits::usagePollOk(10));
+  TEST_ASSERT_TRUE(config_limits::usagePollOk(86400));
+  TEST_ASSERT_FALSE(config_limits::usagePollOk(86401));
+
+  TEST_ASSERT_FALSE(config_limits::otherPollOk(0));
+  TEST_ASSERT_FALSE(config_limits::otherPollOk(59));
+  TEST_ASSERT_TRUE(config_limits::otherPollOk(60));
+  TEST_ASSERT_TRUE(config_limits::otherPollOk(604800));
+  TEST_ASSERT_FALSE(config_limits::otherPollOk(604801));
+}
+
+void test_settings_json_rejects_non_numeric_location(void) {
+  DeviceSettings s;
+  uint16_t changed = SET_NONE;
+  settingsClear(s);
+
+  // as<float>() would turn each of these into 0, which is a valid coordinate
+  // and a valid offset — the exact silent misconfiguration this rejects.
+  TEST_ASSERT_FALSE(settingsFromJson("{\"lat\":\"31.2\",\"lon\":121.4}", s, changed));
+  TEST_ASSERT_FALSE(settingsFromJson("{\"lat\":31.2,\"lon\":\"121.4\"}", s, changed));
+  TEST_ASSERT_FALSE(settingsFromJson("{\"tz_offset_min\":\"480\"}", s, changed));
+  TEST_ASSERT_EQUAL_HEX16(SET_NONE, s.set);
+
+  // Numeric forms still load: integers and floats are both JSON numbers.
+  TEST_ASSERT_TRUE(settingsFromJson(
+      "{\"lat\":31,\"lon\":121.4,\"tz_offset_min\":480}", s, changed));
+  TEST_ASSERT_EQUAL_HEX16(SET_COORDS | SET_TZ, changed);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 31.0f, s.lat);
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 121.4f, s.lon);
+  TEST_ASSERT_EQUAL_INT(480, s.tz_offset_min);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_civil_epoch_unix_origin);
@@ -1008,5 +1208,11 @@ int main(int, char**) {
   RUN_TEST(test_usage_parse_micro_cents);
   RUN_TEST(test_ui_model_page_wrap);
   RUN_TEST(test_ui_model_card_wrap);
+  RUN_TEST(test_http_query_from_head);
+  RUN_TEST(test_http_header_value);
+  RUN_TEST(test_ble_frame_parse);
+  RUN_TEST(test_status_machine_transitions);
+  RUN_TEST(test_config_limits);
+  RUN_TEST(test_settings_json_rejects_non_numeric_location);
   return UNITY_END();
 }

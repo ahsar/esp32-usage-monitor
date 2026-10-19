@@ -2,7 +2,7 @@
 #include <stdint.h>
 
 // The device channel over Bluetooth LE — the fallback for when the PC cannot
-// reach the device over the LAN. The two are the same channel (status_server.h):
+// reach the device over the LAN. The two are the same channel (status_channel.h):
 // the same state pings, the same settings requests, the same HMAC. Only the
 // framing differs, and both ends go through statusChannelHandle()
 // (status_channel.h), so there is no second set of auth or validation rules to
@@ -36,8 +36,8 @@
 // config toggle; a disabled peripheral never initialises the stack at all, so
 // there is no hidden cost for a device that does not want this.
 //
-// Call once from setup(), after statusServerSetKey() /
-// statusServerSetSettingsCallback() — the channel this serves must be configured
+// Call once from setup(), after statusChannelSetKey() /
+// statusChannelSetSettingsCallback() — the channel this serves must be configured
 // before it can answer anything.
 void bleStatusBegin(bool enable);
 
