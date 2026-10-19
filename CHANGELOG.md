@@ -64,6 +64,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The chime waveform now reaches full scale.** `addNote()` normalised its
+  harmonic mix (`sin x + 0.18·sin 2x + 0.07·sin 3x`) by an arbitrary `1.25`, but
+  that mix actually peaks at **`1.0261`** (computed numerically at high
+  resolution, at `x ≈ 64.49°`), so every volume level was `20·log10(1.25/1.0261)
+  ≈ 1.7 dB` below what its number claimed and `amp = 1.0` meant 82 % of full
+  scale. It now divides by the true peak, so `amp = 1.0` is genuinely full scale
+  and the *unchanged* `VOL_GAIN` table is 1.7 dB louder at every level — if
+  level 3 now reads a step too hot, `?volume=2` is the drop-in answer rather than
+  a rebuild. Nothing can clip afterwards: the mix is unit-peak by construction
+  (`|w| ≤ 1.0`), `env ≤ 1.0`, `amp ≤ 1.0` and the largest table gain is `0.75`,
+  so `amp · env · w · 32767` tops out exactly at `int16_t`'s own maximum 32767.
+
 - The association block in `loop()` is split into what happens once per boot
   (the HTTP listener, mDNS, the OTA endpoint) and what happens on every
   association (clock sync, forcing the pollers). A re-provision from the channel

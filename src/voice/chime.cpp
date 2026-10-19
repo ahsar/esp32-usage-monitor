@@ -24,10 +24,15 @@ static const size_t PAT_MAX = 11200;   // 700 ms — the longest pattern
 
 // Which volume level those patterns are streamed at: a per-sample gain applied
 // while writing (see playPattern), so changing the level never re-synthesises.
-// Level 3 is the default and sits well below the old fixed 0.75 peak — the point
-// of the table is that "too loud" is a setting, not a rebuild. Even the top of
-// the table is a *struck* note, so its energy is a fraction of a flat beep's at
-// the same peak.
+// Level 3 is the default and the top of the table is 0.75 — the point of the
+// table is that "too loud" is a setting, not a rebuild. Even the top of the
+// table is a *struck* note, so its energy is a fraction of a flat beep's at the
+// same peak.
+//
+// The patterns are now unit-peak (see HARMONIC_PEAK), so every level in this
+// table is ~1.7 dB louder than the identical table used to be. The table is
+// left unchanged on purpose — if level 3 now reads a step too hot, `?volume=2`
+// is the drop-in answer, not a rebuild.
 static const float VOL_GAIN[6] = {0.10f, 0.18f, 0.28f, 0.40f, 0.55f, 0.75f};
 static volatile uint8_t s_volLevel = 3;
 
@@ -70,6 +75,20 @@ static int16_t  s_chunk[CHUNK];   // gain-scaled output block, task-local
 static size_t s_at  = 0;
 static size_t s_lim = 0;
 
+// The exact maximum of the harmonic mix mixed in below — sin(x) + 0.18·sin(2x)
+// + 0.07·sin(3x), which peaks at x ≈ 64.49°, computed numerically at high
+// resolution (not estimated: the mix is not quite 1.0). Dividing the mix by
+// this makes it unit-peak, so `amp` really is a fraction of full scale.
+//
+// It used to be divided by an arbitrary 1.25, which is 1.25 / 1.0261 ≈ 1.7 dB
+// more attenuation than needed: every volume level was ~1.7 dB quieter than its
+// number said and `amp = 1.0` meant 82 % of full scale. The mix now uses all but
+// the last 0.02 of the scale, and nothing can clip: `amp ≤ 1.0`, `env ≤ 1.0` and
+// `|w| ≤ 1.0` by construction, and the largest gain in VOL_GAIN is 0.75 — so
+// `amp * env * w * 32767` can reach 32767 (int16_t's own maximum, the cast
+// truncates toward zero) but never exceed it.
+static const float HARMONIC_PEAK = 1.0261304f;
+
 // One struck note: a short raised-cosine attack, then an exponential decay — the
 // envelope of a bar being tapped, not a held tone.
 //
@@ -81,10 +100,10 @@ static size_t s_lim = 0;
 // below the peak, and the long tail means the note has already faded before the
 // release fade closes it, so there is nothing left to click.
 //
-// `freq` is the fundamental; a little 2nd/3rd harmonic (unit-peak normalised) is
-// mixed in because a pure sine is what makes an electronic chirp sound piercing.
-// `amp` is 1.0 at build time — the volume level is applied later, on the way to
-// the I2S DMA.
+// `freq` is the fundamental; a little 2nd/3rd harmonic (unit-peak normalised,
+// see HARMONIC_PEAK) is mixed in because a pure sine is what makes an electronic
+// chirp sound piercing. `amp` is 1.0 at build time — the volume level is applied
+// later, on the way to the I2S DMA.
 static size_t addNote(size_t at, float freq, float ms, float amp) {
   size_t n = (size_t)((float)SR * ms / 1000.0f);
   if (at + n > s_lim) n = (s_lim > at) ? s_lim - at : 0;
@@ -101,7 +120,7 @@ static size_t addNote(size_t at, float freq, float ms, float amp) {
     else if (i >= n - rel)  env *= 0.5f - 0.5f * cosf((float)M_PI * (float)(n - 1 - i) / (float)rel);
     phase += step;
     float w = (sinf(phase) + 0.18f * sinf(2.0f * phase)
-                           + 0.07f * sinf(3.0f * phase)) / 1.25f;
+                           + 0.07f * sinf(3.0f * phase)) / HARMONIC_PEAK;
     s_buf[at + i] = (int16_t)(amp * env * w * 32767.0f);
   }
   return at + n;
