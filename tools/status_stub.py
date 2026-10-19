@@ -7,6 +7,8 @@ It checks the same signatures the firmware does:
 
     ?state=...   HMAC-SHA256 over "<state>|<X-Ts>"
     ?<settings>  HMAC-SHA256 over "<raw query>|<X-Ts>"   (e.g. "chime=0&brightness=4")
+    ?wifi_...    the same rule (the device's credentials channel; the payload is
+                 echoed redacted, because it carries a passphrase)
 
     python3 tools/status_stub.py <key> [port]
 
@@ -14,6 +16,8 @@ Then, in another shell:
 
     ESP32_MONITOR_KEY=<key> ESP32_MONITOR_URL=http://127.0.0.1:8099 \\
         tools/status-settings.sh chime=0 brightness=4
+    ESP32_MONITOR_KEY=<key> ESP32_MONITOR_URL=http://127.0.0.1:8099 \\
+        tools/wifi-setup.sh Home hunter2
 """
 import hashlib
 import hmac
@@ -49,6 +53,11 @@ class Handler(BaseHTTPRequestHandler):
             if not hmac.compare_digest(want, sig):
                 self._reply(401, "bad signature")
                 return
+        # Redact the credentials kind: the device never logs or echoes a
+        # passphrase either (src/parse/wifi_cred_parse.h).
+        if query.startswith("wifi_"):
+            self._reply(200, "wifi_ssid=<credentials, passphrase redacted>")
+            return
         self._reply(200, payload)
 
     def _reply(self, code, msg):

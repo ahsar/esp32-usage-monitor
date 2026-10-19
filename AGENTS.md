@@ -85,13 +85,13 @@ x86_64-only binary and needs an arm64 replacement) is in the README,
 | `src/ui/` | Drawing impl: `cards`, `trend`, `primitives` (fonts + text helpers), `icons`, `lvgl_text`, shared palette `theme.h`. |
 | `src/usage_history.{h,cpp}` | RAM-only ring of rolling spend samples feeding the trend page. |
 | `src/fetch_task.{h,cpp}` | Background FreeRTOS worker: job/result queues, token hand-off. Threading rules in the header. |
-| `src/status_server.{h,cpp}` | HTTP status endpoint (`?state=…`) + the signed settings channel (`?chime=…`, `?place=…`, `?settings`), HMAC auth, chime events. |
+| `src/status_server.{h,cpp}` | HTTP status endpoint (`?state=…`) + the signed settings channel (`?chime=…`, `?place=…`, `?settings`) and the WiFi credentials request (`?wifi_ssid=…`, `tools/wifi-setup.sh`), HMAC auth, chime events. |
 | `src/status_channel.h` | The transport-neutral device channel: the seam both `status_server` and `ble_status` go through. Add a request kind here, once. |
-| `src/ble_status.{h,cpp}` | The same channel over a BLE GATT service — the fallback for a host the LAN cannot reach. Deliberately unpaired. |
+| `src/ble_status.{h,cpp}` | The same channel over a BLE GATT service — the fallback for a host the LAN cannot reach… and the *only* transport that exists on a device with no WiFi credentials yet. Deliberately unpaired. |
 | `src/api_client.{h,cpp}` | opencode console REST client (usage + token refresh). |
 | `src/weather_client.{h,cpp}` | Weather (wttr.in), moon (MET Norway), air (waqi) transport. Location comes from `weatherSetLocation()`. |
 | `src/http_client.{h,cpp}` | Shared **blocking** HTTPS helper: DNS/handshake/read deadlines, CA-bundle verification. |
-| `src/parse/` | Header-only, host-testable payload parsers (usage/wttr/moon/air/settings). Pure functions — test them here. |
+| `src/parse/` | Header-only, host-testable payload parsers (usage/wttr/moon/air/settings) and the WiFi credentials request (`wifi_cred_parse.h`). Pure functions — test them here. |
 | `src/util/` | Dependency-free helpers (time/value/interval/trend/loc/url), host-unit-tested. |
 | `src/config.h` | `AppConfig` + LittleFS JSON loader (`/config.json`). Add a config field here. |
 | `src/storage.{h,cpp}` | One-shot LittleFS mount helper. |
@@ -162,12 +162,23 @@ linked deep dive before changing the area.
   `tools/uploadfs_guard.py` reasons about. Clearing an override must re-derive
   `s_cfg` from `s_cfgBase`, or the old value sticks. The write is flash, so it runs
   on the loop task (the HTTP handler), like the token flush — never the fetch task.
+  **WiFi credentials are the one thing that goes the other way**: they are an
+  instruction to act, not an override, they are a secret that has no business in a
+  readable overrides file, and they are stored in NVS (`netSaveCred()`, only once
+  the association succeeds) — see `src/parse/wifi_cred_parse.h` and
+  docs/pc-bridge.md. Neither path may run the radio from inside the request
+  handler: the credentials a request carries are applied at the bottom of
+  `loop()`, after the reply that authorised them is out.
 - **`uploadfs` erases the device's rotated tokens.** Run `authorize.py` first
   (see the token-lifecycle warning above); the `uploadfs` guard enforces it.
 - **The device channel is one implementation with two transports.** `status_server.cpp`
   (HTTP) and `ble_status.cpp` (BLE) both hand a query + HMAC pair to
   `statusChannelHandle()`; auth, settings validation and the state machine live there
-  and nowhere else. BLE is unencrypted on purpose — the HMAC is what authorises a
+  and nowhere else. Adding a request kind means one branch in `statusChannelHandle()`,
+  not one per transport — the WiFi credentials request
+  (`src/parse/wifi_cred_parse.h`) is the worked example, and it is also why a
+  transport must never log a raw query it does not understand (`wifiQueryForLog()`).
+  BLE is unencrypted on purpose — the HMAC is what authorises a
   request, so bonding would buy nothing and would only reintroduce the pairing
   ceremony this exists to avoid. A BLE write arrives on the BT task: copy it there,
   handle it in `loop()` (`bleStatusUpdate()`), exactly like an HTTP request, because
@@ -178,9 +189,12 @@ linked deep dive before changing the area.
 - **OTA only replaces the app.** `ArduinoOTA::handle()` blocks `loop()` for the
   whole transfer and writes flash, so it runs on the loop task only (never the
   fetch task), it pauses every poller for its duration, and the token flush
-  before its reboot is what keeps the rotated refresh token alive. The
-  partition table and LittleFS are USB-only; there is no rollback. The endpoint
-  never runs unauthenticated: a missing/short `ota_password` disables it.
+  before its reboot is what keeps the rotated refresh token alive. The same flush
+  runs before the power key's `hwPowerOff()` (`flushPendingTokens()` in
+  `main.cpp`): both end the app's life with a rotation still in the fetch task's
+  hand-off slot otherwise, and a *spent* token on the next boot revokes the whole
+  family. The partition table and LittleFS are USB-only; there is no rollback. The
+  endpoint never runs unauthenticated: a missing/short `ota_password` disables it.
 
 ## Deep dives (docs/)
 
@@ -210,6 +224,8 @@ Read the relevant one before changing that area:
 - `tools/status-ping.sh` — signed status ping, for testing the device by hand
 - `tools/status-settings.sh` — read/change chime, its volume, brightness and the location over the
   signed settings channel (no `uploadfs`)
+- `tools/wifi-setup.sh` — send the WiFi credentials from a PC keyboard over the same
+  channel (BLE-first: it is the only transport a device without credentials has)
 - `tools/status_stub.py` — local stand-in for the status endpoint (tests the plugin,
   `tools/status-settings.sh` and both HMAC forms)
 - `tools/ble-bridge.py` — BLE side of the same channel (`ble_status.cpp`): holds the

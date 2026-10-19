@@ -46,9 +46,14 @@ public:
 
   void setCursor(int16_t x, int16_t y) { _cx = (int)x * _s; _cy = (int)y * _s; }
 
+  // Keep text on one line (see lvglDrawText): for screens that place every line
+  // by hand, where a silent wrap would land on the line below. uiBeginFrame()
+  // clears it, so the main UI is unaffected by a screen that sets it.
+  void setNoWrap(bool nowrap) { _nowrap = nowrap; }
+
   void print(const char* s) {
     if (!_font || !s || !s[0]) return;
-    lvglDrawText(_font, _fg, _cx, _cy, s);
+    lvglDrawText(_font, _fg, _cx, _cy, s, _nowrap);
     _cx += lvglTextWidth(_font, s);
   }
   void print(char c) { char b[2] = { c, 0 }; print(b); }
@@ -110,6 +115,7 @@ private:
   uint16_t         _fg   = 0xFFFF;   // current text colour (RGB565)
   int              _cx   = 0;        // text cursor, in canvas pixels
   int              _cy   = 0;
+  bool             _nowrap = false;  // set by the WiFi setup screen; see setNoWrap
 };
 
 bool hwDisplayInit();

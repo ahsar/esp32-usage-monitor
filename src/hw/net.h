@@ -63,5 +63,11 @@ bool netConnect(const char* ssid, const char* pass);
 // being retried every iteration.
 bool netRoam();
 IPAddress netIP();
-void netSaveCred(const char* ssid, const char* pass);
+bool netSaveCred(const char* ssid, const char* pass);
+
+// Drop the stored credentials (and the driver's own copy of the AP config, which
+// it persists separately). The next boot then comes up in the setup UI, which is
+// the only way back for a device whose network no longer exists.
+void netForgetCred();
+
 bool netLoadCred(char* ssid, size_t ssidLen, char* pass, size_t passLen);

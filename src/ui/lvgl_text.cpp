@@ -38,7 +38,8 @@ void lvglTextInit() {
   lv_canvas_set_buffer(s_canvas, fb, HW_CANVAS_W, HW_CANVAS_H, LV_IMG_CF_TRUE_COLOR);
 }
 
-void lvglDrawText(const lv_font_t* f, uint16_t rgb565, int x, int baseline, const char* s) {
+void lvglDrawText(const lv_font_t* f, uint16_t rgb565, int x, int baseline, const char* s,
+                  bool nowrap) {
   if (!s_canvas || !f || !s || !s[0]) return;
   if (x >= HW_CANVAS_W) return;
 
@@ -48,6 +49,9 @@ void lvglDrawText(const lv_font_t* f, uint16_t rgb565, int x, int baseline, cons
   dsc.font  = f;
   dsc.opa   = LV_OPA_COVER;
   dsc.align = LV_TEXT_ALIGN_LEFT;
+  // LV_TEXT_FLAG_EXPAND is "ignore max_width", i.e. do not wrap. See the header:
+  // a wrapped line is drawn `line_height` lower, on top of the next line here.
+  if (nowrap) dsc.flag |= LV_TEXT_FLAG_EXPAND;
 
   // lv_draw_label places the line-box top at y; our callers pass the baseline.
   int yTop = baseline - (int)(f->line_height - f->base_line);

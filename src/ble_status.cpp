@@ -48,10 +48,12 @@
 // one onWrite() — the frame format below assumes the whole frame at once.
 #define BLE_MTU 517
 
-// A request frame is "<ts> <sig> <query>": at most 10 + 1 + 64 + 1 + a 255-byte
-// query. A reply is "<len4><code3><body>" and is kept to a single notification
+// A request frame is "<ts> <sig> <query>": at most 10 + 1 + 64 + 1 plus the
+// longest query a transport accepts — 383 bytes for a WiFi credentials request
+// with every byte percent-encoded (status_server.cpp sizes the same string).
+// A reply is "<len4><code3><body>" and is kept to a single notification
 // (see notifyReply) rather than chunked, so the client needs no reassembly.
-#define BLE_FRAME_MAX 400
+#define BLE_FRAME_MAX 480
 #define BLE_BODY_MAX  512
 
 // Backstop only: the PC-side bridge drops its own link well before this, and this
@@ -415,7 +417,10 @@ void bleStatusUpdate() {
       char body[BLE_BODY_MAX];
       StatusReq r{q, ts, sig, peer};
       const char* status = statusChannelHandle(r, body, bodyCap);
-      Serial.printf("ble: %s -> %s\n", q, status);
+      // Redacted for the one request kind that carries a secret: the shared
+      // handler decides what a query means, this line just prints the frame.
+      char safe[64];
+      Serial.printf("ble: %s -> %s\n", wifiQueryForLog(q, safe, sizeof(safe)), status);
       notifyReply(status, body);
     }
   }

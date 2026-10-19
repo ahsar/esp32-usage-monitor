@@ -48,6 +48,24 @@ static Interval s_ivEnv(1000);
 
 static WifiState s_wifi;
 
+// ---- WiFi credentials from the device channel ------------------------------
+// status_server/ble_status hand these over on the loop task, and the handler
+// must not touch the radio: associating blocks (WiFi.begin() waits up to 1 s to
+// tear down the current link) and, over HTTP, the reply that authorised the
+// request is travelling over the very link the change would drop. So the
+// handler only records it, and loop() applies it after their replies are out.
+static bool     s_wifiCredPending = false;
+static WifiCred s_wifiCred;
+
+// The attempt in flight: which credentials we tried and when. Kept so the
+// passphrase is only written to NVS once the link actually comes up — the same
+// rule netConnect() (the on-device keyboard path) applies, and the reason a typo
+// cannot overwrite a working network with a useless one.
+static bool      s_wifiTrying     = false;
+static WifiCred  s_wifiTry;
+static uint32_t  s_wifiTryStart   = 0;
+static const uint32_t WIFI_TRY_MS = 45000;   // connect grace (30 s) + slack
+
 // ---- display power (state-driven render + idle dim) ------------------------
 static bool     s_screenDim = false;
 // Awake brightness: an index into BRIGHT_LUT (see hw/display.h). The factory
@@ -68,6 +86,10 @@ static uint32_t s_frameKey = 0;
 static bool     s_frameKeyValid = false;
 static bool     s_forceRender   = false;
 static uint32_t s_dataRev = 0;           // bumped on every successful fetch
+// The one-time half of "the link came up" (HTTP listener, mDNS, OTA endpoint).
+// Separate from s_wifi.open because the credentials channel can associate a
+// second time, and none of those may be started twice.
+static bool     s_linkBroughtUp = false;
 
 static const uint32_t IDLE_DIM_MS   = 30000;   // 30 s idle → dim
 static const uint8_t  DIM_LEVEL     = 0;       // BRIGHT_LUT[0] = 50/255
@@ -145,6 +167,12 @@ static void screenIdleUpdate() {
 
 static UiEnv s_env;
 
+// The Usage page's "re-authorise" state is an edge, not a level: the cue is
+// played once when a working meter stops working, not on every screen refresh.
+static bool s_authSeen  = false;   // the boot state has been sampled
+static bool s_authWasOk = true;
+static bool s_authCue   = false;   // to be played by loop()
+
 static void refreshEnv(uint32_t now) {
     if (!s_ivEnv.due(now)) return;
     s_ivEnv.ran(now);
@@ -169,6 +197,21 @@ static void refreshEnv(uint32_t now) {
     s_env.ipv4 = ((uint32_t)ip[0] << 24) | ((uint32_t)ip[1] << 16) |
                  ((uint32_t)ip[2] << 8)  |  (uint32_t)ip[3];
     s_env.bleUp = (bleStatusState() == BLE_STATE_UP);
+    // Terminal, not transient: only a refusal from the token endpoint clears the
+    // worker's token — a fetch that failed on the network leaves it alone — so a
+    // flaky link cannot raise this.
+    bool authOk = fetchTaskTokensValid();
+    s_env.authNeeded = !authOk;
+    if (!s_authSeen) {
+        // Seed the edge detector from the state we actually booted into, so an
+        // unconfigured device does not play an alarm at every power-on — only a
+        // meter that had been working and just stopped does.
+        s_authSeen = true;
+        s_authWasOk = authOk;
+    } else if (s_authWasOk && !authOk) {
+        s_authCue = true;
+    }
+    s_authWasOk = authOk;
     diagSetNet(s_env.online, (int)WiFi.status(), (int)WiFi.RSSI());
     uiSetEnv(s_env);
 }
@@ -254,6 +297,9 @@ static uint32_t uiFrameKey() {
     // the old address.
     h = hashMix(h, s_env.ipv4);
     h = hashMix(h, s_env.bleUp ? 1u : 0u);
+    // The Usage page swaps its whole body for the "re-authorise" message, so a
+    // token dying has to move the key or the stale bars would stay on screen.
+    h = hashMix(h, s_env.authNeeded ? 1u : 0u);
     h = hashMix(h, s_dataRev);
     return h;
 }
@@ -306,6 +352,16 @@ static void uiFrame(uint32_t now) {
             s_lastActivity = now;
         }
     }
+
+#ifdef FRAME_DUMP
+    // The setup screens are what the page walk cannot reach (loop() returns here
+    // before it), and the one screen family whose layout cannot be read off the
+    // code. The walk seeds its own WifiState (frame_dump.cpp), so it runs whether
+    // or not this device is on the air — which matters because "associated" is
+    // the normal state, and gating it on `s_wifi.open` meant the screens could
+    // only be dumped on a device that had been left without credentials.
+    if (frameDumpWifiTick(now)) return;
+#endif
 
     if (s_wifi.open) {
         // The setup screen has a blink + elapsed counters but no heavy motion,
@@ -408,17 +464,40 @@ static void uiFrame(uint32_t now) {
 #endif
 }
 
+// Persist a rotated token the worker handed over. Flash writes stay on this
+// task: the fetch task must not touch LittleFS (loop() owns it — config,
+// tokens, settings — and it is not thread-safe).
+//
+// Every path that can end the app's life early has to call this, because a
+// refresh token is single-use: if a rotation is left in the hand-off slot while
+// the device reboots (OTA, or the power key) the next boot replays the token it
+// already spent, and *that* is what revokes the whole family — the failure the
+// token store and tools/uploadfs_guard.py exist to prevent.
+//
+// Loop, because one pass can miss the second half of a double rotation: a worker
+// blocked in handOffTokens() re-publishes as soon as fetchTaskSaveDone() clears
+// the slot (the usage poll is explicitly allowed to refresh twice), and at
+// shutdown there is no next iteration to pick that up. The pause after a write
+// gives that blocked worker the tick it needs; the cap is what keeps this from
+// becoming a spin.
+static void flushPendingTokens() {
+    for (int i = 0; i < 8; i++) {
+        const TokenSet* pending = fetchTaskPendingSave();
+        if (!pending) return;
+        if (!tokenStoreSave(*pending)) {
+            Serial.println("tokens: flush failed; the rotated token is lost on reboot");
+        }
+        fetchTaskSaveDone();
+        delay(10);
+    }
+}
+
 // Publish whatever the background fetch task finished: persist rotated tokens,
 // copy the payload into the UI's data holders and move the frame key. Runs
 // every iteration (also while the WiFi setup screen owns the display) and
 // never blocks.
 static void serviceFetch() {
-    // Flash writes stay on this task: the fetch task must not touch LittleFS
-    // (loop() owns it — config, tokens, settings — and it is not thread-safe).
-    if (const TokenSet* pending = fetchTaskPendingSave()) {
-        tokenStoreSave(*pending);
-        fetchTaskSaveDone();
-    }
+    flushPendingTokens();
 
     FetchResult res;
     if (!fetchTaskHarvest(res)) return;
@@ -454,6 +533,17 @@ static void serviceFetch() {
     }
 }
 
+// The WiFi credentials channel's actor (status_server.cpp calls this with a
+// validated request). Nothing is stored here: the request is only recorded, and
+// loop() acts on it after both transports have sent their replies — see the note
+// on s_wifiCredPending. The passphrase itself is written to NVS once the link
+// comes up, so a wrong one never replaces credentials that worked.
+static bool applyWifiCred(const WifiCred& cred) {
+    s_wifiCred = cred;
+    s_wifiCredPending = true;
+    return true;
+}
+
 // ---- OTA (wireless firmware update; see ota.h) ------------------------------
 // Both callbacks run from inside ArduinoOTA's blocking receive loop, which owns
 // loop() for the whole transfer — so this is the only code that can touch the
@@ -466,11 +556,11 @@ static void otaDrawProgress(uint32_t pct) {
 
 static void otaStopped(bool ok) {
     if (ok) {
-        // The reboot follows immediately. serviceFetch() starts with the token
-        // hand-off, which is the point: a refresh token that rotated during the
-        // transfer would otherwise die with the reboot and the next use of the
-        // stale one revokes the whole family (see AGENTS.md).
-        serviceFetch();
+        // The reboot follows immediately. flushPendingTokens() is the point: a
+        // refresh token that rotated during the transfer would otherwise die
+        // with the reboot and the next use of the stale one revokes the whole
+        // family (see AGENTS.md).
+        flushPendingTokens();
         return;
     }
     // Nothing was written and the device keeps running, so drop the progress
@@ -553,6 +643,10 @@ void setup() {
     statusServerSetKey(s_cfg.status_key);
     statusServerSetSettings(st);
     statusServerSetSettingsCallback(applyDeviceSettings);
+    // The credentials channel (docs/pc-bridge.md): how a PC gives the device its
+    // WiFi passphrase instead of the setup screen's character grid. The actor only
+    // records the request; loop() applies it once the reply is out.
+    statusServerSetWifiCallback(applyWifiCred);
     if (statusServerAuthEnabled()) {
         Serial.println("status auth: HMAC-SHA256 enabled");
     } else {
@@ -594,7 +688,7 @@ void setup() {
         Serial.println("No saved WiFi; opening scan/setup UI");
     }
 
-    wifiSetupInit(s_wifi, hasCreds ? savedSSID : nullptr);
+    wifiSetupInit(s_wifi, hasCreds ? savedSSID : nullptr, hasCreds ? savedPass : nullptr);
     diagMark(DIAG_SETUP_DONE, hasCreds ? 1 : 0);
 }
 
@@ -634,6 +728,7 @@ void loop() {
 #endif
     if (pwrLong) {
         Serial.println("PWR long-press: shutting down");
+        spr.setNoWrap(false);   // the setup screen may have turned wrapping off
         spr.fillScreen(0x0000);
 #if BOARD_DISPLAY_UI_SCALE > 1
         spr.setFont(&lv_font_ui_24);
@@ -645,6 +740,15 @@ void loop() {
         spr.print("Shutting down...");
         hwDisplayPush();
         delay(400);
+        // Last chance to persist a token the worker rotated, and it has to be
+        // *here*: the flush waits for nothing else, so every millisecond before
+        // it is a millisecond the device was still polling and could publish a
+        // rotation. Draining before the banner instead would spend the whole
+        // 400 ms unwritten — which is the one thing this is here to prevent.
+        // Unlike OTA there is no reboot after this that could still rescue the
+        // token: hwPowerOff() cuts the rails and the device comes back holding
+        // the one it already used.
+        flushPendingTokens();
         hwPowerOff();
     }
 
@@ -653,6 +757,7 @@ void loop() {
     // One-shot completion chimes from the status server. Played here on the
     // main task so the audio shares the loop with everything else.
     if (s_chimeEnabled) {
+        if (s_authCue) { s_authCue = false; chimePlay(CHIME_FAILED); }
         switch (statusServerTakeEvent()) {
             case STATUS_EV_DONE:    chimePlay(CHIME_DONE);    break;
             case STATUS_EV_FAILED:  chimePlay(CHIME_FAILED);  break;
@@ -660,6 +765,7 @@ void loop() {
             default: break;
         }
     } else {
+        s_authCue = false;
         statusServerTakeEvent();   // drop it rather than fire it late
     }
     chimeUpdate(now);
@@ -669,30 +775,57 @@ void loop() {
     if (s_wifi.open && WiFi.status() == WL_CONNECTED) {
         WiFi.setSleep(APP_WIFI_PS);
         WiFi.setTxPower(APP_WIFI_TX_DBM);
-        clockSyncUpdate(now, true);
-        statusServerBegin();
-        // mDNS so the host plugin can use a stable name instead of a DHCP IP.
-        if (MDNS.begin("usage-monitor")) {
-            MDNS.addService("http", "tcp", 80);
-            Serial.println("mDNS: http://usage-monitor.local/");
-        } else {
-            Serial.println("mDNS: begin failed");
+
+        // One-time platform bring-up. A second association — credentials sent
+        // over the device channel (docs/pc-bridge.md) — re-runs the block below
+        // but must not repeat these two: MDNS.begin() *errors* on a second call
+        // (mdns_init() rejects it) rather than no-op'ing, and ArduinoOTA would
+        // bind its UDP port again.
+        if (!s_linkBroughtUp) {
+            s_linkBroughtUp = true;
+            statusServerBegin();
+            // mDNS so the host plugin can use a stable name instead of a DHCP IP.
+            if (MDNS.begin("usage-monitor")) {
+                MDNS.addService("http", "tcp", 80);
+                Serial.println("mDNS: http://usage-monitor.local/");
+            } else {
+                Serial.println("mDNS: begin failed");
+            }
+            // Wireless OTA, once the link is up. After the mDNS block on purpose:
+            // ArduinoOTA is told not to touch mDNS (main.cpp owns it here).
+            otaBegin(s_cfg.ota_password);
+            diagMark(DIAG_WIFI_CONNECTED, 0);
         }
+
+        clockSyncUpdate(now, true);
         s_wifi.open = false;
-        // Wireless OTA, once the link is up. After the mDNS block on purpose:
-        // ArduinoOTA is told not to touch mDNS (main.cpp owns it here).
-        otaBegin(s_cfg.ota_password);
         // Pull fresh data right away (one job in flight at a time).
         pollerForceAll();
         s_lastActivity = millis();   // don't idle-out the instant setup closes
-        diagMark(DIAG_WIFI_CONNECTED, 0);
-        // BSSID at boot only: it is the one datum that says whether the device
-        // picked a different AP since last time (roaming / band steering), which
-        // a changing rssi alone cannot distinguish from a fading link.
+        // BSSID printed on every association, not just the first: it is the one
+        // datum that says whether the device picked a different AP since last
+        // time (roaming / band steering), which a changing rssi alone cannot
+        // distinguish from a fading link — and after a re-provision it is how the
+        // new address is announced.
         Serial.printf("diag: ip=%s rssi=%d bssid=%s\n",
                       WiFi.localIP().toString().c_str(), (int)WiFi.RSSI(),
                       WiFi.BSSIDstr().c_str());
         Serial.println("WiFi connected (auto)");
+
+        // Credentials sent over the device channel are stored here — the moment
+        // the passphrase is known to be right — so a typo can never replace a
+        // working network with a useless one. Same rule as netConnect(), the
+        // on-device keyboard path.
+        if (s_wifiTrying) {
+            s_wifiTrying = false;
+            if (!strcmp(WiFi.SSID().c_str(), s_wifiTry.ssid)) {
+                if (netSaveCred(s_wifiTry.ssid, s_wifiTry.pass)) {
+                    Serial.printf("wifi: credentials for \"%s\" stored\n", s_wifiTry.ssid);
+                } else {
+                    Serial.println("wifi: connected, but the credentials did not store");
+                }
+            }
+        }
     }
 
     if (!s_wifi.open) {
@@ -762,4 +895,41 @@ void loop() {
 
     s_swallowKey = false;
     delay(16);
+
+    // ---- WiFi credentials from the device channel --------------------------
+    // Applied at the very bottom of the iteration on purpose: the transports at
+    // the top wrote their replies during this same pass, and the reply that
+    // authorised the request must be on the wire before the association carrying
+    // it is torn down. (Over BLE there is no race — BLE is not the link being
+    // changed — but one path for both is what keeps this honest.)
+    if (s_wifiCredPending) {
+        s_wifiCredPending = false;
+        if (s_wifiCred.action == WIFI_CRED_FORGET) {
+            netForgetCred();                    // our NVS, and the driver's own copy
+            s_wifiTrying = false;
+            wifiSetupInit(s_wifi, nullptr, nullptr);   // back to scan/select
+            Serial.println("wifi: credentials cleared; back to the setup screen");
+        } else {
+            // WiFi.begin() tears the current link down itself (up to 1 s of it) —
+            // which is exactly why this cannot run inside the request handler.
+            WiFi.begin(s_wifiCred.ssid, s_wifiCred.pass);
+            s_wifiTry      = s_wifiCred;
+            s_wifiTryStart = now;
+            s_wifiTrying   = true;
+            // Reuse the setup screen's auto-connect step: it already grants the
+            // association a grace period, closes itself on WL_CONNECTED and falls
+            // back to the network list when the credentials do not work.
+            wifiSetupInit(s_wifi, s_wifiCred.ssid, s_wifiCred.pass);
+            Serial.printf("wifi: connecting to \"%s\" (credentials from the device channel)\n",
+                          s_wifiCred.ssid);
+        }
+        s_forceRender = true;
+    } else if (s_wifiTrying && now - s_wifiTryStart > WIFI_TRY_MS) {
+        // The setup screen's grace has expired by now and it is showing the
+        // network list again; say so in the log, and leave the old credentials
+        // (which are still in NVS) in place.
+        s_wifiTrying = false;
+        Serial.printf("wifi: could not connect to \"%s\"; credentials not stored\n",
+                      s_wifiTry.ssid);
+    }
 }

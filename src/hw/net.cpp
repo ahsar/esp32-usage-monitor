@@ -204,11 +204,25 @@ bool netRoam() {
 void netRadioWake() { WiFi.setSleep(WIFI_PS_NONE); }
 void netRadioRest() { WiFi.setSleep(APP_WIFI_PS); }
 
-void netSaveCred(const char* ssid, const char* pass) {
+bool netSaveCred(const char* ssid, const char* pass) {
   _prefs.begin("buddy", false);
-  _prefs.putString("wifi_ssid", ssid);
-  _prefs.putString("wifi_pass", pass);
+  bool ok = _prefs.putString("wifi_ssid", ssid) > 0;
+  ok = (_prefs.putString("wifi_pass", pass) > 0) && ok;
   _prefs.end();
+  // 0 means the namespace could not be written (full or read-only NVS). The
+  // caller reports the outcome rather than claiming credentials it does not have.
+  return ok;
+}
+
+void netForgetCred() {
+  _prefs.begin("buddy", false);
+  _prefs.remove("wifi_ssid");
+  _prefs.remove("wifi_pass");
+  _prefs.end();
+  // The driver keeps its own copy of the AP config in NVS (arduino-esp32 is
+  // persistent by default), and it would associate at the next esp_wifi_start —
+  // before our setup() ever calls WiFi.begin(). eraseAP=true clears that too.
+  WiFi.disconnect(/*wifioff*/ false, /*eraseap*/ true);
 }
 
 bool netLoadCred(char* ssid, size_t ssidLen, char* pass, size_t passLen) {

@@ -144,7 +144,9 @@ inline bool settingsFromQuery(const char* query, DeviceSettings& s, uint16_t& ch
     size_t pairLen = amp ? (size_t)(amp - p) : strlen(p);
 
     // Sized to the whole query the transport accepts (status_server caps it at
-    // 256), so "too long" is reported as such rather than as a malformed pair.
+    // 384 to fit a WiFi credentials request, which this parser never sees — a
+    // settings pair is far shorter), so "too long" is reported as such rather
+    // than as a malformed pair.
     char pair[256], key[40], rawVal[160];
     if (pairLen == 0) return fail("malformed settings query");
     if (pairLen >= sizeof(pair)) return fail("settings query too long");

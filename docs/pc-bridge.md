@@ -12,6 +12,9 @@ channel is also served over BLE for hosts the LAN cannot reach — see
 | `?state=waiting` | permission/question | "Needs you" animation + attention beep |
 | `?state=done` / `?state=failed` | finished / errored | rising two-beep / low beep |
 
+The same channel also carries the settings channel and the WiFi credentials
+request — see below.
+
 `done`/`failed` only chime on a real transition, and never for the Key1 dismiss,
 so hand-dismissing the animation stays silent. Do **not** rely on V1 event names
 (`session.idle`, `session.status`, `permission.updated`) — V2 does not emit them.
@@ -96,6 +99,67 @@ rather than accepting unauthenticated writes. A state ping only changes an
 animation; these requests persist device configuration, so they do not get a
 "dev mode".
 
+## WiFi credentials over the same channel
+
+The device's own setup screen is a 4×32 character grid on a 184×224 panel: a
+WPA2 passphrase is 60+ taps and a group switch every few characters. So the
+passphrase can be typed on a PC instead and pushed over the channel:
+
+```bash
+tools/wifi-setup.sh Home 'hunter2'   # join that network (and keep it)
+tools/wifi-setup.sh Home -           # …prompt for the passphrase, not in argv
+tools/wifi-setup.sh --forget         # drop them; back to the setup screen
+```
+
+| Request | Meaning |
+|---|---|
+| `?wifi_ssid=NAME&wifi_pass=PASS` | associate with these credentials, and store them **once the link comes up** |
+| `?wifi_ssid=&wifi_pass=` | forget: clear NVS and the driver's own AP copy, back to the setup screen |
+
+**It travels over BLE, and that is the point.** A device with no credentials has
+no IP address, so the HTTP transport cannot exist yet — `tools/wifi-setup.sh`
+tries HTTP first (a re-provision on a device that is already online) and falls
+back to `ble-bridge.py --once`, which needs no network at all. The two transports
+are the same `statusChannelHandle()` as everything else, so the auth rules are
+identical: **no `status_key`, no credentials** (403). Pointing the device at an
+attacker's AP is a worse outcome than a wrong brightness, so there is no
+"dev mode" here either.
+
+**The passphrase is stored only if the association works.** The request is
+recorded, `loop()` starts the association one iteration later, and the credentials
+reach NVS when `WL_CONNECTED` fires — the same rule `netConnect()`, the on-device
+keyboard path, has always applied. A typo therefore cannot replace a working
+network with a useless one, and a failure leaves the old credentials intact (the
+panel drops back to the network list, the log says
+`wifi: could not connect to "…"; credentials not stored`).
+
+**The reply cannot contain the outcome**, because the association has not happened
+yet. It says what was sent, and the answer is the panel
+(`Connecting… <ssid>` → `Connected!`, or the network list again) and, after
+~15 s, `tools/ble-bridge.py --scan --info` — `ip=0.0.0.0` still means it did
+not take.
+
+**Two details worth knowing.**
+
+- *The passphrase is not private on the air.* The HMAC makes the write
+  unforgeable, not confidential, and BLE is unauthenticated at the link layer, so
+  anyone with a sniffer in radio range during the ~1 s write can read it. The
+  alternative — an encrypted characteristic — requires bonding, the ceremony the
+  BLE transport deliberately avoids (see below); for credentials typed once on a
+  desk that is the wrong trade. Nothing echoes it back either: the reply body,
+  the serial log and `status_stub.py` all print the SSID and a redacted
+  passphrase (`wifiCredDescribe()`, `wifiQueryForLog()`).
+- *Nothing here is written to `/settings.json`.* Credentials go to NVS through
+  `hw/net.h` (`netSaveCred()` / `netForgetCred()`, which also clears the driver's
+  own copy of the AP config). `/settings.json` is a readable record of overrides,
+  and a passphrase does not belong in one; it is also why this is its own request
+  kind (`src/parse/wifi_cred_parse.h`, `channelWifi()` in `status_server.cpp`)
+  rather than another settings field.
+
+Nothing about the setup screen is removed: the grid is still the path that works
+with no PC at all, and picking the SSID the device already has a passphrase for
+now prefills it, so reconnecting is one tap on `Connect` instead of a retype.
+
 ## The same channel over BLE (when the LAN cannot carry it)
 
 `src/ble_status.cpp` serves the channel above over a small GATT service as well, so
@@ -104,11 +168,12 @@ point: a VLAN boundary, a network that blocks multicast, or an AP that associate
 and then carries nothing (docs/network-polling.md) all break an HTTP request — and
 none of them mean anything to BLE, which never touches IP.
 
-**Scope: only what the host initiates** — `?state=` and the settings channel.
-usage/weather/moon/air are fetches *the device* makes out to the internet and still
-need WiFi; BLE cannot stand in for them, and nothing pretends otherwise. OTA is the
-one host-initiated path not covered (yet) — `ArduinoOTA` is UDP-based and has no BLE
-equivalent here.
+**Scope: only what the host initiates** — `?state=`, the settings channel and the
+WiFi credentials request (which is *only* reachable over BLE until the credentials
+work). usage/weather/moon/air are fetches *the device* makes out to the internet
+and still need WiFi; BLE cannot stand in for them, and nothing pretends otherwise.
+OTA is the one host-initiated path not covered (yet) — `ArduinoOTA` is UDP-based
+and has no BLE equivalent here.
 
 **One implementation, two transports.** Both go through `statusChannelHandle()`
 (`src/status_channel.h`); a transport only pulls the query and the HMAC pair out of

@@ -13,6 +13,7 @@
 #include "util/loc_util.h"
 #include "util/url_util.h"
 #include "parse/settings_parse.h"
+#include "parse/wifi_cred_parse.h"
 #include "parse/usage_parse.h"
 #include "parse/weather_parse.h"
 #include "util/trend_util.h"
@@ -471,6 +472,130 @@ void test_settings_describe(void) {
   TEST_ASSERT_TRUE(strstr(out, "brightness") == nullptr);   // unset: not listed
 }
 
+// ---- wifi_cred_parse ------------------------------------------------------
+
+// Parse into a fresh credential and return whether it was accepted.
+static bool wifiQuery(const char* query, WifiCred& out, char* err = nullptr,
+                      size_t errCap = 0) {
+  out = WifiCred();
+  return wifiCredFromQuery(query, out, err, errCap);
+}
+
+void test_wifi_cred_set(void) {
+  WifiCred c;
+  TEST_ASSERT_TRUE(wifiQuery("wifi_ssid=Home&wifi_pass=hunter2", c));
+  TEST_ASSERT_EQUAL_INT(WIFI_CRED_SET, c.action);
+  TEST_ASSERT_EQUAL_STRING("Home", c.ssid);
+  TEST_ASSERT_EQUAL_STRING("hunter2", c.pass);
+
+  // Key order is not part of the protocol.
+  TEST_ASSERT_TRUE(wifiQuery("wifi_pass=hunter2&wifi_ssid=Home", c));
+  TEST_ASSERT_EQUAL_STRING("Home", c.ssid);
+  TEST_ASSERT_EQUAL_STRING("hunter2", c.pass);
+}
+
+void test_wifi_cred_encoding(void) {
+  WifiCred c;
+  TEST_ASSERT_TRUE(wifiQuery("wifi_ssid=My%20Net&wifi_pass=a%26b%3Dc%2Bd", c));
+  TEST_ASSERT_EQUAL_STRING("My Net", c.ssid);
+  TEST_ASSERT_EQUAL_STRING("a&b=c+d", c.pass);
+
+  // '+' is the query-string spelling of a space (urlDecode), so a literal plus
+  // in a passphrase has to be sent as %2B — the client's job, not the device's.
+  TEST_ASSERT_TRUE(wifiQuery("wifi_ssid=Guest+Net&wifi_pass=two+words", c));
+  TEST_ASSERT_EQUAL_STRING("Guest Net", c.ssid);
+  TEST_ASSERT_EQUAL_STRING("two words", c.pass);
+}
+
+void test_wifi_cred_open_network_and_forget(void) {
+  WifiCred c;
+  // A named open network: a passphrase is optional, an empty one is not an error.
+  TEST_ASSERT_TRUE(wifiQuery("wifi_ssid=Cafe&wifi_pass=", c));
+  TEST_ASSERT_EQUAL_INT(WIFI_CRED_SET, c.action);
+  TEST_ASSERT_EQUAL_STRING("Cafe", c.ssid);
+  TEST_ASSERT_EQUAL_STRING("", c.pass);
+
+  // Both empty: forget. The only way back from a network that no longer exists.
+  TEST_ASSERT_TRUE(wifiQuery("wifi_ssid=&wifi_pass=", c));
+  TEST_ASSERT_EQUAL_INT(WIFI_CRED_FORGET, c.action);
+  TEST_ASSERT_EQUAL_STRING("", c.ssid);
+  TEST_ASSERT_EQUAL_STRING("", c.pass);
+}
+
+void test_wifi_cred_rejects(void) {
+  WifiCred c;
+  char err[96];
+  // Both halves are required: a name without a passphrase would silently keep the
+  // old network's passphrase, which is exactly the kind of half-configured state
+  // the all-or-nothing rule exists to prevent.
+  TEST_ASSERT_FALSE(wifiQuery("wifi_ssid=Home", c, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("wifi_ssid and wifi_pass must be given together", err);
+  TEST_ASSERT_EQUAL_INT(WIFI_CRED_NONE, c.action);
+  TEST_ASSERT_FALSE(wifiQuery("wifi_pass=hunter2", c, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_INT(WIFI_CRED_NONE, c.action);
+  TEST_ASSERT_FALSE(wifiQuery("wifi_ssid=&wifi_pass=hunter2", c, err, sizeof(err)));
+  TEST_ASSERT_FALSE(wifiQuery("wifi_ssid=Home&wifi_pass=hunter2&chime=0", c, err,
+                              sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("unknown wifi key", err);
+  TEST_ASSERT_FALSE(wifiQuery("wifi_ssid=Home&wifi_sid=Home", c, err, sizeof(err)));
+  TEST_ASSERT_FALSE(wifiQuery("wifi_ssidathome", c, err, sizeof(err)));
+  TEST_ASSERT_FALSE(wifiQuery("", c, err, sizeof(err)));
+  TEST_ASSERT_FALSE(wifiQuery(nullptr, c, err, sizeof(err)));
+}
+
+void test_wifi_cred_rejects_long_values(void) {
+  // 33 characters (the 802.11 SSID maximum is 32) and 64 (the WPA2 passphrase
+  // maximum is 63). A rejected request must leave the caller's struct alone.
+  char ssid[64], pass[128], query[384], err[96];
+  memset(ssid, 's', sizeof(ssid) - 1);
+  ssid[sizeof(ssid) - 1] = 0;
+  memset(pass, 'p', sizeof(pass) - 1);
+  pass[sizeof(pass) - 1] = 0;
+  snprintf(query, sizeof(query), "wifi_ssid=%s&wifi_pass=%s", ssid, pass);
+  WifiCred c;
+  TEST_ASSERT_FALSE(wifiQuery(query, c, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("wifi_ssid too long (max 32 characters)", err);
+  TEST_ASSERT_EQUAL_INT(WIFI_CRED_NONE, c.action);
+
+  char ssid32[33];
+  memset(ssid32, 's', sizeof(ssid32) - 1);
+  ssid32[sizeof(ssid32) - 1] = 0;
+  snprintf(query, sizeof(query), "wifi_ssid=%s&wifi_pass=%s", ssid32, pass);
+  TEST_ASSERT_FALSE(wifiQuery(query, c, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("wifi_pass too long (max 63 characters)", err);
+
+  // The maxima themselves are accepted.
+  char pass63[64];
+  memset(pass63, 'p', sizeof(pass63) - 1);
+  pass63[sizeof(pass63) - 1] = 0;
+  snprintf(query, sizeof(query), "wifi_ssid=%s&wifi_pass=%s", ssid32, pass63);
+  TEST_ASSERT_TRUE(wifiQuery(query, c));
+  TEST_ASSERT_EQUAL_INT(32, (int)strlen(c.ssid));
+  TEST_ASSERT_EQUAL_INT(63, (int)strlen(c.pass));
+}
+
+void test_wifi_cred_describe_redacts(void) {
+  WifiCred c;
+  char out[256];
+  TEST_ASSERT_TRUE(wifiQuery("wifi_ssid=Home&wifi_pass=hunter2", c));
+  wifiCredDescribe(c, out, sizeof(out));
+  TEST_ASSERT_TRUE(strstr(out, "Home") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "7 chars") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "hunter2") == nullptr);   // never echoed back
+
+  // …and the same for the transports' own log line.
+  char safe[64];
+  TEST_ASSERT_EQUAL_STRING("wifi_ssid=<credentials, passphrase redacted>",
+                           wifiQueryForLog("wifi_ssid=Home&wifi_pass=hunter2", safe,
+                                           sizeof(safe)));
+  TEST_ASSERT_TRUE(strstr(wifiQueryForLog("chime=0&volume=2", safe, sizeof(safe)),
+                          "chime=0") != nullptr);
+
+  TEST_ASSERT_TRUE(wifiQuery("wifi_ssid=&wifi_pass=", c));
+  wifiCredDescribe(c, out, sizeof(out));
+  TEST_ASSERT_TRUE(strstr(out, "cleared") != nullptr);
+}
+
 // ---- usageParse -----------------------------------------------------------
 
 static const char* USAGE_JSON =
@@ -846,6 +971,12 @@ int main(int, char**) {
   RUN_TEST(test_settings_json_empty_and_small_buffer);
   RUN_TEST(test_settings_json_rejects_bad_documents);
   RUN_TEST(test_settings_describe);
+  RUN_TEST(test_wifi_cred_set);
+  RUN_TEST(test_wifi_cred_encoding);
+  RUN_TEST(test_wifi_cred_open_network_and_forget);
+  RUN_TEST(test_wifi_cred_rejects);
+  RUN_TEST(test_wifi_cred_rejects_long_values);
+  RUN_TEST(test_wifi_cred_describe_redacts);
   RUN_TEST(test_usage_parse);
   RUN_TEST(test_usage_parse_clamps_and_zero_limit);
   RUN_TEST(test_usage_parse_bad_input);

@@ -122,6 +122,9 @@ void uiDrawCardDots(int active, int count) {
 
 void uiBeginFrame() {
   spr.fillScreen(COL_BG);
+  // The WiFi setup screen turns wrapping off for its hand-placed lines (see
+  // wifiSetupDraw); every main-UI frame starts from the default again.
+  spr.setNoWrap(false);
 }
 
 void uiSetEnv(const UiEnv& env) { g_env = env; }

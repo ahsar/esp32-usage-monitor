@@ -147,6 +147,7 @@ static StatusEvent s_pending = STATUS_EV_NONE;
 static void (*s_wakeCb)() = nullptr;
 static DeviceSettings s_settings;
 static bool (*s_settingsCb)(const DeviceSettings&, uint16_t) = nullptr;
+static bool (*s_wifiCb)(const WifiCred&) = nullptr;
 static uint32_t s_lastRejectLog = 0;
 
 void statusServerBegin() { s_server.begin(); }
@@ -155,6 +156,7 @@ void statusServerSetSettings(const DeviceSettings& s) { s_settings = s; }
 void statusServerSetSettingsCallback(bool (*cb)(const DeviceSettings&, uint16_t)) {
   s_settingsCb = cb;
 }
+void statusServerSetWifiCallback(bool (*cb)(const WifiCred&)) { s_wifiCb = cb; }
 
 bool statusServerThinking() {
   return s_state == ST_RUNNING || s_state == ST_WAITING;
@@ -202,10 +204,17 @@ static bool memFind(const char* hay, size_t hayLen, const char* needle,
 }
 
 // The query of the request line, verbatim and undecoded (no leading '?'), e.g.
-// "chime=0&place=Shanghai". This exact string is what the settings signature
-// covers, so it must be taken as bytes off the wire. 255 bytes is the cap the
-// BLE frame shares (status_channel.h) — both transports must agree on it.
-static bool requestQuery(const char* req, size_t rlen, char* out, size_t cap) {
+// "chime=0&place=Shanghai". This exact string is what the settings and WiFi
+// signatures cover, so it must be taken as bytes off the wire.
+//
+// `tooLong` distinguishes the two reasons this can fail — "no query at all" (a
+// health probe) from "the query does not fit in `cap`" — because they deserve
+// different answers: a probe gets 200, an oversized request must not be silently
+// ignored. The cap is the caller's: `handleHttpStatus()` sizes it to the longest
+// request either channel takes and `ble_status.cpp` sizes its frame to match.
+static bool requestQuery(const char* req, size_t rlen, char* out, size_t cap,
+                         bool* tooLong = nullptr) {
+  if (tooLong) *tooLong = false;
   size_t g;
   if (!memFind(req, rlen, "GET ", 4, g)) return false;
   size_t sp = g + 4;                        // end of the request target
@@ -215,7 +224,11 @@ static bool requestQuery(const char* req, size_t rlen, char* out, size_t cap) {
   while (q < sp && req[q] != '?') q++;
   if (q == sp) return false;
   size_t n = sp - q - 1;
-  if (n == 0 || n + 1 > cap) return false;
+  if (n == 0) return false;
+  if (n + 1 > cap) {
+    if (tooLong) *tooLong = true;
+    return false;
+  }
   memcpy(out, req + q + 1, n);
   out[n] = '\0';
   return true;
@@ -315,6 +328,50 @@ static const char* channelSettings(const StatusReq& r, char* body, size_t cap) {
   return "200 OK";
 }
 
+// A WiFi credentials request: associate with what it carries, or drop what is
+// stored (`?wifi_ssid=&wifi_pass=`). Everything else about it is the same policy
+// as settings — auth required, signature over the whole query, no unauthenticated
+// write path — because pointing a device at an attacker's AP is worse than
+// changing its brightness.
+static const char* channelWifi(const StatusReq& r, char* body, size_t cap) {
+  if (!statusServerAuthEnabled()) {
+    Serial.println("wifi: REFUSED (no status_key configured)");
+    setBody(body, cap, "wifi credentials require status_key\n");
+    return "403 Forbidden";
+  }
+
+  if (!authorizePayload(r.query, r.ts, r.sig)) {
+    logReject("wifi", r.peer);
+    setBody(body, cap, "OK");   // the body a rejected request has always had
+    return "401 Unauthorized";
+  }
+
+  WifiCred cred;
+  char err[96] = {0};
+  if (!wifiCredFromQuery(r.query, cred, err, sizeof(err))) {
+    setBody(body, cap, err[0] ? err : "bad wifi query");
+    return "400 Bad Request";
+  }
+
+  if (!s_wifiCb) {
+    setBody(body, cap, "wifi channel is not wired up\n");
+    return "503 Service Unavailable";
+  }
+
+  if (!s_wifiCb(cred)) {
+    setBody(body, cap, "could not store credentials\n");
+    return "500 Internal Server Error";
+  }
+
+  // Never the raw query here, unlike the settings line above: it holds the
+  // passphrase. wifiCredDescribe() redacts it for the same reason.
+  char line[160];
+  wifiCredDescribe(cred, line, sizeof(line));
+  Serial.printf("%s", line);
+  wifiCredDescribe(cred, body, cap);
+  return "200 OK";
+}
+
 const char* statusChannelHandle(const StatusReq& r, char* body, size_t cap) {
   const char* q = r.query ? r.query : "";
   if (!q[0]) {                        // no query at all: health probe
@@ -322,7 +379,12 @@ const char* statusChannelHandle(const StatusReq& r, char* body, size_t cap) {
     return "200 OK";
   }
 
-  // Settings first: a `?state=` request keeps the original protocol, anything
+  // WiFi credentials: their own kind, not a settings field (wifi_cred_parse.h).
+  // Checked before the settings branch because this is the request a device with
+  // no IP address has to be able to take.
+  if (strncmp(q, "wifi_", 5) == 0) return channelWifi(r, body, cap);
+
+  // Settings next: a `?state=` request keeps the original protocol, anything
   // else that is a query is the settings channel.
   if (strncmp(q, "state=", 6) != 0) return channelSettings(r, body, cap);
 
@@ -384,9 +446,18 @@ extern "C" void handleHttpStatus() {
   }
 
   // The transport's whole job: pull the query and the HMAC pair out of the wire
-  // format, then hand them to the shared handler.
-  char query[256] = {0}, ts[24] = {0}, sig[80] = {0}, peer[24] = {0};
-  if (!requestQuery(req, reqLen, query, sizeof(query))) query[0] = '\0';
+  // format, then hand them to the shared handler. The buffer is sized for the
+  // largest request either channel accepts — a WiFi one is an SSID plus a
+  // passphrase with every byte percent-encoded (32*3 + 63*3 + the key names).
+  char query[384] = {0}, ts[24] = {0}, sig[80] = {0}, peer[24] = {0};
+  bool tooLong = false;
+  if (!requestQuery(req, reqLen, query, sizeof(query), &tooLong)) query[0] = '\0';
+  if (tooLong) {
+    // Say so instead of answering the health-probe body: a request that was cut
+    // to an empty query would come back "200 OK" and quietly do nothing.
+    respond(client, "414 URI Too Long");
+    return;
+  }
   headerValue(req, reqLen, "X-Ts", ts, sizeof(ts));
   headerValue(req, reqLen, "X-Sig", sig, sizeof(sig));
   IPAddress ip = client.remoteIP();

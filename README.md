@@ -44,7 +44,9 @@ current weather card. These are real captures from the device — see
   press Key1.
 - **Five weather cards** — Now → Sun → Air → Moon → Moonrise/Moonset.
 - **Usage meters** — 5-hour rolling / weekly / monthly, each with a reset
-  countdown; the bars go green, yellow above 30% and red above 60%.
+  countdown; the bars go green, yellow above 30% and red above 60%. When the
+  OAuth token needs re-authorising the page says so — and how — instead of
+  drawing bars that look like a fetch still in flight.
 - **Trend page** — 5-hour rolling spend, `$/h` burn rate, estimated time to
   limit, plus a cumulative spend curve and per-poll bars. The history ring is
   RAM-only, so it starts empty on every boot and fills as polls land.
@@ -61,7 +63,10 @@ current weather card. These are real captures from the device — see
 - **OAuth device flow** — authorise once with `tools/authorize.py`; the refresh
   token rotates automatically and is persisted to LittleFS.
 - **WiFi setup UI** on first boot — scan, pick a network, type the password with
-  the touch keyboard or the two keys.
+  the touch keyboard or the two keys. Re-picking the network the device already
+  has a passphrase for prefills it, so reconnecting is one tap — and the whole
+  passphrase can be typed on a PC instead and sent over the device channel
+  (`tools/wifi-setup.sh`), which needs no cable and no `uploadfs`.
 - **Glanceable power** — 30 s without input dims the panel to 50/255 and any
   touch, key or status event wakes it. The panel is never blanked, and a frame is
   re-rendered and pushed only when something on it actually changes.
@@ -277,7 +282,12 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
     switches the character group (`abc` / `ABC` / `123` / symbols)
   - **Key2 (left)**: short press types the character, long press (800 ms)
     connects
-  - The on-screen touch keyboard does the same thing directly
+  - The on-screen touch keyboard does the same thing directly. Selecting the
+    network the device already has a passphrase for fills it in.
+  - Better still, type the passphrase on a PC: `tools/wifi-setup.sh <ssid>
+    <pass>` sends it over BLE (no cable, no network — the device has no IP yet)
+    and the panel shows the connect as it happens. `tools/wifi-setup.sh
+    --forget` clears the credentials and brings the setup screen back.
 - **Pages.** Swipe left/right (or tap) to move between Weather / Usage / Trend /
   Clock. On the Weather page, swipe up/down for the five cards.
 - **Key1** cycles pages, and dismisses the "Thinking…" / "Needs you" animation.
@@ -343,6 +353,26 @@ signature as the state pings applies (over the raw query string), and with no
 `status_key` the device refuses settings outright rather than accepting an
 unauthenticated write. See [docs/pc-bridge.md](docs/pc-bridge.md#settings-over-the-same-endpoint).
 
+### WiFi credentials from a PC
+
+The same channel carries the WiFi passphrase, which is the one thing on this
+device that is genuinely painful to type: the setup screen is a 4×32 character
+grid. `tools/wifi-setup.sh` takes it from a real keyboard instead, over BLE —
+which needs no cable and no network, because the device it is provisioning has no
+IP address yet:
+
+```bash
+tools/wifi-setup.sh Home 'hunter2'   # join that network (and keep it)
+tools/wifi-setup.sh --forget         # clear it; back to the setup screen
+```
+
+The credentials reach NVS only once the association actually succeeds, so a typo
+cannot replace a working network, and the panel shows the connect as it happens.
+Requires `status_key` (as settings do) and `bleak` for the BLE leg. It is not a
+replacement for the setup screen — that stays the path that works with no PC at
+all. See
+[docs/pc-bridge.md](docs/pc-bridge.md#wifi-credentials-over-the-same-channel).
+
 ## Project layout
 
 ```
@@ -356,7 +386,7 @@ unauthenticated write. See [docs/pc-bridge.md](docs/pc-bridge.md#settings-over-t
 │   ├── ui_compose.cpp/h     # picks the page/cards to draw for the pager state
 │   ├── ui_model.h           # neutral UiPage / UiWeatherCard enums + UiEnv
 │   ├── pager.cpp/h          # page/card gesture + animation state machine
-│   ├── status_server.cpp/h  # HTTP status endpoint (signed state + settings)
+│   ├── status_server.cpp/h  # HTTP status endpoint (signed state + settings + wifi)
 │   ├── clock_sync.cpp/h     # NTP bootstrap + RTC resync scheduling
 │   ├── usage_history.cpp/h  # RAM ring of spend samples (Trend page)
 │   ├── storage.cpp/h        # LittleFS mount helper
@@ -367,7 +397,7 @@ unauthenticated write. See [docs/pc-bridge.md](docs/pc-bridge.md#settings-over-t
 │   ├── fetch_task.cpp/h     # background fetch worker (job/result queues)
 │   ├── api_client.cpp       # OpenCode console REST client
 │   ├── weather_client.cpp/h # weather / moon / air quality
-│   ├── wifi_setup.cpp/h     # WiFi setup UI
+│   ├── wifi_setup.cpp/h     # WiFi setup UI (the fallback when there is no PC)
 │   ├── frame_dump.cpp/h     # -DFRAME_DUMP screen walker (screenshot tool)
 │   ├── diag.cpp/h           # boot/fetch freeze diagnostics
 │   ├── usage_display.h      # public UI drawing API

@@ -18,10 +18,23 @@
 // Only the PC→device direction is covered. usage/weather/moon/air are fetches
 // the device makes out to the internet and still need WiFi.
 //
+// Two request kinds travel over both transports:
+//
+//   - `?state=…`          — the agent-activity animation (main.cpp);
+//   - everything else     — the settings channel (settings_parse.h), a signed
+//                           set of config overrides;
+//   - `?wifi_ssid=…&wifi_pass=…` — WiFi credentials (wifi_cred_parse.h). Its own
+//                           kind rather than a settings field: it is a secret, it
+//                           is *not* persisted in /settings.json, and it is the
+//                           one request that has to work on a device with no IP
+//                           address yet — i.e. over BLE, which is why the LAN
+//                           transport being absent must not make it fail.
+//
 // A request is the query string the client wants applied plus the HMAC pair it
 // signed that string with. The payload the signature covers depends on the
-// request — the state value for `?state=`, the whole query for settings — and
-// that rule lives in statusChannelHandle(), not in either transport.
+// request — the state value for `?state=`, the whole query for settings and for
+// WiFi credentials — and that rule lives in statusChannelHandle(), not in either
+// transport.
 struct StatusReq {
   // Raw, undecoded query without the leading '?': "state=running",
   // "chime=0&place=Shanghai", or "settings". For a settings request these bytes

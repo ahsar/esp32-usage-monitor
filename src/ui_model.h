@@ -44,4 +44,13 @@ struct UiEnv {
   // IP off the boot log is exactly what this avoids.
   uint32_t ipv4;           // 0 = no address yet (WiFi down or still associating)
   bool     bleUp;          // the BLE fallback came up; NOT proof it is advertising
+
+  // The usage meter has no data and no poll will ever bring any: the worker has
+  // no usable refresh token. This is terminal rather than transient — only a
+  // refusal from the token endpoint (400, in practice `invalid_grant`) or a
+  // device that was never authorised clears the token, while a request that
+  // merely failed on the network leaves it alone — which is why the Usage page
+  // can say "re-authorise" instead of drawing three grey bars that look like a
+  // fetch still in flight.
+  bool     authNeeded;
 };

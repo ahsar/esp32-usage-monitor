@@ -30,6 +30,20 @@ void uiDrawUsage(const UsageData& data, int ox, int oy) {
   cardBg();
   statusBar("Usage");
 
+  // No token, no meter — ever. Unlike "no data yet" this is terminal (the
+  // refresh token was rejected, or the device was never authorised), and three
+  // grey rows read exactly like a fetch that is still in flight, which is what
+  // made a dead device indistinguishable from a busy one. Same shape as the Air
+  // card's missing-waqi_token message.
+  if (g_env.authNeeded) {
+    bool had = data.valid;
+    textCenter(F_HEAD, had ? COL_RED : COL_YELLOW, HW_W / 2, 96,
+               had ? "AUTH EXPIRED" : "AUTH NEEDED");
+    textCenter(F_SMALL, COL_MUTED, HW_W / 2, 118, "run tools/authorize.py");
+    textCenter(F_SMALL, COL_MUTED, HW_W / 2, 132, "then uploadfs");
+    return;
+  }
+
   struct Row { const char* label; int pct; uint32_t reset; };
   Row rows[3] = {
     { "5-HOUR",  data.rollingPercent, data.rollingResetSec },

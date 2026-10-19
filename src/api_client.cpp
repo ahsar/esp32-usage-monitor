@@ -12,6 +12,18 @@
 static const char* HOST      = "opencode.ai";
 static const char* CLIENT_ID = "opencode-cli";
 
+// Fired the instant a rotated token has been parsed — before the fetch that
+// triggered the refresh even continues. The refresh token is single-use, so
+// between "the server has rotated it" and "the main task has written it" the
+// only copy of the new token is the TokenSet the worker is refreshing: a
+// power-off or an OTA reboot in that window loses it, and the next boot replays
+// a spent token — which revokes the whole family. fetch_task registers its
+// hand-off here so the unpersisted window is the network round trip rather than
+// the rest of the job.
+static void (*s_onTokenRotated)() = nullptr;
+
+void apiSetTokenRotatedHook(void (*cb)()) { s_onTokenRotated = cb; }
+
 // ---------------------------------------------------------------------------
 // Usage parsing
 // ---------------------------------------------------------------------------
@@ -37,6 +49,9 @@ static bool parseTokenResponse(const String& body, TokenSet& tokens) {
 
   tokens.valid = tokens.refreshToken[0] != 0;
   tokens.dirty = true;
+  // Publish before returning: see s_onTokenRotated. Called on the fetch task,
+  // the same thread that owns `tokens`.
+  if (s_onTokenRotated) s_onTokenRotated();
   return true;
 }
 

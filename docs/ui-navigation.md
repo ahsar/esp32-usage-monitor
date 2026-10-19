@@ -26,6 +26,24 @@ dependency so `pager.cpp` can reason about pages without pulling in the display.
 Text is rendered with LVGL Montserrat (anti-aliased, all copy in English) — see
 [text-lvgl.md](text-lvgl.md). Text helpers take and return **logical** units.
 
+## Usage page (and its "re-authorise" state)
+
+Three meters — 5-hour rolling / weekly / monthly — each with a reset countdown,
+drawn green under 30 %, yellow to 60 %, red above (`src/ui/cards.cpp`,
+`uiDrawUsage`). The page has one other state: when the worker has no usable
+refresh token, the bars are replaced by **AUTH NEEDED** (yellow) or **AUTH
+EXPIRED** (red, when the meter had data to lose) plus the way out —
+`run tools/authorize.py` / `then uploadfs` — because a token the endpoint has
+refused is terminal and will never fill the bars again, while three grey rows
+look exactly like a fetch that is still in flight. It mirrors the Air card's
+missing-`waqi_token` message.
+
+The state comes from `fetchTaskTokensValid()` (`UiEnv::authNeeded`), which is
+only false for a token refusal or a device that was never authorised — a fetch
+that failed on the network leaves it true, so a flaky link cannot raise a false
+alarm. The hand-off from working to dead plays the `failed` cue once (seeded
+from the boot state, so an unconfigured device does not beep at every power-on).
+
 ## Clock page (device identity)
 
 The Clock page is the device's own status page — the clock, the date, the battery

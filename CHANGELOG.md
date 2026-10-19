@@ -7,7 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The WiFi passphrase can be typed on a PC instead of the setup screen's
+  character grid.** `tools/wifi-setup.sh <ssid> <pass>` sends it over the device
+  channel as a new signed request kind — `?wifi_ssid=…&wifi_pass=…` — and
+  `--forget` clears what is stored. Over BLE, because that is the only transport a
+  device with *no credentials* has: `ble-bridge.py --once` needs no network at
+  all, while HTTP is tried first for the case where the device is already on the
+  air. This is what makes the 4×32 grid, ~60 taps for a WPA2 passphrase, an
+  option rather than the only path.
+
+  It is its own kind rather than another settings field
+  (`src/parse/wifi_cred_parse.h`, one branch in `statusChannelHandle()`), because
+  the two are opposites in every respect that matters: a settings override is a
+  value persisted to the readable `/settings.json`, while this is an instruction
+  to act and a secret — it goes to NVS through `hw/net.h`
+  (`netSaveCred()`, and a new `netForgetCred()` that also clears the driver's own
+  copy of the AP config), and only **after** the association succeeds, so a typo
+  cannot replace a working network with a useless one. Auth is the same as
+  settings: no `status_key`, no credentials (403), because pointing the device at
+  an attacker's AP is worse than a wrong brightness.
+
+  Nothing about it runs in the request handler: `WiFi.begin()` blocks while it
+  tears the old link down, and over HTTP that link is carrying the reply to the
+  request — so the handler records the request and `loop()` applies it at the
+  bottom of the iteration, after both transports have answered. The passphrase
+  also stops being a logging concern: `wifiCredDescribe()` redacts it in the reply
+  body and `wifiQueryForLog()` in the BLE transport's frame log (`status_server`'s
+  settings line prints raw queries, which is fine for `chime=0` and would not have
+  been here). The query buffer and `BLE_FRAME_MAX` grew to fit a fully
+  percent-encoded 32-byte SSID plus 63-byte passphrase, and an over-long request
+  now gets `414` instead of being silently treated as a health probe.
+
+- **Selecting the network the device already has a passphrase for prefills it.**
+  The password page used to be reset to empty on every visit, so reconnecting to a
+  known SSID — the common case after a scan, or after the boot grace period
+  expires — meant retyping the whole passphrase. `WifiState` now carries the stored
+  passphrase, and `beginPassEntry()` (which also de-duplicates the tap and key
+  paths) fills the page in, still masked and still editable. ~6 lines, and it
+  removes most of the typing that motivated the channel above.
+
+- The setup screen says where the other path is: the scanning, "no networks" and
+  connecting screens now carry `Set from a PC instead: tools/wifi-setup.sh` — the
+  password page itself has no room left (its char grid, group tabs and
+  DEL/Connect row already run to the safe area's bottom edge).
+
 ### Changed
+
+- The association block in `loop()` is split into what happens once per boot
+  (the HTTP listener, mDNS, the OTA endpoint) and what happens on every
+  association (clock sync, forcing the pollers). A re-provision from the channel
+  associates a second time, and `MDNS.begin()` errors on a second call rather than
+  no-op'ing, so the two had to stop living in the same `if`.
 
 - **Chimes are struck notes now, not beeps — and their loudness is a setting.**
   The old cue was a flat, equal-level tone at 1320 Hz with 12 ms edges, which is
@@ -179,6 +231,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deliberately not rssi — the dead AP in that sample sits inside the good AP's
   band — and a 5xx does not count towards it, because it proves the AP carried
   the request. The policy is host-tested alongside the backoff ladder.
+- **The Usage page says when the meter needs re-authorising.** A refused refresh
+  token (a 400 from the token endpoint, in practice `invalid_grant`, or a device
+  that was never authorised) is terminal: no poll will ever fill the bars again, and the page drew exactly the same three
+  grey rows as a fetch that is merely still in flight. It now replaces them with
+  `AUTH NEEDED` (or `AUTH EXPIRED` when it had data to lose) and the way out —
+  `run tools/authorize.py` / `then uploadfs` — which is the one thing the guard
+  entry above concedes it cannot fix, since the cause was several steps removed
+  from the symptom. Same shape as the Air card's missing-`waqi_token` message, and
+  the state comes from `fetchTaskTokensValid()`: only a dead token clears it, so a
+  network failure cannot raise a false alarm. The hand-off from working to dead
+  also plays the `failed` cue once, so a device that stops updating is noticed
+  without walking over to read the panel.
 
 ### Changed
 
@@ -210,6 +274,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attempts per poll instead of one, to absorb the cheap transient kind (a 503
   burst, an empty body); that is bounded at ~170 s against the 240 s watchdog
   deadline, the same order as the usage poll that refreshes its token twice.
+
+- **The power key flushes a rotated token before the PMU cuts the rails.**
+  Refresh tokens are single-use, so the one in `/tokens.json` is already spent the
+  moment the worker exchanges it — the *new* one used to live only in the fetch
+  task's RAM until `serviceFetch()` wrote it from the main task (LittleFS is not
+  thread-safe), and a shutdown in between took it with it. OTA has always flushed
+  that hand-off slot from its stop callback because the reboot would otherwise
+  lose the token; `hwPowerOff()` had no such step, and unlike OTA there is no next
+  boot to rescue it — the device comes back holding the token it already used,
+  which is precisely the reuse that revokes the family. Three parts, because the
+  slot alone was not the whole window: the worker now publishes a rotation the
+  moment it has been parsed (`apiSetTokenRotatedHook()` → `handOffTokens()`)
+  rather than when the usage job that triggered it finishes — which is the GET
+  that follows the refresh, seconds later; `flushPendingTokens()` loops, so the
+  second half of a double rotation (the usage poll is allowed to refresh twice,
+  and the worker re-publishes the instant the slot is freed) is not dropped; and
+  the shutdown flush sits *after* the "Shutting down…" delay and immediately
+  before `hwPowerOff()`, so the 400 ms the banner is on screen — with the device
+  still polling — is covered too. What remains is a refresh still in flight when
+  the key is held, which no local code can see the far side of.
+
+- **The WiFi setup screen drew its text from the wrong baseline.** `setCursor()`
+  takes a *baseline* (`ScaledCanvas`, hw/display.h), but every rect-relative label
+  — the Back / DEL / Connect buttons, the group tabs, the SSID list rows, the
+  character cells — was positioned as if it were the top of a 10-px text box
+  (`r.y + (r.h - 10) / 2`), so each one sat about half a line above the rect it
+  belonged to. Worst of all the password field, whose masked passphrase was drawn
+  *above* its box rather than inside it. All of them are centred now, from the
+  font's own metrics (`labelBaseline()`), which also fixes the cells' centring:
+  they assumed a 6-logical-px glyph, and `M`/`W`/digits/symbols, being wider, sat
+  left of centre. `Select WiFi` was clipped too: baselined at `SAFE_T`, the tops
+  of `l`, `f` and `t` landed 5 physical px above the canvas (`TITLE_Y`).
+
+- **A hand-placed line on the WiFi setup screen could silently wrap onto the line
+  below it.** `lvglDrawText` passes `HW_CANVAS_W - x` as the label width, so a
+  string wider than the space it is drawn into breaks, and the second half is
+  drawn one line height lower — on top of whatever is there. On the boot
+  "Connecting…" screen `Tap to choose another network` measured 357 px against
+  352 px of area, and its last word was drawn over `Set from a PC instead:`. The
+  text now fits (291 px), the line step is 14 logical px rather than 12 (a 13-px
+  line box at 12 px of pitch overlapped by 2 physical px), and the rasteriser
+  takes a `nowrap` flag — set for the whole setup screen, cleared by
+  `uiBeginFrame()` — so the next over-long string clips at the panel edge instead
+  of landing on its neighbour. That matters most for the SSIDs, which are 32
+  bytes of someone else's choosing: the list truncates them to its column (`..`)
+  rather than letting one run into the rssi.
+
+- **The WiFi setup screen's character cells butted against each other.** The grid
+  used one constant as both the cell width and the column pitch, so the eight
+  20-px cells touched and a row read as a single rounded bar with notches down it
+  — the four rows have had a `GAP` between them all along. Width and pitch are
+  now separate values (19-px cells on a 21-px pitch) and the block is centred in
+  the safe width, 8 × 19 + 7 × 2 = 166 of 168, where it used to start 2 px in and
+  stop 6 px short of the right edge.
 
 ## [0.3.0] - 2026-10-15
 

@@ -10,6 +10,17 @@ on a fresh one — otherwise powering on would immediately power off.
 `wifi_setup.cpp` likewise no longer treats a `Key1` release as a gesture, so
 letting go of the power button cannot abort the boot WiFi connect.
 
+Shutting down is also the last chance to persist a token the background worker
+rotated: `hwPowerOff()` cuts the rails with no reboot, so a rotation still sitting
+in the fetch task's hand-off slot would simply die, and the next boot would replay
+a refresh token the server has already consumed — which revokes the whole family.
+`loop()` therefore runs the same flush OTA uses (`flushPendingTokens()`) *after*
+the "Shutting down…" banner's delay and immediately before the power-off: the
+device is still polling for those 400 ms, and the flush has to be the last thing
+that happens rather than the first. The worker also publishes a rotation the
+moment the endpoint rotates it (not at the end of the job), which is what keeps
+the unpersisted window down to the round trip.
+
 # Display power / heat
 
 Rendering is **state-driven, not timer-driven**. `uiFrame()` hashes everything

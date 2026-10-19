@@ -35,13 +35,20 @@ static int s_touchUsed = 0;
 
 // ── Layout helpers ──────────────────────────────────────────
 static const int COLS = 8;
-static const int CW   = (SAFE_W - 4) / COLS;   // ~20
-static const int CH   = 26;
-static const int CX0  = SAFE_L + 2;
 static const int GAP  = 2;
+// Cell width and column pitch are two different numbers, and the grid used one
+// value for both: eight 20-px cells butted against each other, so a row read as a
+// single rounded bar with notches down it — next to the vertical rows, which have
+// always had GAP between them. Solve the width from the safe width and centre the
+// block instead: 8 × 19 + 7 × 2 = 166 in 168, i.e. 1 px of margin either side
+// (CX0 was `SAFE_L + 2`, which left 2 px on the left and 6 px on the right).
+static const int CW   = (SAFE_W - (COLS - 1) * GAP - 2) / COLS;
+static const int CP   = CW + GAP;              // column pitch, *not* the cell width
+static const int CH   = 26;
+static const int CX0  = SAFE_L + (SAFE_W - (COLS * CW + (COLS - 1) * GAP)) / 2;
 
 static Rect charRect(int col, int row, int rowOffsetY) {
-  return { CX0 + col * CW, rowOffsetY + row * (CH + GAP), CW, CH };
+  return { CX0 + col * CP, rowOffsetY + row * (CH + GAP), CW, CH };
 }
 
 static Rect groupBtnRect(int idx, int rowY) {
@@ -53,12 +60,26 @@ static Rect btnRect(int x, int y, int w, int h) {
   return { x, y, w, h };
 }
 
+// ScaledCanvas::setCursor() takes a **baseline** (hw/display.h), not the top of a
+// text box — and this screen used to position every rect-relative label as if it
+// were the latter (`r.y + (r.h - 10) / 2`), which put the text half a line above
+// its button, list row or character cell. Centre one line box in `r` and return
+// the baseline, from the font's own metrics rather than a magic number:
+// lv_font_ui_24 is line_height 26 / base_line 5 at UI_SCALE 2, i.e. a 13-logical-px
+// box whose baseline sits 10.5 px below its top (rounded up here so the truncating
+// division lands on the true centre at the heights this screen uses: 14/18/20/26).
+static int labelBaseline(const Rect& r) {
+  const int boxH = WIFI_FONT->line_height / UI_SCALE;
+  const int asc  = (WIFI_FONT->line_height - WIFI_FONT->base_line + UI_SCALE - 1) / UI_SCALE;
+  return r.y + (r.h - boxH) / 2 + asc;
+}
+
 static void fillBtn(const Rect& r, uint16_t color, const char* label) {
   spr.fillRoundRect(r.x, r.y, r.w, r.h, 3, color);
   spr.setFont(WIFI_FONT);
   spr.setTextColor(COL_TEXT, color);
   int tw = lvglTextWidth(WIFI_FONT, label) / UI_SCALE;
-  spr.setCursor(r.x + (r.w - tw) / 2, r.y + (r.h - 10) / 2);
+  spr.setCursor(r.x + (r.w - tw) / 2, labelBaseline(r));
   spr.print(label);
 }
 
@@ -67,13 +88,20 @@ static void fillBtn(const Rect& r, uint16_t color, const char* label) {
 // scanned after 2 s and aborted a perfectly good — just slow — connect).
 static const uint32_t CONNECT_GRACE_MS = 30000;
 
+// Baseline for a title sitting on the safe-area top edge. setCursor() takes a
+// baseline and the tallest glyph reaches 21 physical px (10.5 logical) above it,
+// so baselining the text at SAFE_T draws the top of l/f/t 5 physical px above the
+// canvas: "Select WiFi" lost the tops of l, f and t that way.
+static const int TITLE_Y = SAFE_T + 3;
+
 // ── Init ────────────────────────────────────────────────────
-void wifiSetupInit(WifiState& state, const char* savedSsid) {
+void wifiSetupInit(WifiState& state, const char* savedSsid, const char* savedPass) {
   memset(&state, 0, sizeof(state));
   state.open = true;
   state.haveCreds = (savedSsid && savedSsid[0]);
   if (state.haveCreds) {
     strncpy(state.savedSsid, savedSsid, sizeof(state.savedSsid) - 1);
+    if (savedPass) strncpy(state.savedPass, savedPass, sizeof(state.savedPass) - 1);
   }
   // With saved creds, wait for the connect instead of scanning immediately.
   state.step = state.haveCreds ? 4 : 0;
@@ -83,9 +111,74 @@ void wifiSetupInit(WifiState& state, const char* savedSsid) {
   state.flashTime = 0;
 }
 
+// The way out of the setup screen when a real keyboard is closer than the grid:
+// the credentials channel (docs/pc-bridge.md), driven from a PC. Printed on the
+// screens that are mostly empty — the password page itself has no room left —
+// and kept to two short lines because ~28 characters is all that fits at 12 px.
+//
+// The step is 14 logical px, like every other stacked line here: the line box is
+// 13 (line_height 26 at UI_SCALE 2) and setCursor() positions its *baseline*, so
+// 12 left the two rows' ink 2 physical px into each other.
+static void drawPcHint(int y) {
+  spr.setFont(WIFI_FONT);
+  spr.setTextColor(COL_DIM);
+  spr.setCursor(SAFE_L, y);
+  spr.print("Set from a PC instead:");
+  spr.setCursor(SAFE_L, y + 14);
+  spr.print("tools/wifi-setup.sh");
+}
+
+// A network the device already has a passphrase for: fill the password page in
+// so "reconnect" is one tap on Connect. Still editable, and still shown masked.
+static void prefillSavedPass(WifiState& state) {
+  if (!state.haveCreds) return;
+  if (strcmp(wifiNets[state.sel].ssid, state.savedSsid) != 0) return;
+  strncpy(state.pass, state.savedPass, sizeof(state.pass) - 1);
+  state.pass[sizeof(state.pass) - 1] = 0;
+}
+
+// SSIDs are up to 32 bytes and every slot on this screen is fixed, so draw what
+// fits and mark the rest with "..": the alternative is the rasteriser running
+// past the slot — into the rssi column in the list, or off the panel elsewhere.
+static void printClipped(const char* s, int maxW) {
+  if (lvglTextWidth(WIFI_FONT, s) / UI_SCALE <= maxW) { spr.print(s); return; }
+  char buf[80];
+  size_t n = strlen(s);
+  if (n >= sizeof(buf) - 3) n = sizeof(buf) - 3;
+  memcpy(buf, s, n + 1);
+  while (n > 0) {
+    buf[n] = 0;
+    char probe[84];
+    snprintf(probe, sizeof(probe), "%s..", buf);
+    if (lvglTextWidth(WIFI_FONT, probe) / UI_SCALE <= maxW) break;
+    n--;
+  }
+  spr.print(buf);
+  spr.print("..");
+}
+
+// Move to the password page for network `sel`. Shared by the tap and key paths
+// (they used to duplicate the reset, and the reset is where the prefill goes).
+static void beginPassEntry(WifiState& state, int sel) {
+  state.sel = sel;
+  state.step = 2;
+  state.pass[0] = 0;
+  state.charGroup = 0;
+  state.charIdx = 0;
+  prefillSavedPass(state);
+  if (wifiNets[sel].encryption == 0) {   // open network: nothing to type
+    state.step = 3;
+    state.connDone = false;
+  }
+}
+
 // ── Drawing ─────────────────────────────────────────────────
 void wifiSetupDraw(WifiState& state) {
   spr.fillScreen(COL_BG);
+  // Every line here is placed by hand (a wrapped one would land on the line
+  // below: see lvglDrawText), and the SSIDs come from a scan, so their length is
+  // not ours to choose. Clip instead of wrap; uiBeginFrame() clears this.
+  spr.setNoWrap(true);
   s_touchUsed = 0;
 
   if (state.step == 4) {
@@ -98,10 +191,11 @@ void wifiSetupDraw(WifiState& state) {
     spr.print("Connecting...");
     spr.setTextColor(COL_DIM);
     spr.setCursor(SAFE_L, 78);
-    spr.print(state.savedSsid);
+    printClipped(state.savedSsid, SAFE_W);
     spr.setTextColor(COL_DIM);
-    spr.setCursor(SAFE_L, SAFE_B - 12);
-    spr.print("Tap to choose another network");
+    spr.setCursor(SAFE_L, SAFE_B - 42);
+    spr.print("Tap for another network");
+    drawPcHint(SAFE_B - 26);
 
     const HwTouch& tp = hwTouch();
     // Key1 is the PWR key on the 2.16 boards, so its release is not a user
@@ -123,6 +217,7 @@ void wifiSetupDraw(WifiState& state) {
     spr.setTextColor(COL_TEXT);
     spr.setCursor(SAFE_L, 60);
     spr.print("Scanning...");
+    drawPcHint(SAFE_B - 26);
 
     uint32_t e = (millis() - state.scanStart) / 1000;
     if (e >= 2 && state.netsCount == 0) {
@@ -146,7 +241,7 @@ void wifiSetupDraw(WifiState& state) {
     spr.setFont(WIFI_FONT);
     int y = SAFE_T;
     spr.setTextColor(COL_TEXT);
-    spr.setCursor(SAFE_L, y); spr.print("Select WiFi"); y += 14;
+    spr.setCursor(SAFE_L, TITLE_Y); spr.print("Select WiFi"); y += 14;
 
     if (state.netsCount == 0) {
       // Scan returned nothing or failed
@@ -156,6 +251,7 @@ void wifiSetupDraw(WifiState& state) {
       spr.print(state.scanFailed ? "Scan failed" : "No networks found");
       y += 16;
       spr.setCursor(SAFE_L, y); spr.print("Press any key to retry");
+      drawPcHint(y + 14);
 
       const HwTouch& tp = hwTouch();
       if (tp.justPressed || hwBtnA().wasReleased || hwBtnB().wasPressed) {
@@ -171,9 +267,11 @@ void wifiSetupDraw(WifiState& state) {
       uint16_t c = (i == state.sel) ? COL_ACCENT : COL_BG;
       spr.fillRoundRect(r.x, r.y, r.w, r.h, 3, c);
       spr.setTextColor(COL_TEXT);
-      spr.setCursor(SAFE_L + 4, y + 2);
-      spr.printf("  %s", wifiNets[i].ssid);
-      spr.setCursor(SAFE_R - 24, y + 2);
+      char label[40];
+      snprintf(label, sizeof(label), "  %s", wifiNets[i].ssid);
+      spr.setCursor(SAFE_L + 4, labelBaseline(r));
+      printClipped(label, (SAFE_R - 24) - (SAFE_L + 4) - 4);   // stop short of the rssi
+      spr.setCursor(SAFE_R - 24, labelBaseline(r));
       spr.printf("%d", wifiNets[i].rssi);
       y += 16;
     }
@@ -184,15 +282,7 @@ void wifiSetupDraw(WifiState& state) {
       for (int i = 0; i < state.netsCount && y < SAFE_B - 10; i++) {
         Rect r = { SAFE_L, y, SAFE_W, 14 };
         if (hit(r, tp.x, tp.y)) {
-          state.sel = i;
-          state.step = 2;
-          state.pass[0] = 0;
-          state.charGroup = 0;
-          state.charIdx = 0;
-          if (wifiNets[i].encryption == 0) {  // open network
-            state.step = 3;
-            state.connDone = false;
-          }
+          beginPassEntry(state, i);
           s_touchUsed = 1;
           return;
         }
@@ -203,16 +293,7 @@ void wifiSetupDraw(WifiState& state) {
     // Button fallback
     if (!s_touchUsed) {
       if (hwBtnA().wasReleased) state.sel = (state.sel + 1) % state.netsCount;
-      if (hwBtnB().wasPressed) {
-        state.step = 2;
-        state.pass[0] = 0;
-        state.charGroup = 0;
-        state.charIdx = 0;
-        if (wifiNets[state.sel].encryption == 0) {
-          state.step = 3;
-          state.connDone = false;
-        }
-      }
+      if (hwBtnB().wasPressed) beginPassEntry(state, state.sel);
     }
     return;
   }
@@ -228,19 +309,22 @@ void wifiSetupDraw(WifiState& state) {
 
     // Title
     spr.setTextColor(COL_TEXT);
-    spr.setCursor(SAFE_L, y + 3);
+    spr.setCursor(SAFE_L, TITLE_Y);
     spr.print("Password"); y += 16;
 
     // SSID name
     spr.setTextColor(COL_DIM);
     spr.setCursor(SAFE_L, y);
-    spr.print(wifiNets[state.sel].ssid); y += 14;
+    printClipped(wifiNets[state.sel].ssid, SAFE_W); y += 14;
 
     // Password display
     Rect passR = { SAFE_L, y, SAFE_W, 16 };
     spr.fillRoundRect(passR.x, passR.y, passR.w, passR.h, 3, 0x1082);
     spr.setTextColor(COL_TEXT);
-    spr.setCursor(SAFE_L + 4, y + 3);
+    // Inside the box, not above it: the cursor is a baseline, so `y + 3` (which
+    // reads as "3 px below the top" for a text top) put the whole line box above
+    // the field and left the box empty.
+    spr.setCursor(SAFE_L + 4, labelBaseline(passR));
     int pl = strlen(state.pass);
     for (int i = 0; i < pl; i++) spr.print('*');
     spr.print(pl < 63 ? '_' : ' '); y += 18;
@@ -261,8 +345,11 @@ void wifiSetupDraw(WifiState& state) {
         uint16_t bg = (flashing && idx == state.flashIdx) ? COL_ACCENT : COL_BTN;
         spr.fillRoundRect(r.x, r.y, r.w, r.h, 3, bg);
         spr.setTextColor(COL_TEXT, bg);
-        int tw = 6;
-        spr.setCursor(r.x + (r.w - tw) / 2, r.y + (r.h - 10) / 2);
+        // The cell's own glyph width, not an assumed 6 logical px: M/W, digits and
+        // symbols are wider and were visibly left of centre.
+        char ch[2] = { g[idx], 0 };
+        int tw = lvglTextWidth(WIFI_FONT, ch) / UI_SCALE;
+        spr.setCursor(r.x + (r.w - tw) / 2, labelBaseline(r));
         spr.print(g[idx]);
         // Button-navigation cursor: green outline on the cell BtnB will add.
         if (idx == state.charIdx) {
@@ -376,7 +463,7 @@ void wifiSetupDraw(WifiState& state) {
       spr.setTextColor(COL_TEXT);
       spr.setCursor(SAFE_L, y); spr.print("Connecting..."); y += 14;
       spr.setTextColor(COL_DIM);
-      spr.setCursor(SAFE_L, y); spr.print(wifiNets[state.sel].ssid);
+      spr.setCursor(SAFE_L, y); printClipped(wifiNets[state.sel].ssid, SAFE_W);
       hwDisplayPush();
       state.connOk = netConnect(wifiNets[state.sel].ssid, state.pass);
     }
@@ -414,3 +501,23 @@ void wifiSetupDraw(WifiState& state) {
     return;
   }
 }
+
+#ifdef FRAME_DUMP
+// Debug-only: the list and password pages index `wifiNets`, which only a real
+// scan fills, so a dump of those screens needs something to draw. The first name
+// matches the SSID frame_dump.cpp inits the state with, so the password page
+// shows the prefill path as well.
+void wifiSetupDebugSeed(int count) {
+  static const char* names[] = {
+    "HomeNet-5G", "eduroam", "AndroidAP_9f2c",
+    "ChinaNet-k23x", "iPhone", "A-very-long-network-name-here",
+  };
+  if (count > 20) count = 20;
+  for (int i = 0; i < count; i++) {
+    strncpy(wifiNets[i].ssid, names[i % 6], sizeof(wifiNets[i].ssid) - 1);
+    wifiNets[i].ssid[sizeof(wifiNets[i].ssid) - 1] = 0;
+    wifiNets[i].rssi = -40 - i * 7;
+    wifiNets[i].encryption = 3;
+  }
+}
+#endif

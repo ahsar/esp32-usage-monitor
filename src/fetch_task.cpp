@@ -53,8 +53,16 @@ const char* fetchJobName(FetchJob j) {
 
 // Publish rotated tokens to the main task for the flash write. The snapshot
 // must not be refilled while the main task may still be reading it, so wait
-// for the previous hand-off to drain first. loop() never blocks on this task,
-// so the wait cannot deadlock.
+// for the previous hand-off to drain first.
+//
+// Called mid-job now (the refresh hook, so a rotation is published the moment
+// it is parsed rather than at the end of the fetch that triggered it), which
+// makes the drain site worth spelling out: it is serviceFetch() — and so
+// flushPendingTokens() — on the loop task, i.e. once per loop() iteration. The
+// one place loop() does not run is inside an OTA transfer, so a rotation during
+// an update can leave the worker waiting out the transfer; that is bounded
+// (OTA either reboots, and flushes on the way out, or aborts) and is why a wait
+// here is delay, not deadlock.
 static void handOffTokens() {
   if (!s_tokens.dirty) return;
   while (s_saveReady) vTaskDelay(pdMS_TO_TICKS(5));
@@ -114,6 +122,11 @@ void fetchTaskBegin(const AppConfig& cfg) {
     Serial.println("No refresh token; run tools/authorize.py to authorise");
   }
   s_tokensValid = s_tokens.valid;
+  // Publish a rotation the moment it is parsed, not when the job that triggered
+  // it finishes: the window in between is seconds long (the usage GET that
+  // follows the refresh), and a power-off or an OTA reboot inside it would take
+  // the only copy of the new token with it — see flushPendingTokens() in main.cpp.
+  apiSetTokenRotatedHook(handOffTokens);
 
   s_jobs    = xQueueCreate(1, sizeof(FetchJobMsg));
   s_results = xQueueCreate(1, sizeof(FetchResult));
