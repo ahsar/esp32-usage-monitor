@@ -53,6 +53,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   password page itself has no room left (its char grid, group tabs and
   DEL/Connect row already run to the safe area's bottom edge).
 
+- **`tools/chime_analyse.py`, so a chime complaint becomes a number.** The
+  "still crackles a bit" that the streaming fix below was chasing had been argued
+  about by ear twice; this demodulates one note out of a phone recording of the
+  device, undoes its exponential decay and reports the dropouts left in the
+  envelope (depth, width, spacing) with a verdict: periodic notches at a
+  writer-like cadence mean the I2S DMA is being starved. Stdlib only, takes the
+  `.m4a` straight from the phone (`afconvert` on macOS) or any WAV, runs in
+  ~0.1 s, and exits non-zero on a bad chime so it can gate a re-test.
+
 ### Changed
 
 - The association block in `loop()` is split into what happens once per boot
@@ -328,6 +337,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now separate values (19-px cells on a 21-px pitch) and the block is centred in
   the safe width, 8 × 19 + 7 × 2 = 166 of 168, where it used to start 2 px in and
   stop 6 px short of the right edge.
+
+- **The chimes no longer rattle: the PCM streams on its own task, not from
+  `loop()`.** One chunk is 256 samples = 16 ms of audio, and a `loop()` iteration
+  is `delay(16)` *plus* the UI/HTTP work — a full-frame render and QSPI push alone
+  is 16–70 ms — so a loop-driven writer is always fractionally behind: the 90 ms
+  DMA ring drained once per iteration, `auto_clear` filled the hole with zeros, and
+  the note came out with a 1–15 ms dropout every 16–17 ms. That is the ~58 Hz rasp
+  a phone recording of the `done` chime shows (990 Hz note, dropouts 7–47 dB deep,
+  one 14.5 ms hole per render) and the sound that survived the earlier volume cut.
+  The stream now runs on a 4 KB task at priority 3 (`src/voice/chime.cpp`):
+  `chimePlay()` only arms a pattern and notifies the task, and the task's blocking
+  `i2s_channel_write()` is paced by the DMA itself, so loop() jitter cannot reach
+  the audio. Around it: the DMA ring grew to 8 × 240 frames (120 ms, a couple of
+  KB more internal RAM), every pattern now opens with 20 ms of silence so the PA's
+  transient lands before the first note instead of on it, and a write that fails —
+  `audioPauseForScan()` now takes the channel away *before* disabling it — stops
+  playback and mutes the amp rather than blocking on a disabled channel. The
+  loop-side `chimeUpdate()` is gone.
+
+  Verified on the device with `tools/chime_analyse.py`, in the 200 ms after each
+  note's peak: the old firmware put 4 holes in the 990 Hz note (16.7 ms apart,
+  −15 to −22 dB deep, one 9 ms wide); the new one puts **none** there (41 of 801
+  samples more than 6 dB below the level around them → 0), and the note's envelope
+  is the plain exponential it is synthesised to be.
 
 ## [0.3.0] - 2026-10-15
 

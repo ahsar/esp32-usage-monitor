@@ -11,10 +11,14 @@
 // carries far less energy and stops reading as an alarm. Loudness is a separate
 // knob (chimeSetVolume), applied as a gain while streaming.
 //
-// Playback is streamed from loop(): chimePlay() arms a buffer and chimeUpdate()
-// pushes one small chunk per iteration, so neither call blocks the UI for
-// longer than the I2S DMA needs. Only one chime plays at a time, and the PA is
-// held open past the last sample so the DMA tail drains on silence (no click).
+// Playback streams on its own FreeRTOS task (`chime.cpp`), never in loop(): one
+// chunk is 16 ms of audio, and a loop() iteration — delay(16) plus a render and
+// a full-panel push — is at least that long, so a loop-driven writer starves the
+// DMA and the note comes out as a ~58 Hz rasp. chimePlay()/chimeSetVolume()/
+// chimeStop() are therefore the *only* entry points and all of them just post to
+// that task; the caller never blocks and never touches the I2S bus. Only one
+// chime plays at a time, and the PA is held open past the last sample so the DMA
+// tail drains on silence (no click).
 
 enum ChimeKind : uint8_t {
   CHIME_DONE = 0,   // agent finished  → rising two-note
@@ -22,7 +26,8 @@ enum ChimeKind : uint8_t {
   CHIME_WAITING,    // needs you       → two soft taps
 };
 
-// Build the PCM for every cue. Call once from setup() (after hwInit()).
+// Build the PCM for every cue and start the playback task. Call once from
+// setup() (after hwInit()). False = no audio (no task, no sound).
 bool chimeInit();
 
 // Loudness level, 0 (barely there) .. 5 (loudest, still softer than the beeps
@@ -30,15 +35,13 @@ bool chimeInit();
 // chimePlay(), so it is safe to call at boot and on a live settings change.
 void chimeSetVolume(uint8_t level);
 
-// Arm a chime. Dropped if one is already playing/draining (no overlap). No-op
-// before chimeInit() succeeded.
+// Arm a chime on the playback task. Dropped if one is already playing (no
+// overlap). No-op before chimeInit() succeeded.
 void chimePlay(ChimeKind kind);
 
-// Stream the armed chime out. Call every loop(); cheap when idle.
-void chimeUpdate(uint32_t now);
-
-// True while a chime is being streamed (audio is single-owner).
+// True while a chime is being streamed (audio is single-owner: the task).
 bool chimeActive();
 
-// Abandon the current chime and mute the PA.
+// Ask the playback task to abandon the current chime and mute the PA. It stops
+// at the next chunk boundary (≤ 16 ms), not instantly.
 void chimeStop();

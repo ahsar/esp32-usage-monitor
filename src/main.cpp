@@ -754,8 +754,9 @@ void loop() {
 
     uint32_t now = millis();
 
-    // One-shot completion chimes from the status server. Played here on the
-    // main task so the audio shares the loop with everything else.
+    // One-shot completion chimes from the status server. This only *arms* the
+    // cue: the PCM streams on the chime task (voice/chime.cpp) because pushing
+    // one chunk per loop() iteration cannot keep the I2S DMA fed.
     if (s_chimeEnabled) {
         if (s_authCue) { s_authCue = false; chimePlay(CHIME_FAILED); }
         switch (statusServerTakeEvent()) {
@@ -768,7 +769,6 @@ void loop() {
         s_authCue = false;
         statusServerTakeEvent();   // drop it rather than fire it late
     }
-    chimeUpdate(now);
 
     refreshEnv(now);
 

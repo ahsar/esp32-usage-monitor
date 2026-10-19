@@ -103,7 +103,7 @@ x86_64-only binary and needs an arm64 replacement) is in the README,
 | `src/diag.{h,cpp}` | **TEMPORARY** freeze diagnostics (RTC breadcrumbs + stall reporter). Still load-bearing — see invariants. |
 | `src/ota.{h,cpp}` | Wireless firmware update (ArduinoOTA). Pauses the pollers, paints the progress screen, flushes tokens before the reboot. |
 | `src/hw/` | Drivers: `display`, `input`, `power`, `rtc`, `net`, `expander`, `pins.h`. |
-| `src/voice/` | I2S output (ES8311) + boot-synthesised `chime.*`. |
+| `src/voice/` | I2S output (ES8311) + boot-synthesised `chime.*`. The chimes stream on their own task, never from `loop()`. |
 | `src/boards/` | Board-specific pin definitions. |
 | `fonts/` | **Generated** LVGL Montserrat fonts (see `docs/text-lvgl.md`). Never edit; excluded from search via `.ignore`. |
 | `test/` | Host unit tests (`pio test -e native`): `test_util` + `test_poller`. |
@@ -128,6 +128,12 @@ linked deep dive before changing the area.
   schedules and harvests. Never fetch inline; never touch the display, I2C or
   LittleFS from the fetch task (flash writes come back via
   `fetchTaskPendingSave()`).
+- **A chime streams on its own task, never from `loop()`.** One chunk is 16 ms of
+  audio and a `loop()` iteration is `delay(16)` *plus* a render and a full-panel
+  push (16–70 ms), so a loop-driven writer always falls behind, the I2S DMA
+  underruns once per iteration and `auto_clear` fills the holes with zeros — a
+  ~58 Hz rasp, not silence. `chimePlay()` only posts to the task; the task owns
+  the I2S writes and the PA. `tools/chime_analyse.py` is how that is measured.
 - **Every blocking phase must be bounded.** `setHandshakeTimeout()` takes
   **seconds** (not ms); DNS gets its own deadline. Worst case per request is
   bounded — see `docs/threading-fetch.md`.
@@ -218,6 +224,9 @@ Read the relevant one before changing that area:
 - `tools/uploadfs_guard.py` — `uploadfs` pre/post hook that refuses to flash a
   `config.json` token the device has already rotated away (run it bare to ask the
   same question by hand); see the token-lifecycle warning above
+- `tools/chime_analyse.py` — measure a chime's dropouts in a phone recording of the
+  device (demodulates one note, undoes its decay, reports depth/width/spacing and
+  whether the I2S DMA was starved); the before/after check for the audio path
 - `tools/opencode-plugin/` — OpenCode V2 plugin that drives the status endpoint
 - `tools/monitor-send.sh` — the transport ladder as one command (HTTP last-good →
   learned/BLE IP → configured URLs → BLE one-shot); what the plugin spawns

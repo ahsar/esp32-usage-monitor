@@ -3,11 +3,20 @@
 #include <Arduino.h>
 #include <driver/i2s_std.h>
 #include <driver/i2s_common.h>
+#include <freertos/FreeRTOS.h>
 #include <Wire.h>
 
 static i2s_chan_handle_t s_txHandle = nullptr;
-static bool s_txEnabled = false;
+// "provisioned AND enabled": cleared for the duration of a WiFi scan, so a
+// writer that is blocked in audioTxWrite() gives up instead of parking forever
+// on a channel that will not hand back its semaphore.
+static volatile bool s_txEnabled = false;
 static bool s_paOn = false;
+
+// How long a single write may sit waiting for DMA space. Normally it waits for
+// one descriptor (240 frames = 15 ms) at most; 100 ms means the channel went
+// away under us, and the writer has to fail rather than block forever.
+static const uint32_t TX_WAIT_MS = 100;
 
 // ES8311 I2C address: the CE pin is pulled low on these boards -> 0x18.
 static const uint8_t ES8311_ADDR = 0x18;
@@ -104,7 +113,15 @@ static bool initEs8311() {
 
 bool audioInit() {
     i2s_chan_config_t chanCfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    // An underrun plays silence (zeros), never the last buffer over and over.
     chanCfg.auto_clear = true;
+    // 8 × 240 frames ≈ 120 ms of queued audio, up from the default 6 × 240 ≈
+    // 90 ms: the chime task can be out of the scheduler for a LittleFS write or
+    // a cache-disabled flash op, and the queue is what covers that. The two extra
+    // descriptors cost a couple of KB of internal RAM, and the pattern's silent
+    // tail is longer than the queue so the PA can still be muted on silence.
+    chanCfg.dma_desc_num = 8;
+    chanCfg.dma_frame_num = 240;
 
     esp_err_t err = i2s_new_channel(&chanCfg, &s_txHandle, nullptr);
     if (err != ESP_OK || !s_txHandle) {
@@ -171,10 +188,13 @@ bool audioTxStart() {
     return true;
 }
 
-void audioTxWrite(const uint8_t* data, size_t len) {
-    if (!s_paOn || !s_txEnabled) return;
+bool audioTxWrite(const uint8_t* data, size_t len) {
+    if (!s_paOn || !s_txEnabled) return false;
     size_t written = 0;
-    i2s_channel_write(s_txHandle, data, len, &written, portMAX_DELAY);
+    esp_err_t err = i2s_channel_write(s_txHandle, data, len, &written,
+                                      pdMS_TO_TICKS(TX_WAIT_MS));
+    if (err != ESP_OK || written != len) return false;
+    return true;
 }
 
 void audioTxStop() {
@@ -188,10 +208,12 @@ void audioTxStop() {
 
 void audioPauseForScan() {
     // Disable the I2S DMA channel during WiFi scan to free EDMA/PSRAM
-    // bandwidth. Safe to call even if audio is idle (no audioTxWrite runs
-    // during the WiFi-setup flow). s_txEnabled flag tracks "channel has
-    // been provisioned", so resume can re-enable it.
+    // bandwidth. Safe to call even if audio is idle. s_txEnabled goes down
+    // *first* so a writer that is already blocked in audioTxWrite() fails on its
+    // timeout (or immediately) instead of waiting on a disabled channel's
+    // semaphore; the caller then mutes the PA, which is what a scan wants.
     if (!s_txHandle || !s_txEnabled) return;
+    s_txEnabled = false;
     esp_err_t err = i2s_channel_disable(s_txHandle);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         Serial.printf("i2s_audio: pause failed: %s\n", esp_err_to_name(err));
@@ -199,9 +221,11 @@ void audioPauseForScan() {
 }
 
 void audioResumeAfterScan() {
-    if (!s_txHandle || !s_txEnabled) return;
+    if (!s_txHandle || s_txEnabled) return;
     esp_err_t err = i2s_channel_enable(s_txHandle);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         Serial.printf("i2s_audio: resume failed: %s\n", esp_err_to_name(err));
+        return;
     }
+    s_txEnabled = true;
 }

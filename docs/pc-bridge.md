@@ -37,13 +37,17 @@ heavier follow-up if that matters. **With an empty
 is a local stand-in for the endpoint that reimplements the check, so the plugin
 can be exercised without hardware.
 
-**Chimes.** Synthesised at boot (`src/voice/chime.*`) into a 700 ms PCM buffer
-and streamed from `loop()`; there is no raw file, so activating a chime never
-requires an `uploadfs` (which would erase the device's rotated tokens). The three
-cues are struck notes (fast attack, exponential decay, a touch of 2nd/3rd
-harmonic) — a rising 660→990 Hz pair on success, one long low 330 Hz note on
-failure and two soft 880 Hz taps when you are needed. Their loudness is the
-`?volume=` setting (0..5, default 3), applied on the next cue.
+**Chimes.** Synthesised at boot (`src/voice/chime.*`) into a ≤700 ms PCM buffer
+and streamed on a small FreeRTOS task of their own. Not from `loop()`: one
+256-sample chunk is 16 ms of audio and a loop() iteration is at least that long,
+so a loop-driven writer starves the I2S DMA and the note comes out as a ~58 Hz
+rasp of dropouts (`tools/chime_analyse.py` is the measurement). There is no raw
+file, so activating a chime never requires an `uploadfs` (which would erase the
+device's rotated tokens). The three cues are struck notes (fast attack,
+exponential decay, a touch of 2nd/3rd harmonic) — a rising 660→990 Hz pair on
+success, one long low 330 Hz note on failure and two soft 880 Hz taps when you
+are needed. Their loudness is the `?volume=` setting (0..5, default 3), applied
+on the next cue.
 
 ## Settings over the same endpoint
 
