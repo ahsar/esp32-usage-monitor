@@ -19,6 +19,7 @@
 #include "parse/http_request.h"
 #include "parse/ble_frame.h"
 #include "parse/status_machine.h"
+#include "parse/agent_parse.h"
 #include "util/config_limits.h"
 #include "util/trend_util.h"
 #include "util/usage_pace.h"
@@ -1028,6 +1029,99 @@ void test_health_format_ms(void) {
   TEST_ASSERT_EQUAL_STRING("1.8s", b);
 }
 
+// ---- agent context --------------------------------------------------------
+
+void test_agent_parse_full(void) {
+  AgentRequest r;
+  char err[96] = {0};
+  TEST_ASSERT_TRUE(agentParse("agent=1&state=waiting&repo=esp32-usage-monitor"
+                              "&tool=bash&note=Allow%20bash%20to%20run",
+                              r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("waiting", r.state);
+  TEST_ASSERT_EQUAL_STRING("esp32-usage-monitor", r.info.repo);
+  TEST_ASSERT_EQUAL_STRING("bash", r.info.tool);
+  TEST_ASSERT_EQUAL_STRING("Allow bash to run", r.info.note);   // %20 and '+'
+}
+
+void test_agent_parse_plus_is_space(void) {
+  AgentRequest r;
+  char err[96] = {0};
+  TEST_ASSERT_TRUE(agentParse("agent=1&state=running&note=rm+-rf+./build", r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("rm -rf ./build", r.info.note);
+}
+
+void test_agent_parse_optional_fields(void) {
+  // Context is best-effort: state alone is a valid request, and the other
+  // fields come back empty rather than as garbage.
+  AgentRequest r;
+  char err[96] = {0};
+  TEST_ASSERT_TRUE(agentParse("agent=1&state=running", r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("running", r.state);
+  TEST_ASSERT_EQUAL_STRING("", r.info.repo);
+  TEST_ASSERT_EQUAL_STRING("", r.info.tool);
+  TEST_ASSERT_EQUAL_STRING("", r.info.note);
+}
+
+void test_agent_parse_drops_control_bytes(void) {
+  // A model-written note must not be able to put a control byte into a frame.
+  AgentRequest r;
+  char err[96] = {0};
+  TEST_ASSERT_TRUE(agentParse("agent=1&state=running&note=a%0Ab%7Fc%01d", r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("abcd", r.info.note);
+}
+
+void test_agent_parse_ignores_unknown_keys(void) {
+  // Forward compatibility on purpose: nothing is persisted, so a newer client
+  // may add a field. (The settings channel is strict because a typo there would
+  // half-configure the device.)
+  AgentRequest r;
+  char err[96] = {0};
+  TEST_ASSERT_TRUE(agentParse("agent=1&state=done&model=gpt&future=1", r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("done", r.state);
+}
+
+void test_agent_parse_rejects(void) {
+  AgentRequest r;
+  char err[96];
+
+  // Unknown state: the machine would ignore it, so the client gets told.
+  TEST_ASSERT_FALSE(agentParse("agent=1&state=thinking", r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("unknown agent state", err);
+
+  // State is mandatory.
+  TEST_ASSERT_FALSE(agentParse("agent=1&repo=x", r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("missing state", err);
+
+  // Not the agent kind at all.
+  TEST_ASSERT_FALSE(agentParse("chime=0", r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("not an agent request", err);
+
+  TEST_ASSERT_FALSE(agentParse("", r, err, sizeof(err)));
+  TEST_ASSERT_FALSE(agentParse("agent=1&state", r, err, sizeof(err)));
+
+  // Over-long fields are refused rather than truncated: the client owns the
+  // clip (the plugin does), so a too-long value is a client bug worth a 400.
+  char big[400];
+  int n = snprintf(big, sizeof(big), "agent=1&state=running&repo=");
+  for (int i = 0; i < 40 && n < (int)sizeof(big) - 2; i++) big[n++] = 'x';
+  big[n] = 0;
+  TEST_ASSERT_FALSE(agentParse(big, r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("repo too long", err);
+
+  // …and the largest *legitimate* request is inside the transport cap, since a
+  // fully percent-encoded value is three bytes per character.
+  char worst[512];
+  n = snprintf(worst, sizeof(worst), "agent=1&state=running&repo=");
+  for (int i = 0; i < AGENT_REPO_CAP - 1; i++) n += snprintf(worst + n, sizeof(worst) - n, "%s", "%41");
+  n += snprintf(worst + n, sizeof(worst) - n, "&tool=");
+  for (int i = 0; i < AGENT_TOOL_CAP - 1; i++) n += snprintf(worst + n, sizeof(worst) - n, "%s", "%41");
+  n += snprintf(worst + n, sizeof(worst) - n, "&note=");
+  for (int i = 0; i < AGENT_NOTE_CAP - 1; i++) n += snprintf(worst + n, sizeof(worst) - n, "%s", "%41");
+  TEST_ASSERT_TRUE(agentParse(worst, r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("AAAAAAAAAAAAAAAAAAAAAAAAAAA", r.info.repo);
+  TEST_ASSERT_LESS_THAN_UINT(384, (unsigned)strlen(worst));   // STATUS_QUERY_MAX
+}
+
 void test_usage_parse_micro_cents(void) {
   const char* json =
       "{\"access\":{\"meters\":{"
@@ -1340,6 +1434,12 @@ int main(int, char**) {
   RUN_TEST(test_health_format_bytes);
   RUN_TEST(test_health_format_age);
   RUN_TEST(test_health_format_ms);
+  RUN_TEST(test_agent_parse_full);
+  RUN_TEST(test_agent_parse_plus_is_space);
+  RUN_TEST(test_agent_parse_optional_fields);
+  RUN_TEST(test_agent_parse_drops_control_bytes);
+  RUN_TEST(test_agent_parse_ignores_unknown_keys);
+  RUN_TEST(test_agent_parse_rejects);
   RUN_TEST(test_usage_parse_micro_cents);
   RUN_TEST(test_ui_model_page_wrap);
   RUN_TEST(test_ui_model_card_wrap);

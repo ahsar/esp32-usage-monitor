@@ -18,9 +18,15 @@
 // Only the PC→device direction is covered. usage/weather/moon/air are fetches
 // the device makes out to the internet and still need WiFi.
 //
-// Three request kinds travel over both transports:
+// Four request kinds travel over both transports:
 //
 //   - `?state=…`          — the agent-activity animation (main.cpp);
+//   - `?agent=…`          — the same animation plus *what* the agent is doing
+//                           (repo / tool / note), for the thinking and waiting
+//                           screens. A separate kind rather than more fields on
+//                           `?state=` because a state ping signs only the state
+//                           word, while this one signs the whole query — which is
+//                           what makes the text safe to draw (agent_parse.h);
 //   - everything else     — the settings channel (settings_parse.h), a signed
 //                           set of config overrides;
 //   - `?wifi_ssid=…&wifi_pass=…` — WiFi credentials (wifi_cred_parse.h). Its own
@@ -38,6 +44,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "parse/agent_parse.h"
 #include "parse/settings_parse.h"
 #include "parse/status_machine.h"
 #include "parse/wifi_cred_parse.h"
@@ -109,6 +116,13 @@ void statusChannelSetSettingsCallback(bool (*cb)(const DeviceSettings&, uint16_t
 // travelled over) has to happen after that reply is out. main.cpp only records
 // the request here and acts on it at the bottom of the loop.
 void statusChannelSetWifiCallback(bool (*cb)(const WifiCred&));
+
+// The context the last `?agent=…` request carried, for the animation screens.
+// Empty fields when no such request has arrived (or the client sent none) — the
+// caller draws only what is there. Each agent request replaces it wholesale: it
+// describes the session as it is *now*, so a field it omits is gone rather than
+// remembered from the previous request.
+const AgentInfo& statusChannelAgentInfo();
 
 // True while the agent owns the screen (running or waiting).
 bool     statusChannelThinking();

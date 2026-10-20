@@ -23,6 +23,11 @@
 #   tools/monitor-send.sh done                    # state=done (…|running|waiting|failed)
 #   tools/monitor-send.sh 'chime=0&brightness=3'  # any settings query
 #
+# A bare `state=…` keeps the original value-only signature (the state name is
+# what gets signed); *any other* query — settings, and the plugin's
+# `agent=1&state=…&repo=…&tool=…&note=…` — is signed verbatim as a whole, which is
+# what lets the device draw that text. See status_channel.cpp.
+#
 # Environment:
 #   ESP32_MONITOR_KEY        HMAC secret (default: data/config.json `status_key`;
 #                            empty on either side = auth disabled, unsigned send)

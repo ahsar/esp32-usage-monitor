@@ -1,12 +1,15 @@
 import { Plugin } from "@opencode/plugin"
 import { spawn } from "node:child_process"
+import { basename } from "node:path"
 import { fileURLToPath } from "node:url"
 
 /**
  * Pushes OpenCode's agent activity to the ESP32 usage monitor.
  *
- * The plugin is deliberately thin: it maps an event to a state and spawns
- * `tools/monitor-send.sh`, which owns the whole transport ladder —
+ * The plugin is deliberately thin: it maps an event to a device query — the
+ * state plus as much context as the event carries (repo / tool / note, see
+ * `eventContext`) — and spawns `tools/monitor-send.sh`, which owns the whole
+ * transport ladder —
  *
  *   1. the LAN over HTTP (mDNS `usage-monitor.local`, or any configured IP)
  *   2. …the further addresses configured here, in order
@@ -58,13 +61,115 @@ function mapEvent(type: string | undefined): MonitorState | undefined {
     case "session.execution.failed":
       return "failed"
     case "permission.asked":
+    case "question.asked":
       return "waiting"
     case "permission.replied":
     case "permission.rejected":
+    case "question.replied":
+    case "question.rejected":
       return "running"
     default:
       return undefined
   }
+}
+
+// The device's field caps (parse/agent_parse.h), as character counts. Clipping
+// here rather than letting the device return 400: the context is advisory, and
+// losing "the agent is in esp32-usage-monitor" because a permission pattern was
+// one byte long would be the wrong trade. The device still validates, so a
+// different client cannot push a 4 KB note at it.
+const REPO_MAX = 27
+const TOOL_MAX = 19
+const NOTE_MAX = 51
+
+/** One line, printable ASCII, within the device's cap. */
+function clip(v: unknown, max: number): string | undefined {
+  if (typeof v !== "string") return undefined
+  // A permission pattern is often a whole command line (newlines included) and
+  // the panel has one row; the device drops control bytes, this drops the
+  // whitespace runs.
+  const t = v
+    .replace(/\s+/g, " ")
+    // The generated Montserrat subset covers 0x20-0x7F plus °, ³, µ and •; a
+    // CJK repo name would come out as tofu, so keep the line drawable.
+    .replace(/[^\x20-\x7E]/g, "?")
+    .trim()
+  if (!t) return undefined
+  // ".." rather than an ellipsis character: the LVGL font subset has no U+2026.
+  return t.length > max ? t.slice(0, max - 2) + ".." : t
+}
+
+/**
+ * Remember which directory a session is working in.
+ *
+ * `session.created` / `session.updated` carry `info.directory`; a permission
+ * request only carries the session id. The map is bounded and only ever grows to
+ * the number of live sessions, so there is nothing to evict on a timer — clearing
+ * at 64 is enough to make a leak impossible.
+ */
+function rememberDirectory(event: any, dirs: Map<string, string>) {
+  const p = event?.properties ?? {}
+  const dir = p.info?.directory ?? p.directory ?? p.session?.directory
+  const id = p.sessionID ?? p.info?.id
+  if (typeof dir !== "string" || !dir || typeof id !== "string" || !id) return
+  if (dirs.size > 64) dirs.clear()
+  dirs.set(id, dir)
+}
+
+/**
+ * What the session is working on, as far as this event says.
+ *
+ * `repo` is the session's project root, so the basename is the name a user
+ * recognises; when no session directory has been seen (the event stream may not
+ * include `session.created`), the service's own working directory is the next
+ * best guess. The tool/permission text is read defensively from the event
+ * payload: the field names below are the ones the plugin API documents
+ * (`permission.asked` → `permission` + `patterns`, `question.asked` →
+ * `questions[].header`), but a version that renames one must degrade to "no
+ * tool"/"no note", never to a crash or a blank screen.
+ */
+function eventContext(
+  event: any,
+  dirs: Map<string, string>,
+): { repo?: string; tool?: string; note?: string } {
+  const props = event?.properties ?? {}
+
+  let repo: string | undefined
+  try {
+    const dir = (props.sessionID && dirs.get(props.sessionID)) || process.cwd()
+    repo = clip(basename(dir), REPO_MAX)
+  } catch {
+    repo = undefined
+  }
+
+  const tool = clip(props.permission ?? props.tool ?? props.toolName ?? props.name, TOOL_MAX)
+
+  let note = clip(props.patterns?.[0], NOTE_MAX)
+  if (!note) note = clip(props.questions?.[0]?.header, NOTE_MAX)
+  if (!note) note = clip(props.questions?.[0]?.question, NOTE_MAX)
+
+  return { repo, tool, note }
+}
+
+/**
+ * The device query for one state. The `agent=` form carries the context and is
+ * signed over the whole query string (tools/monitor-send.sh does that for
+ * anything that is not a bare `state=…`), which is what lets the device draw
+ * text a LAN peer cannot forge.
+ *
+ * done/failed deliberately carry no context, so the device's copy is cleared and
+ * a later running state cannot show a stale repo from the previous run.
+ */
+function buildQuery(
+  state: MonitorState,
+  ctx: { repo?: string; tool?: string; note?: string },
+): string {
+  const parts = ["agent=1", `state=${state}`]
+  for (const k of ["repo", "tool", "note"] as const) {
+    const v = ctx[k]
+    if (v) parts.push(`${k}=${encodeURIComponent(v)}`)
+  }
+  return parts.join("&")
 }
 
 /** The configured HTTP rungs: explicit `urls`, else `url`, else the env, else mDNS. */
@@ -118,16 +223,21 @@ export default Plugin.define({
     if (key) env.ESP32_MONITOR_KEY = key
 
     // Deduplicate: several events can report the same state (e.g. two
-    // executions back to back), and only transitions should be sent.
-    let last: MonitorState | undefined
+    // executions back to back), and only transitions should be sent. The key is
+    // the whole query rather than the state, so a different tool inside one
+    // running session still repaints — but a repeat of the same context does
+    // not, which is what keeps this from forwarding every event.
+    let lastQuery: string | undefined
+    /** sessionID → project directory, learned from session events as they pass. */
+    const sessionDirs = new Map<string, string>()
     /** Epoch ms until which the device is left alone after a failed send. */
     let deadUntil = 0
 
-    const deliver = (state: MonitorState) =>
+    const deliver = (query: string) =>
       new Promise<void>((resolve) => {
         if (Date.now() < deadUntil) return resolve()
 
-        const child = spawn(script, [state], { env, stdio: ["ignore", "ignore", "pipe"] })
+        const child = spawn(script, [query], { env, stdio: ["ignore", "ignore", "pipe"] })
 
         let stderr = ""
         child.stderr?.on("data", (chunk) => {
@@ -142,15 +252,15 @@ export default Plugin.define({
           if (debug && stderr.trim()) console.error(stderr.trim())
           if (code === 0) {
             deadUntil = 0
-            if (debug) console.error(`[esp32-monitor] ${state} → sent via ${script}`)
+            if (debug) console.error(`[esp32-monitor] ${query} → sent via ${script}`)
           } else if (code === 1) {
             // Nothing reached the device: out of the running for a while.
             deadUntil = Date.now() + penaltyMs
-            if (debug) console.error(`[esp32-monitor] ${state} → unreachable (penalty ${penaltyMs}ms)`)
+            if (debug) console.error(`[esp32-monitor] ${query} → unreachable (penalty ${penaltyMs}ms)`)
           } else {
             // A usage/spawn error (bad path, missing python, …) — do not
             // penalise, it will not fix itself, but do not hide it either.
-            console.error(`[esp32-monitor] ${state} → send script exited ${code} (${script})`)
+            console.error(`[esp32-monitor] ${query} → send script exited ${code} (${script})`)
           }
           resolve()
         }
@@ -166,8 +276,8 @@ export default Plugin.define({
     // order they happened (the chimes depend on it) and a slow BLE fallback
     // cannot be overlapped by the next event's HTTP probe.
     let queue: Promise<void> = Promise.resolve()
-    const send = (state: MonitorState) => {
-      queue = queue.then(() => deliver(state))
+    const send = (query: string) => {
+      queue = queue.then(() => deliver(query))
       return queue
     }
 
@@ -181,10 +291,20 @@ export default Plugin.define({
     void (async () => {
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          // Learn the session's directory from whatever passes by (session
+          // events carry it; the execution events may not), before the state
+          // mapping filters the event out.
+          rememberDirectory(event, sessionDirs)
+
           const state = mapEvent((event as { type?: string })?.type)
-          if (!state || state === last) continue
-          last = state
-          void send(state)
+          if (!state) continue
+          // Context on the two states that own the screen; done/failed send the
+          // bare state so the device's copy is cleared (see buildQuery).
+          const withContext = state === "running" || state === "waiting"
+          const query = buildQuery(state, withContext ? eventContext(event, sessionDirs) : {})
+          if (query === lastQuery) continue
+          lastQuery = query
+          void send(query)
         }
       } catch {
         // Stream aborted on unload.

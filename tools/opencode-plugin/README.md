@@ -30,16 +30,29 @@ even after a DHCP move.
 
 | OpenCode V2 event | Device request | Effect |
 | --- | --- | --- |
-| `session.execution.started` | `GET /?state=running` | "Thinking…" animation, wakes the panel |
-| `permission.asked` | `GET /?state=waiting` | "Needs you" animation + attention beep |
-| `session.execution.succeeded` | `GET /?state=done` | rising two-beep cue |
-| `session.execution.interrupted` | `GET /?state=done` | rising two-beep cue |
-| `session.execution.failed` | `GET /?state=failed` | low beep |
-| `permission.replied` / `permission.rejected` | `GET /?state=running` | back to working |
+| `session.execution.started` | `GET /?agent=1&state=running&repo=…&tool=…` | "Thinking…" + repo/tool/elapsed, wakes the panel |
+| `permission.asked` / `question.asked` | `GET /?agent=1&state=waiting&repo=…&note=…` | "Needs you" + *what* it is waiting for + attention beep |
+| `session.execution.succeeded` | `GET /?agent=1&state=done` | rising two-beep cue |
+| `session.execution.interrupted` | `GET /?agent=1&state=done` | rising two-beep cue |
+| `session.execution.failed` | `GET /?agent=1&state=failed` | low beep |
+| `permission.replied` / `permission.rejected` | `GET /?agent=1&state=running&…` | back to working |
+| `question.replied` / `question.rejected` | `GET /?agent=1&state=running&…` | back to working |
 
-Only *transitions* are sent (duplicate states are dropped), and each request is
-fire-and-forget with a short timeout — a device that is off, asleep, or on another
-network can never slow OpenCode down.
+Only *transitions* are sent — the key is the whole query, so a repeat of the same
+state *and* context is dropped while a different tool inside one running session
+still repaints — and each request is fire-and-forget with a short timeout. A
+device that is off, asleep, or on another network can never slow OpenCode down.
+
+**Context (the `repo`/`tool`/`note` fields).** `repo` is the basename of the
+OpenCode server's working directory — the session's project root. `tool` is the
+permission that was asked for and `note` its first pattern (or the question's
+header), collapsed to one line and clipped to the device's cap. They are read
+defensively from the event payload: a server that renames a field degrades to
+"no tool"/"no note", never to a crash. This is *why* the request is the `agent=`
+form and not `?state=`: the device signs the whole raw query for it, so a LAN peer
+cannot edit the text a captured ping would put on the panel (`docs/pc-bridge.md`).
+`done`/`failed` deliberately send no context, so the device's copy is cleared and
+the next run cannot show a stale repo.
 
 > The event names are OpenCode **V2** names, verified against `opencode
 > v2.0.x`. V1's `session.idle` / `session.status` / `permission.updated` are
@@ -47,7 +60,8 @@ network can never slow OpenCode down.
 
 ## The ladder
 
-Each message runs `tools/monitor-send.sh <state>`, which tries, in order:
+Each message runs `tools/monitor-send.sh <query>` (the full
+`agent=1&state=…&repo=…` string), which tries, in order:
 
 | # | Rung | Budget |
 | --- | --- | --- |
@@ -113,10 +127,14 @@ Then pass the same value to the plugin:
 ```
 
 The plugin sends `X-Ts` (unix seconds) and `X-Sig` = `HMAC-SHA256(key,
-"<state>|<ts>")`. The device verifies the signature in constant time and, once
-its clock is NTP-synced, rejects anything outside a ±60 s window — so requests
-cannot be forged or replayed. Requests without a valid signature get `401` and
-change nothing.
+"<payload>|<ts>")`, where the payload is the whole raw query for the `agent=`
+form the plugin now sends (and just the state word for a bare `?state=`). The
+device verifies the signature in constant time and, once its clock is NTP-synced,
+rejects anything outside a ±60 s window — so requests cannot be forged or
+replayed, and the context text on the animation screen cannot be edited by a LAN
+peer who captured a ping. Requests without a valid signature get `401` and change
+nothing; with no `status_key` the check is skipped entirely (bench mode), exactly
+as it is for `?state=`.
 
 > The key itself never goes on the wire (only the signature and timestamp do),
 > so plain HTTP does not leak the secret. What it does allow is a captured
@@ -206,6 +224,12 @@ which rung carried the message:
 ESP32_MONITOR_DEBUG=1 ../monitor-send.sh running    # device should show "Thinking…"
 ESP32_MONITOR_DEBUG=1 ../monitor-send.sh waiting    # …then "Needs you" + a beep
 ESP32_MONITOR_DEBUG=1 ../monitor-send.sh done       # …then a rising chime
+
+# the context form, exactly as the plugin sends it (signed over the whole query)
+ESP32_MONITOR_DEBUG=1 ../monitor-send.sh \
+  'agent=1&state=running&repo=esp32-usage-monitor&tool=bash'
+ESP32_MONITOR_DEBUG=1 ../monitor-send.sh \
+  'agent=1&state=waiting&repo=esp32-usage-monitor&note=Allow%20bash%20to%20run'
 ```
 
 To check the *fallback* rung on its own, hit BLE directly (a cold connect, ~8-15 s):

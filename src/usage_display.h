@@ -21,8 +21,12 @@ void uiDrawHealth(const HealthData& h, int ox, int oy);
 void uiDrawPageDots(int activePage);
 void uiDrawCardDots(int activeCard, int count);
 
-void usageDisplayDrawThinking(uint32_t elapsedMs);
-void usageDisplayDrawWaiting(uint32_t elapsedMs);
+// Agent-activity screens. `repo`/`tool`/`note` are what the last `?agent=` ping
+// carried (status_channel.h) and may each be empty — the card draws whatever is
+// there. Strings rather than the AgentInfo struct so the UI layer keeps its
+// distance from the parser headers.
+void usageDisplayDrawThinking(uint32_t elapsedMs, const char* repo, const char* tool);
+void usageDisplayDrawWaiting(uint32_t elapsedMs, const char* note, const char* repo);
 
 // Firmware update in flight (ArduinoOTA). The device reboots on success, so
 // this screen is never dismissed by the UI: it is painted from the OTA progress

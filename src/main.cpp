@@ -493,10 +493,16 @@ static void uiFrame(uint32_t now) {
         // Blink animations only change every ~100 ms; a full-frame push takes
         // tens of ms, so cap the cadence instead of re-pushing identical frames.
         if (now - s_lastPush >= ANIM_FRAME_MS) {
+            // The context comes from the last `?agent=` request (empty when the
+            // client sent none), the elapsed time from the state machine — the
+            // device measures the run itself rather than trusting a timestamp
+            // from a host whose clock it cannot check.
+            const AgentInfo& agent = statusChannelAgentInfo();
+            uint32_t elapsed = now - statusChannelThinkingSince();
             if (waiting) {
-                usageDisplayDrawWaiting(now - statusChannelThinkingSince());
+                usageDisplayDrawWaiting(elapsed, agent.note, agent.repo);
             } else {
-                usageDisplayDrawThinking(now - statusChannelThinkingSince());
+                usageDisplayDrawThinking(elapsed, agent.repo, agent.tool);
             }
             diagMark(DIAG_UI_PUSH, 0xFFFFFFFEu);
             hwDisplayPush();

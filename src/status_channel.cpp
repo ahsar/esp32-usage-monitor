@@ -115,6 +115,8 @@ static bool authorizePayload(const char* payload, const char* ts, const char* si
 // ---------------------------------------------------------------------------
 
 static StatusMachine s_machine;
+// Context for the animation screens, replaced wholesale by each agent request.
+static AgentInfo     s_agent;
 static void (*s_wakeCb)() = nullptr;
 static DeviceSettings s_settings;
 static bool (*s_settingsCb)(const DeviceSettings&, uint16_t) = nullptr;
@@ -127,6 +129,8 @@ void statusChannelSetSettingsCallback(bool (*cb)(const DeviceSettings&, uint16_t
   s_settingsCb = cb;
 }
 void statusChannelSetWifiCallback(bool (*cb)(const WifiCred&)) { s_wifiCb = cb; }
+
+const AgentInfo& statusChannelAgentInfo() { return s_agent; }
 
 bool     statusChannelThinking()      { return statusMachineThinking(s_machine); }
 bool     statusChannelWaiting()       { return statusMachineWaiting(s_machine); }
@@ -200,6 +204,48 @@ static const char* channelSettings(const StatusReq& r, char* body, size_t cap) {
   return "200 OK";
 }
 
+// An agent-context request: the state ping plus what the agent is doing. Same
+// policy as settings — auth is required, and the signature covers the whole raw
+// query, so every field is bound to the key (agent_parse.h explains why the
+// state ping's value-only signature is not good enough for this one).
+static const char* channelAgent(const StatusReq& r, char* body, size_t cap) {
+  // Auth follows `?state=`, not the settings channel: with no `status_key` the
+  // channel is in bench mode and the context is as unprotected as the animation
+  // it decorates. It is *not* a persisted write, so it does not inherit the
+  // "no key, no settings" rule — and refusing it would break a keyless setup that
+  // worked before this kind existed.
+  if (!authorizePayload(r.query, r.ts, r.sig)) {
+    logReject("agent", r.peer);
+    setBody(body, cap, "OK");   // the body a rejected request has always had
+    return "401 Unauthorized";
+  }
+
+  AgentRequest req;
+  char err[96] = {0};
+  if (!agentParse(r.query, req, err, sizeof(err))) {
+    setBody(body, cap, err[0] ? err : "bad agent query");
+    return "400 Bad Request";
+  }
+
+  // Replace the context wholesale *before* the state machine runs: the two are
+  // published together, so the first frame that can see the new state already
+  // has the text that goes with it.
+  s_agent = req.info;
+
+  // The transitions (and which of them chime) are the same state machine the
+  // plain `?state=` request drives — a context update is not a second way to
+  // describe the agent, just a richer one.
+  if (statusMachineApply(s_machine, req.state, millis()) && s_wakeCb) s_wakeCb();
+
+  // Not a secret (unlike the WiFi query), but bounded: repo/tool are short by
+  // construction and the note is the interesting part when diagnosing a plugin
+  // that sends the wrong field.
+  Serial.printf("agent=%s repo=%s tool=%s note=%s\n", req.state, s_agent.repo,
+                s_agent.tool, s_agent.note);
+  setBody(body, cap, "OK");
+  return "200 OK";
+}
+
 // A WiFi credentials request: associate with what it carries, or drop what is
 // stored (`?wifi_ssid=&wifi_pass=`). Everything else about it is the same policy
 // as settings — auth required, signature over the whole query, no unauthenticated
@@ -255,6 +301,11 @@ const char* statusChannelHandle(const StatusReq& r, char* body, size_t cap) {
   // Checked before the settings branch because this is the request a device with
   // no IP address has to be able to take.
   if (strncmp(q, "wifi_", 5) == 0) return channelWifi(r, body, cap);
+
+  // Agent context: also its own kind, and also before the settings branch —
+  // "everything else is settings" would otherwise parse it as a set of unknown
+  // keys and reject it.
+  if (strncmp(q, "agent=", 6) == 0) return channelAgent(r, body, cap);
 
   // Settings next: a `?state=` request keeps the original protocol, anything
   // else that is a query is the settings channel.

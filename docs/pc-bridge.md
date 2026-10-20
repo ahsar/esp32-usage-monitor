@@ -11,9 +11,30 @@ channel is also served over BLE for hosts the LAN cannot reach — see
 | `?state=running` | agent working | "Thinking…" animation, wakes the panel |
 | `?state=waiting` | permission/question | "Needs you" animation + attention beep |
 | `?state=done` / `?state=failed` | finished / errored | rising two-beep / low beep |
+| `?agent=1&state=…&repo=…&tool=…&note=…` | the above, plus what it is doing | same screens, with the repo/tool/elapsed and, when waiting, what it is waiting for |
 
 The same channel also carries the settings channel and the WiFi credentials
 request — see below.
+
+**Agent context.** `?agent=` is a *separate request kind*, not more fields on
+`?state=`, and that is a security decision rather than a taxonomy one: a state
+ping keeps the original value-only signature (the device finds `state=running`
+anywhere in the query and signs just that word), so any other field in the same
+query would arrive unsigned — a LAN peer could append `&note=…` to a captured
+ping and dictate what the panel says. The agent request is signed over the whole
+raw query, exactly like the settings channel — but, unlike settings, it is not
+refused when `status_key` is empty: that channel is a *persisted* write, while
+this is as ephemeral as the animation it decorates, so it follows `?state=` into
+bench mode instead of breaking a keyless setup. Fields are length-capped so a
+fully percent-encoded request still fits `STATUS_QUERY_MAX` (and therefore the
+BLE frame);
+`src/parse/agent_parse.h` owns that budget and is host-tested, and a bad state or
+an over-long field is a `400` that changes nothing. Unknown *keys* are ignored,
+unlike the settings channel: this request is ephemeral, so a newer client may add
+a field without a firmware update. The device clips to the panel width at draw
+time — the request is not trusted to be sized for a 184 px screen. A client that
+sends no context (an older plugin, `tools/status-ping.sh`) still gets the same
+screens it had before; the `?state=` path is untouched.
 
 `done`/`failed` only chime on a real transition, and never for the Key1 dismiss,
 so hand-dismissing the animation stays silent. Do **not** rely on V1 event names
@@ -83,8 +104,11 @@ tools/status-settings.sh place=                     # back to config.json
 request is bound to the key (a captured request cannot be edited into a different
 one inside the timestamp window) and the client needs no canonicalisation: it
 hashes exactly the bytes it puts in the URL. `?state=` keeps the original
-value-only signature, so the plugin is untouched by any of this. Values are
-URL-decoded by the device, so a space is `+` or `%20`.
+value-only signature, so the plugin is untouched by any of this; `?agent=` uses
+the raw-query rule, and that is the only reason its text can be drawn. With no
+`status_key` the check is skipped for `?state=` and `?agent=` (bench mode), while
+settings and WiFi credentials still answer `403`. Values are URL-decoded by the
+device, so a space is `+` or `%20`.
 
 **Validation and storage.** `src/parse/settings_parse.h` is the whole decision —
 key names, ranges, "lat and lon belong together", clearing — and it is

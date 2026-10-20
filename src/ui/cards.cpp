@@ -392,24 +392,81 @@ static void drawBreathingRing(int cx, int cy, int baseR, uint16_t col, float b) 
   spr.drawCircle(cx, cy, r, dim565(col, 0.25f + 0.75f * b));
 }
 
-void usageDisplayDrawThinking(uint32_t elapsedMs) {
+// "42s" / "2m 05s" / "1h 03m" — how long the agent has been on this screen.
+static void fmtElapsed(char* buf, size_t sz, uint32_t ms) {
+  uint32_t sec = ms / 1000u;
+  if (sec < 60)       snprintf(buf, sz, "%us", (unsigned)sec);
+  else if (sec < 3600) snprintf(buf, sz, "%um %02us", (unsigned)(sec / 60),
+                                (unsigned)(sec % 60));
+  else                snprintf(buf, sz, "%uh %02um", (unsigned)(sec / 3600),
+                               (unsigned)((sec % 3600) / 60));
+}
+
+// Centred text, clipped to `maxW` logical pixels with a ".." tail. The context
+// strings come from OpenCode (a permission pattern can be a whole command line)
+// and the panel is only 168 logical px wide, so the card owns the clip — the
+// device refuses to *store* an over-long field, it does not assume the client
+// sized it for this screen.
+static void textCenterFit(const lv_font_t* f, uint16_t col, int cx, int baseline,
+                          const char* s, int maxW) {
+  char buf[64];
+  size_t n = strlen(s);
+  if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+  memcpy(buf, s, n);
+  buf[n] = '\0';
+
+  if (textW(f, buf) > maxW) {
+    int dotW = textW(f, "..");
+    while (n > 0 && textW(f, buf) + dotW > maxW) buf[--n] = '\0';
+    if (n + 2 < sizeof(buf)) { buf[n] = '.'; buf[n + 1] = '.'; buf[n + 2] = '\0'; }
+  }
+  textCenter(f, col, cx, baseline, buf);
+}
+
+void usageDisplayDrawThinking(uint32_t elapsedMs, const char* repo, const char* tool) {
   g_ox = 0; g_oy = 0;
   spr.fillScreen(COL_BG);
-  drawBreathingRing(HW_W / 2, SAFE_T + 66, 30, COL_THINK,
-                    breathe01(elapsedMs, 2200));
-  textCenter(F_HEAD, COL_TEXT, HW_W / 2, SAFE_T + 150, "Thinking...");
+  drawBreathingRing(HW_W / 2, SAFE_T + 58, 28, COL_THINK, breathe01(elapsedMs, 2200));
+  textCenter(F_HEAD, COL_TEXT, HW_W / 2, SAFE_T + 132, "Thinking...");
+
+  // What it is working on, then for how long. Both lines are optional: an old
+  // plugin that sends no context still gets exactly the screen it had before,
+  // just laid out a little higher.
+  char line[80];
+  if ((repo && repo[0]) || (tool && tool[0])) {
+    if (repo && repo[0] && tool && tool[0]) snprintf(line, sizeof(line), "%s \u2022 %s", repo, tool);
+    else                                    snprintf(line, sizeof(line), "%s", repo && repo[0] ? repo : tool);
+    textCenterFit(F_SMALL, COL_DIM, HW_W / 2, SAFE_T + 156, line, SAFE_W);
+  }
+
+  char elapsed[16];
+  fmtElapsed(elapsed, sizeof(elapsed), elapsedMs);
+  textCenter(F_SMALL, COL_MUTED, HW_W / 2, SAFE_T + 174, elapsed);
 }
 
 // Agent is blocked on a permission / question. Same breathing ring, but amber
 // and a touch faster and stronger, with a bang in the middle, so a glance still
-// says "it needs you" rather than "it is working".
-void usageDisplayDrawWaiting(uint32_t elapsedMs) {
+// says "it needs you" rather than "it is working" — and now it also says *what*
+// it is waiting for, which is the difference between walking over to the desk
+// and walking over to the keyboard.
+void usageDisplayDrawWaiting(uint32_t elapsedMs, const char* note, const char* repo) {
   g_ox = 0; g_oy = 0;
   spr.fillScreen(COL_BG);
   float b = breathe01(elapsedMs, 1300);
-  drawBreathingRing(HW_W / 2, SAFE_T + 72, 34, COL_ORANGE, b);
-  textCenter(F_BIG, dim565(COL_YELLOW, 0.65f + 0.35f * b), HW_W / 2, SAFE_T + 92, "!");
-  textCenter(F_HEAD, COL_TEXT, HW_W / 2, SAFE_T + 168, "Needs you");
+  drawBreathingRing(HW_W / 2, SAFE_T + 52, 30, COL_ORANGE, b);
+  textCenter(F_BIG, dim565(COL_YELLOW, 0.65f + 0.35f * b), HW_W / 2, SAFE_T + 84, "!");
+  textCenter(F_HEAD, COL_TEXT, HW_W / 2, SAFE_T + 124, "Needs you");
+
+  if (note && note[0])
+    textCenterFit(F_BODY, COL_TEXT, HW_W / 2, SAFE_T + 150, note, SAFE_W);
+
+  // One footer line: the window resets are the same as the thinking screen's.
+  char line[80];
+  char elapsed[16];
+  fmtElapsed(elapsed, sizeof(elapsed), elapsedMs);
+  if (repo && repo[0]) snprintf(line, sizeof(line), "%s \u2022 %s", repo, elapsed);
+  else                 snprintf(line, sizeof(line), "%s", elapsed);
+  textCenterFit(F_SMALL, COL_MUTED, HW_W / 2, SAFE_T + 174, line, SAFE_W);
 }
 
 // Firmware update in flight. Painted from the OTA progress callback (loop() is
