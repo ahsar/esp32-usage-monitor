@@ -48,6 +48,16 @@ inline int parseHms(const char* s) {
   return h * 60 + m;
 }
 
+// "2026-10-20" -> weekday, 0 = Sunday (-1 on failure). Used by the forecast
+// card's day labels; the RTC's own weekday is only available for *today*.
+inline int weekdayFromIsoDate(const char* d) {
+  int Y = 0, Mo = 0, D = 0;
+  if (!d || sscanf(d, "%d-%d-%d", &Y, &Mo, &D) != 3) return -1;
+  if (Mo < 1 || Mo > 12 || D < 1 || D > 31) return -1;
+  uint32_t e = civilToEpoch(Y, Mo, D, 0, 0, 0);
+  return (int)((((uint64_t)e / 86400u) + 4u) % 7u);   // 1970-01-01 was Thursday
+}
+
 // "2026-10-08T03:27+08:00" -> local minutes since midnight (-1 on failure).
 inline int parseIsoLocalMinutes(const char* s) {
   if (!s) return -1;

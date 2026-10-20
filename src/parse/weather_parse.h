@@ -185,3 +185,83 @@ inline bool airParseJson(const char* body, AirData& out) {
   out.stale = false;
   return true;
 }
+
+// WMO weather code -> the short label the Forecast card has room for.
+inline const char* wmoLabel(int code) {
+  switch (code) {
+    case 0:  return "Clear";
+    case 1:  return "Mostly clear";
+    case 2:  return "Partly cloudy";
+    case 3:  return "Overcast";
+    case 45: case 48: return "Fog";
+    case 51: case 53: case 55: case 56: case 57: return "Drizzle";
+    case 61: case 63: case 65: case 66: case 67: return "Rain";
+    case 71: case 73: case 75: case 77: return "Snow";
+    case 80: case 81: case 82: return "Showers";
+    case 85: case 86: return "Snow showers";
+    case 95: case 96: case 99: return "Storm";
+    default: return "--";
+  }
+}
+
+// Open-Meteo daily JSON -> ForecastData (three days).
+//
+// Only the arrays are read; a short response keeps the days it did carry, which
+// is better than discarding a whole forecast over a missing third day. A null
+// `precipitation_probability_max` is "unknown" (-1), never "0% chance".
+inline bool forecastParseJson(const char* body, ForecastData& out) {
+  using namespace weather_parse_detail;
+
+  out = ForecastData{};
+  JsonDocument doc;
+  if (deserializeJson(doc, body) != DeserializationError::Ok) return false;
+
+  JsonObjectConst daily = doc["daily"].as<JsonObjectConst>();
+  if (daily.isNull()) return false;
+
+  JsonArrayConst times = daily["time"].as<JsonArrayConst>();
+  JsonArrayConst maxs  = daily["temperature_2m_max"].as<JsonArrayConst>();
+  JsonArrayConst mins  = daily["temperature_2m_min"].as<JsonArrayConst>();
+  JsonArrayConst rains = daily["precipitation_probability_max"].as<JsonArrayConst>();
+  JsonArrayConst codes = daily["weather_code"].as<JsonArrayConst>();
+  if (codes.isNull()) codes = daily["weathercode"].as<JsonArrayConst>();   // older API name
+
+  if (times.isNull() || maxs.isNull() || mins.isNull()) return false;
+
+  static const char* WD[7] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+
+  int n = 0;
+  for (int i = 0; i < 3 && i < (int)times.size(); i++) {
+    const char* date = times[i].as<const char*>();
+    if (!date || !date[0]) continue;
+    if (maxs[i].isNull() || mins[i].isNull()) continue;
+
+    ForecastDay& d = out.day[n];
+    if (i == 0)      copyStr(d.label, sizeof(d.label), "Today");
+    else if (i == 1) copyStr(d.label, sizeof(d.label), "Tomorrow");
+    else {
+      int wd = weekdayFromIsoDate(date);
+      copyStr(d.label, sizeof(d.label), (wd >= 0 && wd < 7) ? WD[wd] : "Day 3");
+    }
+
+    int code = (!codes.isNull() && i < (int)codes.size() && !codes[i].isNull())
+                   ? codes[i].as<int>() : -1;
+    copyStr(d.cond, sizeof(d.cond), wmoLabel(code));
+
+    d.maxC = (int8_t)lroundf((float)maxs[i].as<double>());
+    d.minC = (int8_t)lroundf((float)mins[i].as<double>());
+
+    if (!rains.isNull() && i < (int)rains.size() && !rains[i].isNull()) {
+      int r = rains[i].as<int>();
+      d.rainPct = (int8_t)(r < 0 ? -1 : (r > 100 ? 100 : r));
+    } else {
+      d.rainPct = -1;
+    }
+    n++;
+  }
+
+  if (n == 0) return false;
+  out.valid = true;
+  out.stale = false;
+  return true;
+}

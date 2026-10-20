@@ -22,11 +22,17 @@
 //
 //   - `?state=…`          — the agent-activity animation (main.cpp);
 //   - `?agent=…`          — the same animation plus *what* the agent is doing
-//                           (repo / tool / note), for the thinking and waiting
-//                           screens. A separate kind rather than more fields on
-//                           `?state=` because a state ping signs only the state
-//                           word, while this one signs the whole query — which is
-//                           what makes the text safe to draw (agent_parse.h);
+//                           (repo / tool / note / session), for the thinking and
+//                           waiting screens. A separate kind rather than more
+//                           fields on `?state=` because a state ping signs only
+//                           the state word, while this one signs the whole query —
+//                           which is what makes the text safe to draw
+//                           (agent_parse.h). The session id is what lets two
+//                           OpenCode windows coexist (parse/agent_sessions.h);
+//   - `?notice=…`         — a lingering, TTL'd one-liner for the Notice page
+//                           (parse/notice_parse.h). The only remote text that
+//                           outlives its request, which is why the TTL is
+//                           mandatory;
 //   - everything else     — the settings channel (settings_parse.h), a signed
 //                           set of config overrides;
 //   - `?wifi_ssid=…&wifi_pass=…` — WiFi credentials (wifi_cred_parse.h). Its own
@@ -38,13 +44,15 @@
 //
 // A request is the query string the client wants applied plus the HMAC pair it
 // signed that string with. The payload the signature covers depends on the
-// request — the state value for `?state=`, the whole query for settings and for
-// WiFi credentials — and that rule lives in statusChannelHandle(), not in either
-// transport.
+// request — the state value for `?state=`, the whole query for settings, WiFi
+// credentials, `?agent=` and `?notice=` — and that rule lives in
+// statusChannelHandle(), not in either transport.
 #include <stddef.h>
 #include <stdint.h>
 
 #include "parse/agent_parse.h"
+#include "parse/agent_sessions.h"
+#include "parse/notice_parse.h"
 #include "parse/settings_parse.h"
 #include "parse/status_machine.h"
 #include "parse/wifi_cred_parse.h"
@@ -119,20 +127,47 @@ void statusChannelSetWifiCallback(bool (*cb)(const WifiCred&));
 
 // The context the last `?agent=…` request carried, for the animation screens.
 // Empty fields when no such request has arrived (or the client sent none) — the
-// caller draws only what is there. Each agent request replaces it wholesale: it
-// describes the session as it is *now*, so a field it omits is gone rather than
-// remembered from the previous request.
+// caller draws only what is there. Each agent request replaces its *own
+// session's* context (parse/agent_sessions.h); what is published here is the
+// session that owns the screen: the one blocked longest when anything is
+// waiting, else the most recently active.
 const AgentInfo& statusChannelAgentInfo();
 
 // True while the agent owns the screen (running or waiting).
 bool     statusChannelThinking();
 // True only in the waiting (needs-you) state.
 bool     statusChannelWaiting();
+// How long the screen's current state has lasted (the owning session's start).
 uint32_t statusChannelThinkingSince();
-// Drop back to idle without producing an event (used by Key1).
+// How many sessions are active — the thinking screen says "2 running" when more
+// than one OpenCode window is working.
+int      statusChannelAgentCount();
+// Drop back to idle without producing an event (used by Key1). This dismisses
+// the *screen*, not the sessions: a heartbeat or a context update will not bring
+// it back, but a state change (a new question) will.
 void     statusChannelClearThinking();
 
 // One-shot completion events, consumed by loop() to fire the right chime.
-// statusChannelClearThinking() never produces one, so dismissing the animation
-// by hand stays silent.
+// statusChannelClearThinking() never produces one, and neither does a session
+// that merely aged out (that is not a failure).
 StatusEvent statusChannelTakeEvent();
+
+// The last pushed notice (parse/notice_parse.h), or `valid == false`. `rev`
+// changes on every accepted notice and on expiry, which is what lets the frame
+// key notice a repaint without comparing the text.
+struct NoticeState {
+  bool     valid = false;
+  char     kind[NOTICE_KIND_CAP] = {0};
+  char     text[NOTICE_TEXT_CAP] = {0};
+  uint32_t ttlSec = 0;
+  uint32_t leftSec = 0;        // as received
+  bool     hasLeft = false;
+  uint32_t receivedMs = 0;     // millis() at receipt
+  uint32_t expiresMs = 0;      // millis() when it drops off the panel
+  uint32_t rev = 0;
+};
+const NoticeState& statusChannelNotice();
+
+// Per-iteration housekeeping on the loop task: expire the notice and any session
+// that has gone silent (AGENT_SESSION_TTL_MS). Cheap — no flash, no network.
+void statusChannelTick(uint32_t now);

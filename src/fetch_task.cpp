@@ -43,10 +43,11 @@ static bool          s_reportedHWM = false;
 
 const char* fetchJobName(FetchJob j) {
   switch (j) {
-    case FETCH_USAGE:   return "usage";
-    case FETCH_WEATHER: return "weather";
-    case FETCH_MOON:    return "moon";
-    case FETCH_AIR:     return "air";
+    case FETCH_USAGE:    return "usage";
+    case FETCH_WEATHER:  return "weather";
+    case FETCH_MOON:     return "moon";
+    case FETCH_AIR:      return "air";
+    case FETCH_FORECAST: return "forecast";
   }
   return "?";
 }
@@ -80,6 +81,7 @@ static void runJob(const FetchJobMsg& m) {
   r.weather = m.seed.weather;
   r.moon    = m.seed.moon;
   r.air     = m.seed.air;
+  r.forecast = m.seed.forecast;
 
   diagMark(DIAG_FETCH_JOB, (uint32_t)m.job);
   uint32_t t0 = millis();
@@ -91,9 +93,10 @@ static void runJob(const FetchJobMsg& m) {
       s_tokensValid = s_tokens.valid;
       handOffTokens();
       break;
-    case FETCH_WEATHER: r.ok = apiFetchWeather(r.weather); break;
-    case FETCH_MOON:    r.ok = apiFetchMoon(r.moon); break;
-    case FETCH_AIR:     r.ok = apiFetchAir(r.air, s_waqi); break;
+    case FETCH_WEATHER:  r.ok = apiFetchWeather(r.weather); break;
+    case FETCH_FORECAST: r.ok = apiFetchForecast(r.forecast); break;
+    case FETCH_MOON:     r.ok = apiFetchMoon(r.moon); break;
+    case FETCH_AIR:      r.ok = apiFetchAir(r.air, s_waqi); break;
   }
   netRadioRest();
   // The duration makes the old failure mode visible: a fetch that used to

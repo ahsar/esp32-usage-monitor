@@ -28,10 +28,21 @@ static void fmtReset(char* buf, size_t sz, uint32_t sec) {
   else            snprintf(buf, sz, "%lum", (unsigned long)m);
 }
 
+// "12m old" / "3h old" — how long ago the usage numbers were measured. Only
+// drawn when they are stale (main.cpp decides), so a healthy page has nothing
+// to repaint.
+static void fmtAge(char* buf, size_t sz, uint32_t sec) {
+  if (sec < 3600) snprintf(buf, sz, "%lum old", (unsigned long)(sec / 60));
+  else            snprintf(buf, sz, "%luh old", (unsigned long)(sec / 3600));
+}
+
 void uiDrawUsage(const UsageData& data, int ox, int oy) {
   g_ox = ox; g_oy = oy;
   cardBg();
-  statusBar("Usage");
+
+  char age[16] = {0};
+  if (data.valid && g_env.usageStale) fmtAge(age, sizeof(age), g_env.usageAgeSec);
+  statusBar2("Usage", age, COL_YELLOW);
 
   // No token, no meter — ever. Unlike "no data yet" this is terminal (the
   // refresh token was rejected, or the device was never authorised), and three
@@ -47,25 +58,29 @@ void uiDrawUsage(const UsageData& data, int ox, int oy) {
     return;
   }
 
-  // Only the five-hour meter gets a pace verdict: it is the only meter whose
-  // burn rate the device measures (the RAM ring the Trend page draws). Projecting
-  // the weekly/monthly counts at that rate would be a fiction — see
-  // util/usage_pace.h.
-  usage_pace::Verdict pace = usage_pace::verdict(
-      data.rollingUsedMicroCents, data.rollingLimitMicroCents,
-      trendBurnPerHour(), data.rollingResetSec);
-
+  // The 5-hour meter gets a projection from the rate this device measures (the
+  // RAM ring the Trend page draws). Weekly/monthly have no measured rate, so
+  // they get the even-burn comparison instead — what is spent against how much
+  // of the window has elapsed. Both are `usage_pace::Verdict`, so the tag below
+  // is one rule for all three. See util/usage_pace.h.
   struct Row {
     const char* label; int pct; uint32_t reset;
-    uint64_t used, limit; bool paced;
+    uint64_t used, limit;
+    usage_pace::Verdict pace;
   };
   Row rows[3] = {
     { "5-HOUR",  data.rollingPercent, data.rollingResetSec,
-      data.rollingUsedMicroCents, data.rollingLimitMicroCents, true },
+      data.rollingUsedMicroCents, data.rollingLimitMicroCents,
+      usage_pace::verdict(data.rollingUsedMicroCents, data.rollingLimitMicroCents,
+                          trendBurnPerHour(), data.rollingResetSec) },
     { "WEEKLY",  data.weeklyPercent,  data.weeklyResetSec,
-      data.weeklyUsedMicroCents,  data.weeklyLimitMicroCents,  false },
+      data.weeklyUsedMicroCents,  data.weeklyLimitMicroCents,
+      usage_pace::evenVerdict(data.weeklyPercent, usage_pace::WINDOW_WEEK_SEC,
+                              data.weeklyResetSec) },
     { "MONTHLY", data.monthlyPercent, data.monthlyResetSec,
-      data.monthlyUsedMicroCents, data.monthlyLimitMicroCents, false },
+      data.monthlyUsedMicroCents, data.monthlyLimitMicroCents,
+      usage_pace::evenVerdict(data.monthlyPercent, usage_pace::WINDOW_MONTH_SEC,
+                              data.monthlyResetSec) },
   };
 
   for (int i = 0; i < 3; i++) {
@@ -114,7 +129,7 @@ void uiDrawUsage(const UsageData& data, int ox, int oy) {
     // case — nothing to decode. It sits between the spend and the countdown, and
     // is dropped if this row's numbers ever leave no room (none of the shipped
     // meters do), so it can never land on top of the countdown.
-    if (ok && rows[i].paced && pace == usage_pace::PACE_OVER) {
+    if (ok && rows[i].pace == usage_pace::PACE_OVER) {
       int x = SAFE_L + textW(F_SMALL, money) + 6;
       int tagEnd = SAFE_R - textW(F_SMALL, reset) - 4;
       if (x + textW(F_SMALL, "OVER") <= tagEnd)
@@ -180,6 +195,39 @@ static void wcNow(const WeatherData& w) {
 static void fmtClock(char* buf, size_t sz, int mins) {
   if (mins < 0) { snprintf(buf, sz, "--:--"); return; }
   snprintf(buf, sz, "%02d:%02d", mins / 60, mins % 60);
+}
+
+// Three days at a glance: the label and hi/lo on one line, the condition and
+// rain chance under it. The card is text-only on purpose — three weather icons
+// in a 160 px column would be noise, and the summary is what a desk glance needs
+// ("do I need a jacket tomorrow", not which cloud shape it is).
+static void wcForecast(const ForecastData& f) {
+  statusBar("Forecast");
+
+  if (!f.valid) {
+    textCenter(F_HEAD, COL_MUTED, HW_W / 2, 110, "no forecast data");
+    return;
+  }
+
+  for (int i = 0; i < 3; i++) {
+    const ForecastDay& d = f.day[i];
+    int y = 62 + i * 44;
+
+    textAt(F_BODY, COL_DIM, SAFE_L, y, d.label);
+
+    char hl[20];
+    snprintf(hl, sizeof(hl), "%d\u00B0/%d\u00B0", d.maxC, d.minC);
+    textRight(F_BODY, COL_TEXT, WC_R, y, hl);
+
+    textAt(F_SMALL, COL_MUTED, SAFE_L, y + 18, d.cond);
+    if (d.rainPct >= 0) {
+      char rain[16];
+      snprintf(rain, sizeof(rain), "%d%% rain", d.rainPct);
+      textRight(F_SMALL, d.rainPct >= 50 ? COL_RAIN : COL_MUTED, WC_R, y + 18, rain);
+    }
+  }
+
+  if (f.stale) textCenter(F_SMALL, COL_MUTED, HW_W / 2, 196, "STALE");
 }
 
 static void wcSun(const WeatherData& w) {
@@ -292,10 +340,12 @@ static void wcMoonset(const MoonData& m) {
 }
 
 void uiDrawWeatherCard(int card, const WeatherData& w, const MoonData& m,
-                       const AirData& a, bool hasAirToken, int ox, int oy) {
+                       const AirData& a, const ForecastData& f, bool hasAirToken,
+                       int ox, int oy) {
   g_ox = ox; g_oy = oy;
   cardBg();
   switch (card) {
+    case UI_WC_FORECAST: wcForecast(f); break;
     case UI_WC_SUN:     wcSun(w); break;
     case UI_WC_AIR:     wcAir(a, hasAirToken); break;
     case UI_WC_MOON:    wcMoon(m); break;
@@ -352,6 +402,121 @@ void uiDrawClock(int ox, int oy) {
   textCenter(F_BODY, COL_DIM, HW_W / 2, 190, buf);
   textCenter(F_SMALL, g_env.bleUp ? COL_GREEN : COL_MUTED, HW_W / 2, 203,
              g_env.bleUp ? "BLE on" : "BLE off");
+}
+
+// ---------------------------------------------------------------------------
+// NOTICE page
+// ---------------------------------------------------------------------------
+
+// Copy `s` into `out`, clipped with ".." so it fits `maxW`. This text comes from
+// the PC, so the card owns the clip — the same rule as the agent screens.
+static void fitCopy(const lv_font_t* f, char* out, size_t cap, const char* s, int maxW) {
+  size_t n = strlen(s);
+  if (n >= cap) n = cap - 1;
+  memcpy(out, s, n);
+  out[n] = '\0';
+  if (textW(f, out) <= maxW) return;
+  int dotW = textW(f, "..");
+  while (n > 0 && textW(f, out) + dotW > maxW) out[--n] = '\0';
+  if (n + 2 < cap) { out[n] = '.'; out[n + 1] = '.'; out[n + 2] = '\0'; }
+}
+
+// Greedy word wrap, centred, at most `maxLines` lines of `lineH`. Only the
+// Notice page needs it: its text is 63 characters, i.e. up to three lines at
+// this width, and a notice that ran off the panel would be the one remote string
+// with no other place to read it.
+static void drawWrapped(const lv_font_t* f, uint16_t col, int cx, int y,
+                        const char* text, int maxW, int maxLines, int lineH) {
+  char line[96] = {0};
+  size_t ll = 0;
+  const char* p = text;
+  int lines = 0;
+
+  auto flush = [&](const char* s) {
+    char fit[96];
+    fitCopy(f, fit, sizeof(fit), s, maxW);
+    textCenter(f, col, cx, y + lines * lineH, fit);
+    lines++;
+  };
+
+  while (p && *p && lines < maxLines) {
+    while (*p == ' ') p++;
+    if (!*p) break;
+
+    const char* w = p;
+    while (*p && *p != ' ') p++;
+    size_t wl = (size_t)(p - w);
+    if (wl > sizeof(line) - 2) wl = sizeof(line) - 2;
+
+    char cand[96];
+    size_t cl = 0;
+    if (ll) { memcpy(cand, line, ll); cl = ll; cand[cl++] = ' '; }
+    if (cl + wl >= sizeof(cand)) wl = sizeof(cand) - cl - 1;
+    memcpy(cand + cl, w, wl);
+    cl += wl;
+    cand[cl] = '\0';
+
+    if (ll && textW(f, cand) > maxW) {
+      flush(line);
+      line[0] = '\0';
+      ll = 0;
+      if (lines >= maxLines) return;   // out of lines: drop the rest
+      memcpy(line, w, wl);
+      line[wl] = '\0';
+      ll = wl;
+      continue;
+    }
+    memcpy(line, cand, cl + 1);
+    ll = cl;
+  }
+
+  if (ll && lines < maxLines) flush(line);
+}
+
+static void fmtCountdown(char* buf, size_t sz, uint32_t sec) {
+  if (sec == 0)        { snprintf(buf, sz, "now"); return; }
+  if (sec < 60)        { snprintf(buf, sz, "<1 min"); return; }
+  if (sec < 3600)      { snprintf(buf, sz, "%lu min", (unsigned long)(sec / 60)); return; }
+  if (sec < 86400)     { snprintf(buf, sz, "%luh %02lum", (unsigned long)(sec / 3600),
+                                  (unsigned long)((sec % 3600) / 60)); return; }
+  snprintf(buf, sz, "%lud %luh", (unsigned long)(sec / 86400),
+           (unsigned long)((sec % 86400) / 3600));
+}
+
+// What the PC pushed over the device channel (parse/notice_parse.h). The page is
+// usually empty — that is fine: it is a "when there is something, this is where
+// it is" page next to Health, not one in the daily rotation.
+void uiDrawNotice(const NoticeData& n, int ox, int oy) {
+  g_ox = ox; g_oy = oy;
+  cardBg();
+  statusBar("Notice");
+
+  if (!n.valid) {
+    textCenter(F_HEAD, COL_MUTED, HW_W / 2, 100, "no notice");
+    textCenter(F_SMALL, COL_MUTED, HW_W / 2, 126, "tools/status-notice.sh");
+    return;
+  }
+
+  if (n.kind[0]) {
+    char k[12];
+    size_t i = 0;
+    for (; n.kind[i] && i + 1 < sizeof(k); i++)
+      k[i] = (n.kind[i] >= 'a' && n.kind[i] <= 'z') ? (char)(n.kind[i] - 32) : n.kind[i];
+    k[i] = '\0';
+    textCenter(F_SMALL, COL_DIM, HW_W / 2, 50, k);
+  }
+
+  int y;
+  if (n.hasCountdown) {
+    char c[20];
+    fmtCountdown(c, sizeof(c), n.countdownSec);
+    textCenter(F_MED, n.countdownSec == 0 ? COL_ORANGE : COL_TEXT, HW_W / 2, 84, c);
+    y = 118;
+  } else {
+    y = 96;
+  }
+
+  drawWrapped(F_BODY, COL_TEXT, HW_W / 2, y, n.text, SAFE_W, 3, 17);
 }
 
 // ---------------------------------------------------------------------------
@@ -423,7 +588,8 @@ static void textCenterFit(const lv_font_t* f, uint16_t col, int cx, int baseline
   textCenter(f, col, cx, baseline, buf);
 }
 
-void usageDisplayDrawThinking(uint32_t elapsedMs, const char* repo, const char* tool) {
+void usageDisplayDrawThinking(uint32_t elapsedMs, const char* repo, const char* tool,
+                              int running) {
   g_ox = 0; g_oy = 0;
   spr.fillScreen(COL_BG);
   drawBreathingRing(HW_W / 2, SAFE_T + 58, 28, COL_THINK, breathe01(elapsedMs, 2200));
@@ -439,9 +605,15 @@ void usageDisplayDrawThinking(uint32_t elapsedMs, const char* repo, const char* 
     textCenterFit(F_SMALL, COL_DIM, HW_W / 2, SAFE_T + 156, line, SAFE_W);
   }
 
+  // The elapsed time is the screen's own clock (the device measures the run, it
+  // does not trust a host timestamp). With more than one session going, the
+  // count joins it — "2 running" is the difference between one window working
+  // and two, which the single-session screen used to hide.
   char elapsed[16];
   fmtElapsed(elapsed, sizeof(elapsed), elapsedMs);
-  textCenter(F_SMALL, COL_MUTED, HW_W / 2, SAFE_T + 174, elapsed);
+  if (running > 1) snprintf(line, sizeof(line), "%d running \u2022 %s", running, elapsed);
+  else             snprintf(line, sizeof(line), "%s", elapsed);
+  textCenter(F_SMALL, COL_MUTED, HW_W / 2, SAFE_T + 174, line);
 }
 
 // Agent is blocked on a permission / question. Same breathing ring, but amber

@@ -32,6 +32,9 @@ void textCenter(const lv_font_t* f, uint16_t color, int cx, int baseline, const 
 void roundBar(int x, int y, int w, int h, int pct, uint16_t fill);
 void cardBg();
 void statusBar(const char* title);
+// Title bar with a muted note after the title (the Usage page's data age).
+// Clipped before the clock so it can never run into it.
+void statusBar2(const char* title, const char* note, uint16_t noteColor);
 
 // icons.cpp
 void drawWeatherIcon(int kind, int cx, int cy);

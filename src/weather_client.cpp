@@ -35,6 +35,12 @@ static const char* MOON_UA   = "esp32-usage-monitor/1.0";
 
 static const char* WAQI_HOST = "api.waqi.info";
 
+// The daily forecast comes from Open-Meteo rather than wttr.in: the same three
+// days as wttr.in's `format=j1`, but ~1 KB instead of ~50 KB (NET_MAX_BODY
+// below), no API key, and the coordinates the moon API already needs.
+static const char* FORECAST_HOST = "api.open-meteo.com";
+static const char* FORECAST_UA   = "esp32-usage-monitor/1.0";
+
 // These endpoints are small (one-line ~120 B, moon ~580 B), so an 8 s socket
 // timeout is ample and keeps the worst-case blocking of the main loop bounded.
 static const uint32_t NET_TIMEOUT_MS = 8000;
@@ -88,6 +94,49 @@ bool apiFetchWeather(WeatherData& out) {
     Serial.printf("weather: %dC %s hum=%d wind=%d%s precip=%d sun=%d/%d\n",
                   out.tempC, out.condition, out.humidity, out.windKmph, out.windDir,
                   out.precipTenths, out.sunriseMin, out.sunsetMin);
+    return true;
+  }
+
+  if (hadData) out.stale = true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// daily forecast (Open-Meteo)
+// ---------------------------------------------------------------------------
+
+bool apiFetchForecast(ForecastData& out) {
+  bool hadData = out.valid;
+
+  char path[224];
+  if (!forecastApiPath(s_lat, s_lon, path, sizeof(path))) {
+    Serial.println("forecast: bad location in config");
+    return false;
+  }
+
+  for (int attempt = 0; attempt < NET_ATTEMPTS_SMALL; attempt++) {
+    if (attempt) delay(200u * attempt);
+
+    HttpResponse res;
+    if (!httpRequest(FORECAST_HOST, "GET", path, nullptr, nullptr, res, true,
+                     NET_MAX_BODY, NET_TIMEOUT_MS, FORECAST_UA)) {
+      Serial.println("forecast: request failed");
+      continue;
+    }
+    if (res.status != 200) {
+      Serial.printf("forecast: HTTP %d\n", res.status);
+      continue;
+    }
+
+    if (!forecastParseJson(res.body.c_str(), out)) {
+      Serial.println("forecast: parse failed");
+      continue;
+    }
+
+    Serial.printf("forecast: %s %d/%d %d%% | %s %d/%d %d%% | %s %d/%d %d%%\n",
+                  out.day[0].label, out.day[0].maxC, out.day[0].minC, out.day[0].rainPct,
+                  out.day[1].label, out.day[1].maxC, out.day[1].minC, out.day[1].rainPct,
+                  out.day[2].label, out.day[2].maxC, out.day[2].minC, out.day[2].rainPct);
     return true;
   }
 

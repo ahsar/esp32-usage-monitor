@@ -115,8 +115,18 @@ static bool authorizePayload(const char* payload, const char* ts, const char* si
 // ---------------------------------------------------------------------------
 
 static StatusMachine s_machine;
-// Context for the animation screens, replaced wholesale by each agent request.
+// Every live agent session (one per OpenCode window, keyed by the client's short
+// session token). The machine above is the *aggregate* the screen shows; the
+// table is what makes two windows honest (parse/agent_sessions.h).
+static AgentTable    s_agents;
+// Context of the session that owns the screen, published for the animation.
 static AgentInfo     s_agent;
+// Key1 dismisses the screen without ending the sessions. A heartbeat or a
+// context refresh must not bring it back, so remember which generation was
+// dismissed; the next real state change (a new question) re-opens it.
+static bool          s_dismissed = false;
+static uint32_t      s_dismissedGen = 0;
+static NoticeState   s_notice;
 static void (*s_wakeCb)() = nullptr;
 static DeviceSettings s_settings;
 static bool (*s_settingsCb)(const DeviceSettings&, uint16_t) = nullptr;
@@ -132,11 +142,62 @@ void statusChannelSetWifiCallback(bool (*cb)(const WifiCred&)) { s_wifiCb = cb; 
 
 const AgentInfo& statusChannelAgentInfo() { return s_agent; }
 
+// Publish the table's aggregate into the machine (which owns the chimes and the
+// wake) and the owning context into s_agent. `allowCue` is false for the expiry
+// path: a session that went silent is not a completion, and it must not wake the
+// panel or chime.
+static void syncAgent(uint32_t now, bool allowCue) {
+  const AgentInfo* info = agentSessionsInfo(s_agents);
+  if (info) s_agent = *info;
+  else      agentInfoClear(s_agent);
+
+  if (s_dismissed) {
+    if (s_agents.generation != s_dismissedGen) s_dismissed = false;
+    else return;   // still the screen the user dismissed
+  }
+
+  const char* st = agentSessionsStateName(s_agents);
+  const char* ev = st ? st : (s_agents.lastEndedFailed ? "failed" : "done");
+
+  bool changed = statusMachineApply(s_machine, ev, now);
+  if (changed && allowCue && s_wakeCb) s_wakeCb();
+  if (!allowCue) statusMachineTakeEvent(s_machine);   // drop any cue it queued
+}
+
 bool     statusChannelThinking()      { return statusMachineThinking(s_machine); }
 bool     statusChannelWaiting()       { return statusMachineWaiting(s_machine); }
-uint32_t statusChannelThinkingSince() { return s_machine.since; }
-void     statusChannelClearThinking() { statusMachineClear(s_machine); }
+uint32_t statusChannelThinkingSince() { return agentSessionsSince(s_agents, millis()); }
+int      statusChannelAgentCount()    { return agentSessionsActive(s_agents); }
+
+void statusChannelClearThinking() {
+  s_dismissed    = true;
+  s_dismissedGen = s_agents.generation;
+  statusMachineClear(s_machine);
+}
 StatusEvent statusChannelTakeEvent()  { return statusMachineTakeEvent(s_machine); }
+
+const NoticeState& statusChannelNotice() { return s_notice; }
+
+void statusChannelTick(uint32_t now) {
+  // Expiry is silent on purpose: the host went away, which is neither a success
+  // nor a failure, and waking the panel to say so would be wrong.
+  if (agentSessionsExpire(s_agents, now, AGENT_SESSION_TTL_MS)) {
+    // Keep a cue that a request handled earlier in this same loop iteration
+    // already queued (a real `done` from HTTP, say): an expiry is silent, but it
+    // must not swallow someone else's completion.
+    StatusEvent keep = statusMachineTakeEvent(s_machine);
+    statusMachineClear(s_machine);
+    syncAgent(now, /*allowCue=*/false);
+    statusMachineTakeEvent(s_machine);   // drop the cue our own transition queued
+    if (keep != STATUS_EV_NONE) s_machine.pending = keep;
+  }
+
+  if (s_notice.valid && (int32_t)(now - s_notice.expiresMs) >= 0) {
+    s_notice.valid = false;
+    s_notice.rev++;
+    Serial.println("notice: expired");
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Dispatch
@@ -229,19 +290,18 @@ static const char* channelAgent(const StatusReq& r, char* body, size_t cap) {
 
   // Replace the context wholesale *before* the state machine runs: the two are
   // published together, so the first frame that can see the new state already
-  // has the text that goes with it.
-  s_agent = req.info;
-
-  // The transitions (and which of them chime) are the same state machine the
-  // plain `?state=` request drives — a context update is not a second way to
-  // describe the agent, just a richer one.
-  if (statusMachineApply(s_machine, req.state, millis()) && s_wakeCb) s_wakeCb();
+  // has the text that goes with it. A repeat of the same state is a no-op there
+  // (no chime, no wake), which is what makes the plugin's heartbeat free.
+  agentSessionsApply(s_agents, req.session, req.state, req.info, millis());
+  syncAgent(millis(), true);
 
   // Not a secret (unlike the WiFi query), but bounded: repo/tool are short by
   // construction and the note is the interesting part when diagnosing a plugin
   // that sends the wrong field.
-  Serial.printf("agent=%s repo=%s tool=%s note=%s\n", req.state, s_agent.repo,
-                s_agent.tool, s_agent.note);
+  const AgentInfo& a = statusChannelAgentInfo();
+  Serial.printf("agent=%s session=%s active=%d repo=%s tool=%s note=%s\n", req.state,
+                req.session[0] ? req.session : "-", s_agents.n,
+                a.repo, a.tool, a.note);
   setBody(body, cap, "OK");
   return "200 OK";
 }
@@ -290,6 +350,55 @@ static const char* channelWifi(const StatusReq& r, char* body, size_t cap) {
   return "200 OK";
 }
 
+// A notice request: one short line for the Notice page, with a mandatory TTL
+// (parse/notice_parse.h). Same auth policy as `?agent=` — it is ephemeral, so a
+// keyless bench setup keeps working — but it *lingers* until the TTL runs out,
+// which is exactly why the expiry is enforced here rather than trusted from the
+// client, and why the page draws a countdown: a stale notice that merely sits
+// there looks current.
+static const char* channelNotice(const StatusReq& r, char* body, size_t cap) {
+  if (!authorizePayload(r.query, r.ts, r.sig)) {
+    logReject("notice", r.peer);
+    setBody(body, cap, "OK");
+    return "401 Unauthorized";
+  }
+
+  NoticeRequest req;
+  char err[96] = {0};
+  if (!noticeParse(r.query, req, err, sizeof(err))) {
+    setBody(body, cap, err[0] ? err : "bad notice query");
+    return "400 Bad Request";
+  }
+
+  // Clearing is a signed write like any other: an unauthenticated peer cannot
+  // take a reminder off the panel (that check is above).
+  if (req.clear) {
+    bool had = s_notice.valid;
+    s_notice.valid = false;
+    s_notice.rev++;
+    Serial.printf("notice: cleared (%s)\n", had ? "had one" : "none");
+    setBody(body, cap, "OK");
+    return "200 OK";
+  }
+
+  const uint32_t now = millis();
+  s_notice.valid      = true;
+  s_notice.ttlSec     = req.ttlSec;
+  s_notice.leftSec    = req.leftSec;
+  s_notice.hasLeft    = req.hasLeft;
+  s_notice.receivedMs = now;
+  s_notice.expiresMs  = now + req.ttlSec * 1000u;
+  s_notice.rev++;
+  snprintf(s_notice.kind, sizeof(s_notice.kind), "%s", req.kind);
+  snprintf(s_notice.text, sizeof(s_notice.text), "%s", req.text);
+
+  Serial.printf("notice: kind=%s ttl=%lus left=%s%lus text=%s\n", req.kind,
+                (unsigned long)req.ttlSec, req.hasLeft ? "" : "-",
+                (unsigned long)req.leftSec, req.text);
+  setBody(body, cap, "OK");
+  return "200 OK";
+}
+
 const char* statusChannelHandle(const StatusReq& r, char* body, size_t cap) {
   const char* q = r.query ? r.query : "";
   if (!q[0]) {                        // no query at all: health probe
@@ -306,6 +415,10 @@ const char* statusChannelHandle(const StatusReq& r, char* body, size_t cap) {
   // "everything else is settings" would otherwise parse it as a set of unknown
   // keys and reject it.
   if (strncmp(q, "agent=", 6) == 0) return channelAgent(r, body, cap);
+
+  // A pushed notice: its own kind for the same reason, and the one that outlives
+  // its request (notice_parse.h).
+  if (strncmp(q, "notice=", 7) == 0) return channelNotice(r, body, cap);
 
   // Settings next: a `?state=` request keeps the original protocol, anything
   // else that is a query is the settings channel.
@@ -335,7 +448,14 @@ const char* statusChannelHandle(const StatusReq& r, char* body, size_t cap) {
 
   // The transitions (and which of them are real) live in parse/status_machine.h,
   // where the host tests can drive them; the wake callback is the UI actor.
-  if (statusMachineApply(s_machine, st, millis()) && s_wakeCb) s_wakeCb();
+  // A bare state ping is the single empty-id session, so an older client keeps
+  // working while session-aware ones run alongside it.
+  AgentInfo info;
+  int si = agentSessionFind(s_agents, "");
+  if (si >= 0) info = s_agents.s[si].info;
+  else         agentInfoClear(info);
+  agentSessionsApply(s_agents, "", st, info, millis());
+  syncAgent(millis(), true);
   Serial.printf("state=%s\n", st);
 
   setBody(body, cap, "OK");

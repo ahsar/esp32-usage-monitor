@@ -1,5 +1,5 @@
 #pragma once
-// The agent-context request: "?agent=1&state=running&repo=NAME&tool=NAME&note=TEXT".
+// The agent-context request: "?agent=1&state=running&repo=NAME&tool=NAME&note=TEXT&session=ID".
 //
 // Why this is its own kind rather than more fields on `?state=`: a state ping
 // keeps the original *value-only* signature (`status_channel.cpp` finds
@@ -28,11 +28,16 @@
 // Field caps, as buffer sizes (so N-1 characters). Chosen so a fully
 // percent-encoded request — every byte as %XX, i.e. x3 — still fits
 // STATUS_QUERY_MAX (384; see status_channel.h), which both transports size their
-// frames from. Worst case: 6 + 6 + 3*9 + 6 + 3*27 + 6 + 3*19 + 6 + 3*51 = 351.
+// frames from. Worst case: 6 + 6 + 3*9 + 6 + 3*27 + 6 + 3*19 + 6 + 3*51 + 9 + 3*7
+// = 381.
 constexpr size_t AGENT_STATE_CAP = 10;   // "interrupted" would still fit
 constexpr size_t AGENT_REPO_CAP  = 28;
 constexpr size_t AGENT_TOOL_CAP  = 20;
 constexpr size_t AGENT_NOTE_CAP  = 52;
+// A short client-chosen session token ("s1", or 7 hex chars), not the host's
+// session id: the device only needs to tell sessions apart, and every byte here
+// costs three in a percent-encoded query.
+constexpr size_t AGENT_SESSION_CAP = 8;
 
 // What the animation screen shows alongside "Thinking..." / "Needs you".
 // Every field is optional; an empty string means "not sent".
@@ -45,6 +50,7 @@ struct AgentInfo {
 struct AgentRequest {
   AgentInfo info;
   char      state[AGENT_STATE_CAP];
+  char      session[AGENT_SESSION_CAP];   // empty = the single legacy session
 };
 
 inline void agentInfoClear(AgentInfo& a) { memset(&a, 0, sizeof(a)); }
@@ -120,6 +126,9 @@ inline bool agentParse(const char* query, AgentRequest& out, char* err, size_t e
       agentSanitise(val);
       if (!agentStateOk(val)) return fail("unknown agent state");
       snprintf(out.state, sizeof(out.state), "%s", val);
+    } else if (!strcmp(key, "session")) {
+      agentSanitise(val);
+      if (!agentCopy(out.session, sizeof(out.session), val)) return fail("session too long");
     } else if (!strcmp(key, "repo")) {
       agentSanitise(val);
       if (!agentCopy(out.info.repo, sizeof(out.info.repo), val)) return fail("repo too long");

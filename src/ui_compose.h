@@ -11,6 +11,8 @@ struct UiData {
   const WeatherData* weather;
   const MoonData*    moon;
   const AirData*     air;
+  const ForecastData* forecast;
+  const NoticeData*  notice;
   const HealthData*  health;
   bool               hasAir;   // a waqi token is configured
 };

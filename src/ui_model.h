@@ -5,12 +5,15 @@
 // reason about pages and cards without pulling in the whole display stack.
 #include <stdint.h>
 
-// Weather → Usage → Trend → Clock → Health. Health sits last on purpose: it is
-// the page you swipe to when something looks wrong, not one you pass through.
-enum UiPage { UI_PAGE_WEATHER = 0, UI_PAGE_USAGE = 1, UI_PAGE_TREND = 2, UI_PAGE_CLOCK = 3, UI_PAGE_HEALTH = 4, UI_PAGE_COUNT = 5 };
+// Weather → Usage → Trend → Clock → Notice → Health. Health sits last on purpose:
+// it is the page you swipe to when something looks wrong, not one you pass
+// through. Notice is next to it because it is also a "go and look" page, not a
+// page in the daily rotation.
+enum UiPage { UI_PAGE_WEATHER = 0, UI_PAGE_USAGE = 1, UI_PAGE_TREND = 2, UI_PAGE_CLOCK = 3, UI_PAGE_NOTICE = 4, UI_PAGE_HEALTH = 5, UI_PAGE_COUNT = 6 };
 
 enum UiWeatherCard {
   UI_WC_NOW = 0,
+  UI_WC_FORECAST,
   UI_WC_SUN,
   UI_WC_AIR,
   UI_WC_MOON,
@@ -46,6 +49,14 @@ struct UiEnv {
   // IP off the boot log is exactly what this avoids.
   uint32_t ipv4;           // 0 = no address yet (WiFi down or still associating)
   bool     bleUp;          // the BLE fallback came up; NOT proof it is advertising
+
+  // How old the *usage* numbers are, for the Usage page's title-bar note. A
+  // meter that stopped updating looks exactly like one that is stable, and WiFi
+  // being associated (the status bar's dot) says nothing about the last poll.
+  // `stale` is the only thing that repaints (a boolean, not a ticking age), so a
+  // healthy page still costs zero renders.
+  bool     usageStale;
+  uint32_t usageAgeSec;
 
   // The usage meter has no data and no poll will ever bring any: the worker has
   // no usable refresh token. This is terminal rather than transient — only a

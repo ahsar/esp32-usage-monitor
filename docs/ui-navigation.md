@@ -1,13 +1,19 @@
 # UI / navigation
 
-- Horizontal pages: **Weather ↔ Usage ↔ Trend ↔ Clock ↔ Health**.
-- Weather has vertical cards: **Now → Sun → Air → Moon → Moonrise**.
+- Horizontal pages: **Weather ↔ Usage ↔ Trend ↔ Clock ↔ Notice ↔ Health**.
+- Weather has vertical cards: **Now → Forecast → Sun → Air → Moon → Moonrise**.
 - Both axes are **endless carousels**: dragging past the last page/card keeps
   following the finger and brings in the far end (Health ↔ Weather, Moonrise ↔
   Now), and releasing commits the wrap. There is no end-of-strip resistance and
   no snapping back at the ends.
 - Drag follows the finger and snaps; tap advances; Key1 cycles. Dots: bottom row
   = pages, right column = weather cards.
+- **A tap on the title bar is not a page turn**: it refreshes the visible page's
+  data immediately (`forceRefreshVisible()` in `main.cpp`). The bar is where the
+  Usage page already reports its data age, so cause and effect sit together, and
+  the pager tap is swallowed so the page does not also advance. Rate-limited to
+  one per 5 s, and it clears the job's backoff on purpose — a person asking for
+  fresh numbers has decided the screen is stale.
 - The two side keys (left = IO18, right = BOOT) mirror the horizontal swipe and
   **push the content the way the key sits**: left = content slides left / next
   page enters from the right, right = content slides right / previous page
@@ -33,15 +39,31 @@ a spend figure (`$3.20/$10.00`, left of the countdown on the same line), and a
 reset countdown, drawn green under 30 %, yellow to 60 %, red above
 (`src/ui/cards.cpp`, `uiDrawUsage`).
 
-The 5-hour row can also carry an **OVER** tag (yellow, left of the countdown),
-from `src/util/usage_pace.h`: spend + (current rate × time to reset) is projected
-out to the reset, and the tag appears when that exceeds the limit. Only the
-5-hour meter gets a verdict: it is the only meter whose rate the device measures
-(the RAM ring the Trend page reads, `trendBurnPerHour()` — so the two pages
-cannot disagree), and projecting the weekly/monthly counts at that rate would be
-a fiction. With fewer than two samples the verdict is "unknown" and no tag is
-drawn, which is deliberate — a fresh boot is not evidence of safety.
+**Two pace models, one tag.** The 5-hour row's **OVER** is a real projection
+(`src/util/usage_pace.h`): spend + (current rate × time to reset), where the rate
+is the one the device measures from its own RAM ring (`trendBurnPerHour()`, so
+this page and the Trend page cannot disagree). Only the 5-hour meter gets that
+treatment — it is the only one with a measured rate.
 
+Week/month get the *even-burn* model instead: what is spent against how much of
+the window has elapsed (`elapsedPct()` from the countdown and a known window
+length), with ten points of slack. It assumes spending is roughly uniform across
+the window — a stated assumption, not a measurement — which is why it is a
+different function rather than the 5-hour rate pushed through the same formula.
+Both end in the same `OVER` tag, so the row is one word either way.
+
+**The title bar answers "is this current?".** The status-bar dot means WiFi,
+which says nothing about the last poll, and three unchanged bars look identical
+in both cases. So the Usage page draws the age of the last *successful* usage
+poll next to its title (`12m old`, yellow) once it passes the idle period + 60 s,
+and nothing at all while the data is fresh — a note that is always there would
+tick every second and repaint a panel nobody needs repainting. The threshold
+uses the idle period because the device legitimately polls every three minutes
+when it has been untouched; calling that stale would train the eye to ignore it.
+`UiEnv::usageStale`/`usageAgeSec` carry it, and the frame key mixes the age only
+while stale and only on this page (quantised to 5 minutes).
+
+The 5-hour row can also carry an **OVER** tag (yellow, left of the countdown).
 Crossing 80 % and 100 % of the rolling meter plays a cue (the "needs you" taps
 and the low note, reused) exactly once per window, from the host-tested state
 machine in `src/util/usage_alert.h`. A window roll-over is detected from the
@@ -62,6 +84,19 @@ only false for a token refusal or a device that was never authorised — a fetch
 that failed on the network leaves it true, so a flaky link cannot raise a false
 alarm. The hand-off from working to dead plays the `failed` cue once (seeded
 from the boot state, so an unconfigured device does not beep at every power-on).
+
+## Weather cards (Forecast)
+
+The second card is a three-day forecast: `Today / Tomorrow / <weekday>`, hi/lo and
+the chance of rain (blue at ≥50%), from Open-Meteo (`api.open-meteo.com`) rather
+than wttr.in. That is a data-source decision, not a preference: wttr.in's JSON is
+~50 KB and `http_client` caps a body at 4 KB, while Open-Meteo returns just the
+five daily arrays (<1 KB), needs no key, and takes the coordinates the moon API
+already uses. `timezone=auto` makes each bucket the *local* day, so "Today" needs
+no date math in the firmware; the weekday label comes from
+`weekdayFromIsoDate()` (`src/util/time_util.h`). The WMO code → short label
+mapping and the parser are in `src/parse/weather_parse.h`, host-tested; a null
+rain probability is drawn as nothing rather than "0%".
 
 ## Clock page (device identity)
 
@@ -121,11 +156,50 @@ One layout note and one rendering note:
 
 The Trend page (`src/ui/trend.cpp`) plots the rolling (5-hour) meter as cost:
 headline spend, `$/h` burn rate, time-to-limit, a cumulative curve and per-poll
-bars. It reads a **RAM-only** ring (`src/usage_history.*`) that `serviceFetch()`
-appends to on each successful `FETCH_USAGE`; nothing is persisted, so a reboot
-just restarts the history. The pure math lives in `src/util/trend_util.h`
+bars. It reads a ring (`src/usage_history.*`) that `serviceFetch()` appends to on
+each successful `FETCH_USAGE`. The pure math lives in `src/util/trend_util.h`
 (microcents → `$`, burn rate, ETA) and is host-tested. `UsageData` carries the
 `usedMicroCents` / `limitMicroCents` fields the console sends per meter.
+
+**The ring now survives a reboot.** It samples the rolling window, whose
+timestamps are boot-relative `millis()` — meaningless after a restart — so
+`src/trend_store.cpp` stores wall-clock epochs in `/trend.txt` and owns the
+translation: at boot `trendStoreRestore()` keeps only samples that could still
+belong to the current 5-hour window and rebases them onto this boot's timeline
+(`trendNowSec()`), and `trendPush()` writes on that same virtual clock so a new
+sample lands exactly one poll interval after the last restored one. Writes are
+coalesced (at most every 5 minutes) and also flushed into the power-off and OTA
+paths, because flash writes belong on the loop task. A missing/corrupt/unclocked
+file just means the page collects from scratch, which is what it always did.
+The line format is in `src/util/trend_store_util.h` and host-tested.
+
+## Notice page
+
+The second-to-last page, between Clock and Health, and usually empty:
+
+```
+        MEETING            ← kind, upper-cased (dim)
+         12 min            ← countdown to the event (F_MED); "now" in amber
+   Standup in the big room ← the pushed text, wrapped to 3 lines
+```
+
+`?notice=1&kind=…&text=…&ttl=…[&left=…]` (`src/parse/notice_parse.h`) is the one
+remote string that *lingers*: it stays until the TTL runs out, which is what
+makes "the next meeting is in 8 minutes" useful without the PC re-sending every
+minute. The countdown is to the event (`left`), not to the expiry, and the device
+ticks it locally; `?notice=1&clear=1` drops it now. Both are signed over the whole
+query and require `status_key` in the same way `?agent=` does (bench mode when
+there is no key — it is ephemeral, unlike settings).
+
+Two rules follow from "lingers", and both are enforced in the parser, not trusted
+from the client: **a TTL is mandatory** (an unexpiring notice is a lie waiting to
+happen), and the text goes through the *same* sanitiser and field caps as
+`?agent=` — printable ASCII only, sized so a fully percent-encoded request still
+fits `STATUS_QUERY_MAX`. The card clips to the panel width itself rather than
+trusting the client, exactly like the agent screens. Arriving does **not** wake
+the panel: the display is only ever dimmed, so a reminder is readable when you
+look without a chatty producer keeping the device awake. A notice expiring bumps
+its revision, which is what repaints the page back to "no notice".
 
 ## No IMU / gestures
 

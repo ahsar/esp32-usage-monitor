@@ -81,6 +81,10 @@ function mapEvent(type: string | undefined): MonitorState | undefined {
 const REPO_MAX = 27
 const TOOL_MAX = 19
 const NOTE_MAX = 51
+// The device keeps sessions apart by a short token, not by the host's session
+// id: every byte costs three in a percent-encoded query, and the device only
+// needs identity, not the id's meaning (AGENT_SESSION_CAP in agent_parse.h).
+const SESSION_MAX = 7
 
 /** One line, printable ASCII, within the device's cap. */
 function clip(v: unknown, max: number): string | undefined {
@@ -157,14 +161,21 @@ function eventContext(
  * anything that is not a bare `state=…`), which is what lets the device draw
  * text a LAN peer cannot forge.
  *
+ * `session` is what lets two OpenCode windows coexist: the device keys its
+ * session table by it, so one window's `done` no longer clears the other's
+ * `running` (src/parse/agent_sessions.h). It travels on done/failed too — that
+ * is how the right entry is removed.
+ *
  * done/failed deliberately carry no context, so the device's copy is cleared and
  * a later running state cannot show a stale repo from the previous run.
  */
 function buildQuery(
   state: MonitorState,
   ctx: { repo?: string; tool?: string; note?: string },
+  session?: string,
 ): string {
   const parts = ["agent=1", `state=${state}`]
+  if (session) parts.push(`session=${session}`)
   for (const k of ["repo", "tool", "note"] as const) {
     const v = ctx[k]
     if (v) parts.push(`${k}=${encodeURIComponent(v)}`)
@@ -230,6 +241,22 @@ export default Plugin.define({
     let lastQuery: string | undefined
     /** sessionID → project directory, learned from session events as they pass. */
     const sessionDirs = new Map<string, string>()
+    /** sessionID → the short token the device keys its session table by. */
+    const sessionTokens = new Map<string, string>()
+    let sessionSeq = 0
+    const tokenFor = (id: unknown): string | undefined => {
+      if (typeof id !== "string" || !id) return undefined
+      let t = sessionTokens.get(id)
+      if (!t) {
+        // A counter, not the id: stable for the life of this process, short
+        // enough for the device's field cap, and never reused while the map
+        // lives. Clearing at 256 only ever affects sessions that are long gone.
+        t = `s${++sessionSeq}`.slice(0, SESSION_MAX)
+        if (sessionTokens.size > 256) sessionTokens.clear()
+        sessionTokens.set(id, t)
+      }
+      return t
+    }
     /** Epoch ms until which the device is left alone after a failed send. */
     let deadUntil = 0
 
@@ -287,6 +314,15 @@ export default Plugin.define({
       )
     }
 
+    // A heartbeat while a session is active. The device treats a repeat of the
+    // same state as a no-op on screen, but it refreshes that session's liveness,
+    // which is what lets AGENT_SESSION_TTL_MS forget a host that crashed instead
+    // of leaving "Thinking..." up for hours. Ten minutes against a 45-minute TTL
+    // leaves room for a few lost sends.
+    const heartbeatMs = Number(options.heartbeatMs ?? 600000)
+    let lastActive: string | undefined
+    let heartbeat: ReturnType<typeof setInterval> | undefined
+
     const controller = new AbortController()
     void (async () => {
       try {
@@ -301,7 +337,10 @@ export default Plugin.define({
           // Context on the two states that own the screen; done/failed send the
           // bare state so the device's copy is cleared (see buildQuery).
           const withContext = state === "running" || state === "waiting"
-          const query = buildQuery(state, withContext ? eventContext(event, sessionDirs) : {})
+          const props = (event as any)?.properties ?? {}
+          const session = tokenFor(props.sessionID ?? props.info?.id ?? props.session?.id)
+          const query = buildQuery(state, withContext ? eventContext(event, sessionDirs) : {}, session)
+          lastActive = withContext ? query : undefined
           if (query === lastQuery) continue
           lastQuery = query
           void send(query)
@@ -311,6 +350,17 @@ export default Plugin.define({
       }
     })()
 
-    return () => controller.abort()
+    if (typeof setInterval === "function" && heartbeatMs > 0) {
+      heartbeat = setInterval(() => {
+        if (lastActive) void send(lastActive)
+      }, heartbeatMs)
+      // A heartbeat must not be the reason the process stays alive.
+      if (typeof (heartbeat as any)?.unref === "function") (heartbeat as any).unref()
+    }
+
+    return () => {
+      controller.abort()
+      if (heartbeat) clearInterval(heartbeat)
+    }
   },
 })

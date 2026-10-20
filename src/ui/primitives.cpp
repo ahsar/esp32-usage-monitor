@@ -84,13 +84,33 @@ void cardBg() {
   spr.fillRect(g_ox, g_oy, HW_W, HW_H, COL_BG);
 }
 
-void statusBar(const char* title) {
+void statusBar(const char* title) { statusBar2(title, nullptr, COL_MUTED); }
+
+void statusBar2(const char* title, const char* note, uint16_t noteColor) {
   spr.fillCircle(X(SAFE_L + 3), Y(20), 3, g_env.online ? COL_GREEN : COL_RED);
   textAt(F_HEAD, COL_TEXT, SAFE_L + 13, 25, title);
 
   char clk[8];
   if (g_env.timeValid) snprintf(clk, sizeof(clk), "%02d:%02d", g_env.hh, g_env.mm);
   else                 snprintf(clk, sizeof(clk), "--:--");
+
+  // The note lives between the title and the clock and is clipped rather than
+  // allowed to run under it — the same "the card owns the clip" rule as the
+  // agent screens, because this one carries a formatted age, not a constant.
+  if (note && note[0]) {
+    int x = SAFE_L + 13 + textW(F_HEAD, title) + 7;
+    int limit = SAFE_R - textW(F_HEAD, clk) - 6;
+    char buf[24];
+    size_t n = strlen(note);
+    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+    memcpy(buf, note, n);
+    buf[n] = '\0';
+    if (textW(F_SMALL, buf) > limit - x) {
+      while (n > 0 && textW(F_SMALL, buf) > limit - x) buf[--n] = '\0';
+    }
+    if (x < limit) textAt(F_SMALL, noteColor, x, 24, buf);
+  }
+
   textRight(F_HEAD, COL_DIM, SAFE_R, 25, clk);
 
   spr.drawFastHLine(X(SAFE_L), Y(33), SAFE_W, COL_LINE);

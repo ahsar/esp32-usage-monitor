@@ -47,3 +47,20 @@ inline bool moonApiPath(double lat, double lon, int tzOffsetMin, char* out, size
                    lat, lon, off);
   return n > 0 && (size_t)n < cap;
 }
+
+// Open-Meteo daily forecast path (three days). A different host from wttr.in on
+// purpose: wttr.in's JSON is ~50 KB, and the device's HTTP helper caps a body at
+// 4 KB. Open-Meteo returns just the five daily arrays (<1 KB), needs no key, and
+// takes the coordinates the device already has for the moon API.
+//
+// `timezone=auto` makes each daily bucket the *local* day at those coordinates,
+// which is what lets the card say "Today" without the firmware doing date math.
+// 224 bytes covers the worst case (lat/lon at 4 decimals are fixed width).
+inline bool forecastApiPath(double lat, double lon, char* out, size_t cap) {
+  int n = snprintf(out, cap,
+                   "/v1/forecast?latitude=%.4f&longitude=%.4f"
+                   "&daily=weather_code,temperature_2m_max,temperature_2m_min,"
+                   "precipitation_probability_max&forecast_days=3&timezone=auto",
+                   lat, lon);
+  return n > 0 && (size_t)n < cap;
+}

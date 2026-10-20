@@ -17,16 +17,17 @@ using namespace ui_theme;
 
 namespace {
 
-// The four jobs, spelled here rather than pulled from fetch_task.h: the UI layer
+// The five jobs, spelled here rather than pulled from fetch_task.h: the UI layer
 // has no business including the worker's header (and its OAuth/config deps) for
 // four strings.
 const char* jobName(int8_t job) {
   switch (job) {
-    case FETCH_USAGE:   return "usage";
-    case FETCH_WEATHER: return "weather";
-    case FETCH_MOON:    return "moon";
-    case FETCH_AIR:     return "air";
-    default:            return "none";
+    case FETCH_USAGE:    return "usage";
+    case FETCH_WEATHER:  return "weather";
+    case FETCH_MOON:     return "moon";
+    case FETCH_AIR:      return "air";
+    case FETCH_FORECAST: return "forecast";
+    default:             return "none";
   }
 }
 

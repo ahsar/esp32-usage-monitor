@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-20
+
+Six additions, all built around one question: *is what I am looking at still
+true?*
+
+### Added
+
+- **The Usage page says how old its numbers are, and the title bar refreshes.**
+  `12m old` appears next to the title (yellow) once the last *successful* usage
+  poll is older than the idle period plus a minute — a failed poll leaves the
+  bars unchanged, which is exactly the case the old screen could not show. It
+  draws nothing while the data is fresh, so a healthy page still repaints zero
+  times. Tapping the title bar (the strip above the divider) polls that page's
+  data immediately: `pollerForce()` clears the job's backoff as well as its
+  timer, rate-limited to one tap per 5 s. The tap is swallowed by the pager, so
+  it does not also turn the page — which required fixing the swallow itself
+  (`pagerUpdate()` cleared it on the release frame, the very frame that consumes
+  it, so wake-taps paged after all).
+- **Week/month get a pace verdict.** The 5-hour **OVER** stays a projection from
+  the rate this device measures; the longer meters now use an even-burn line —
+  what is spent against how much of the window has elapsed (`elapsedPct()`,
+  window lengths in `util/usage_pace.h`, ten points of slack). It is a stated
+  assumption, not a measurement, which is why it is a second function instead of
+  the 5-hour rate pushed through the first. The month uses 31 days so a 31-day
+  billing month does not lose its verdict for the first day.
+- **The Trend page survives a reboot.** `src/trend_store.cpp` persists the ring
+  to `/trend.txt` as wall-clock epochs (the in-RAM ring is boot-relative), prunes
+  it to the current 5-hour window at boot and rebases it onto the new boot's
+  timeline via `trendNowSec()`, so restored and fresh samples share one clock.
+  Writes are coalesced to every 5 minutes and flushed into the power-off and OTA
+  paths; the line format is host-tested (`util/trend_store_util.h`).
+- **Two OpenCode windows coexist.** `?agent=` carries a short `session=` token
+  and the device keeps a table (`parse/agent_sessions.h`): any waiting session
+  owns the screen, else the most recent running one; one window's `done` no
+  longer clears another's `running`, and the thinking screen says `2 running`.
+  A session silent for 45 minutes is dropped without a chime or a wake, and the
+  plugin heartbeats every ten minutes so a long build stays alive. Key1 still
+  dismisses the *screen*, and a heartbeat cannot re-open it — only a state change
+  does (`generation`).
+- **A Notice page, and `?notice=`.** `tools/status-notice.sh "Standup in 8 min"
+  --kind meeting --left 480 --ttl 900` puts a short line on the panel and a
+  countdown to the event that ticks locally; `--ttl` (mandatory, cap 24 h) is how
+  long it may live, so it can never sit there pretending to be current, and
+  `tools/status-notice.sh ""` clears it. Signed over the whole query like
+  `?agent=`, sanitised by the same code, capped so a fully encoded request still
+  fits `STATUS_QUERY_MAX`. It does not wake the panel.
+- **A three-day forecast card**, between Now and Sun: `Today / Tomorrow /
+  <weekday>` with hi/lo and rain chance. The data comes from Open-Meteo
+  (`api.open-meteo.com`) rather than wttr.in's JSON, which is ~50 KB against the
+  HTTP helper's 4 KB body cap; Open-Meteo returns the five daily arrays in ~530 B
+  and takes the coordinates the moon API already has. New `FETCH_FORECAST` job
+  with its own `poll_forecast_s` (default 3 h).
+
+### Changed
+
+- The page carousel is six pages (Weather · Usage · Trend · Clock · Notice ·
+  Health) and the Weather page six cards; Health stays last.
+- `pollerInit()` takes a `forecastMs`; `pollerSelect()` order is usage → weather →
+  forecast → moon → air, and the per-job arrays are sized from the last
+  `FetchJob`.
+- `statusChannelTick()` runs every iteration to expire the notice and silent
+  sessions, preserving any cue a request queued earlier in the same iteration.
+
+### Fixed
+
+- `pagerSwallowNextTap()` had no effect: the swallow was cleared at the top of
+  the release frame, before the release handler read it, so a tap that only woke
+  the screen also turned the page. The clear now exempts `justReleased`.
+
 ## [0.5.0] - 2026-10-20
 
 ### Added

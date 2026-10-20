@@ -83,15 +83,16 @@ x86_64-only binary and needs an arm64 replacement) is in the README,
 | `src/pager.{h,cpp}` | Two-axis gesture + snap/animation state machine. Touch/drag behaviour. |
 | `src/usage_display.h` | Public UI drawing API (frame setup, page/card renderers, dots). |
 | `src/ui/` | Drawing impl: `cards`, `trend`, `health`, `primitives` (fonts + text helpers), `icons`, `lvgl_text`, shared palette `theme.h`. |
-| `src/usage_history.{h,cpp}` | RAM-only ring of rolling spend samples feeding the trend page. |
+| `src/usage_history.{h,cpp}` | Ring of rolling spend samples feeding the trend page. |
+| `src/trend_store.{h,cpp}` | Persists that ring to `/trend.txt` and rebases it onto the boot timeline (`trendNowSec()`), so an OTA/power cycle does not blank the Trend page. Loop task only (LittleFS). |
 | `src/fetch_task.{h,cpp}` | Background FreeRTOS worker: job/result queues, token hand-off. Threading rules in the header. |
-| `src/status_channel.{h,cpp}` | The transport-neutral device channel: HMAC auth, the agent state machine, settings validation/dispatch and the WiFi credentials request. Both transports call `statusChannelHandle()`. **Add a request kind here, once.** |
+| `src/status_channel.{h,cpp}` | The transport-neutral device channel: HMAC auth, the agent session table + state machine, notices, settings validation/dispatch and the WiFi credentials request. Both transports call `statusChannelHandle()`; `statusChannelTick()` expires the notice and silent sessions. **Add a request kind here, once.** |
 | `src/status_server.{h,cpp}` | The HTTP transport for that channel: port 80, a bounded request-head read, then the query + `X-Ts`/`X-Sig` pair handed to `statusChannelHandle()`. |
 | `src/ble_status.{h,cpp}` | The same channel over a BLE GATT service — the fallback for a host the LAN cannot reach… and the *only* transport that exists on a device with no WiFi credentials yet. Deliberately unpaired. |
 | `src/api_client.{h,cpp}` | opencode console REST client (usage + token refresh). |
-| `src/weather_client.{h,cpp}` | Weather (wttr.in), moon (MET Norway), air (waqi) transport. Location comes from `weatherSetLocation()`. |
+| `src/weather_client.{h,cpp}` | Weather (wttr.in), three-day forecast (Open-Meteo), moon (MET Norway), air (waqi) transport. Location comes from `weatherSetLocation()`. |
 | `src/http_client.{h,cpp}` | Shared **blocking** HTTPS helper: DNS/handshake/read deadlines, CA-bundle verification. |
-| `src/parse/` | Header-only, host-testable payload parsers (usage/wttr/moon/air/settings) and the requests the PC sends (`wifi_cred_parse.h`, `agent_parse.h`), plus the transport framings (`http_request.h`, `ble_frame.h`) and the agent state machine (`status_machine.h`). Pure functions — test them here. |
+| `src/parse/` | Header-only, host-testable payload parsers (usage/wttr/forecast/moon/air/settings) and the requests the PC sends (`wifi_cred_parse.h`, `agent_parse.h`, `notice_parse.h`), the agent session table (`agent_sessions.h`), plus the transport framings (`http_request.h`, `ble_frame.h`) and the agent state machine (`status_machine.h`). Pure functions — test them here. |
 | `src/util/` | Dependency-free helpers (time/value/interval/trend/loc/url/health, the thresholds in `usage_alert.h`, the pace math in `usage_pace.h`, and `config_limits.h` — the range table both `config.json` and the settings channel use), host-unit-tested. |
 | `src/config.h` | `AppConfig` + LittleFS JSON loader (`/config.json`). Add a config field here. |
 | `src/storage.{h,cpp}` | One-shot LittleFS mount helper. |
@@ -194,13 +195,24 @@ linked deep dive before changing the area.
   `?state=` because a state ping signs only the state word. It follows `?state=`
   into bench mode when `status_key` is empty (it is ephemeral, unlike settings),
   so it must not be given the settings channel's "no key, no write" rule.
-- **Network text is only ever drawn through `agent_parse.h`.** The animation screens
-  are the one place a string of unknown length and provenance reaches the rasteriser,
-  so it is signed over the whole query (never admitted through the value-only
-  `?state=` signature), control bytes are stripped, the field caps keep a fully
-  percent-encoded request inside `STATUS_QUERY_MAX`/`BLE_FRAME_MAX`, and the card
-  clips to the panel width itself instead of trusting the client. Do not add a second
-  path for drawing remote text.
+- **Network text is only ever drawn through the signed parsers (`agent_parse.h`,
+  `notice_parse.h`).** Those two screens are the places a string of unknown length
+  and provenance reaches the rasteriser, so the text is signed over the whole query
+  (never admitted through the value-only `?state=` signature), control bytes are
+  stripped, the field caps keep a fully percent-encoded request inside
+  `STATUS_QUERY_MAX`/`BLE_FRAME_MAX`, and the card clips to the panel width itself
+  instead of trusting the client. Do not add a second path for drawing remote text.
+  A notice is the one remote string that **lingers**, so it must carry a TTL
+  (mandatory in the parser, expired in `statusChannelTick()`): an unexpiring notice
+  is a lie waiting to happen, and the page draws a countdown rather than trusting
+  the text to age by itself.
+- **One agent state, many sessions.** The screen's state is the aggregate of the
+  session table (`agent_sessions.h`): any waiting wins, else any running, else idle;
+  a session silent for 45 min is dropped without a chime. Key1 dismisses the
+  *screen* and a heartbeat must not re-open it — only a state change does (that is
+  what `generation` is for). Do not go back to one last-wins state: two OpenCode
+  windows is a real setup and one window's `done` must not clear the other's
+  `running`.
 - **`src/diag.*` is temporary but load-bearing** — it is what makes a wedged
   fetch or a frozen UI diagnosable over USB CDC. Don't delete it while the
   watchdog still relies on its breadcrumbs.
@@ -243,6 +255,7 @@ Read the relevant one before changing that area:
 - `tools/monitor-send.sh` — the transport ladder as one command (HTTP last-good →
   learned/BLE IP → configured URLs → BLE one-shot); what the plugin spawns
 - `tools/status-ping.sh` — signed status ping, for testing the device by hand
+- `tools/status-notice.sh` — push/clear a Notice-page line (`--kind`, `--ttl`, `--left`)
 - `tools/status-settings.sh` — read/change chime, its volume, brightness and the location over the
   signed settings channel (no `uploadfs`)
 - `tools/wifi-setup.sh` — send the WiFi credentials from a PC keyboard over the same
@@ -264,8 +277,9 @@ CI (`.github/workflows/ci.yml`) runs `pio test -e native` and
 Host tests need **no hardware** and cover the dependency-free logic:
 
 - `test/test_util/` — `src/util/` (epoch/date parsing, weather-icon kind, moon
-  phase, AQI label, `Interval`, trend math) and the header-only `src/parse/`
-  parsers (usage meters, wttr one-line, moon/air JSON).
+  phase, AQI label, `Interval`, trend math, the even-burn pace, the trend-file
+  line format) and the header-only `src/parse/` parsers (usage meters, wttr
+  one-line, Open-Meteo forecast, moon/air JSON, notices, the agent session table).
 - `test/test_poller/` — `src/poller.cpp` (selection priority + gates, backoff
   caps, cooldowns, the wedge ladder). `[env:native]` builds just that one
   firmware source via `test_build_src` + `build_src_filter`.

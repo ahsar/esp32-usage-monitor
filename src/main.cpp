@@ -18,6 +18,7 @@
 #include "ota.h"
 #include "clock_sync.h"
 #include "usage_history.h"
+#include "trend_store.h"
 #include "poller.h"
 #include "util/interval.h"
 #include "util/usage_alert.h"
@@ -29,11 +30,17 @@
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <esp_heap_caps.h>
+#include <time.h>
 
 static UsageData s_usage;
 static WeatherData s_weather;
 static MoonData s_moon;
 static AirData s_air;
+static ForecastData s_forecast;
+static NoticeData s_notice;
+// Bumped by the channel on every accepted notice and on expiry, so the frame key
+// can see a repaint without hashing the text.
+static uint32_t s_noticeRev = 0;
 // The device's own state (Health page). Sampling is cheap and lives in
 // refreshEnv(); what the last *fetch* did is recorded in serviceFetch(), the one
 // place that sees a finished job.
@@ -55,6 +62,18 @@ static bool s_chimeEnabled = true;
 // can never stall input and rendering behind several back-to-back blocking
 // fetches. pollerInit() in setup() applies the periods from config.
 static Interval s_ivEnv(1000);
+
+// The Usage page's data age. `s_lastUsageOkMs` is the last *successful* usage
+// poll (a failed one leaves the old numbers on screen, which is exactly the case
+// the age exists to expose). 0 = never.
+static uint32_t s_lastUsageOkMs = 0;
+// Trend persistence: the ring is a cache, so a write every five minutes is
+// plenty, and the write is on this task only (LittleFS, like the token flush).
+static const uint32_t TREND_SAVE_MS = 300000;
+static uint32_t s_lastTrendSaveMs = 0;
+// A manual refresh (tap on the title bar) is rate-limited: one tap per five
+// seconds, so a hand on the panel cannot become a poll storm.
+static uint32_t s_lastManualRefreshMs = 0;
 
 static WifiState s_wifi;
 
@@ -230,6 +249,35 @@ static void refreshEnv(uint32_t now) {
         s_authCue = true;
     }
     s_authWasOk = authOk;
+
+    // How old the meter is — the honest answer to "is this still current?".
+    // The threshold is the idle poll period plus a minute of slack: while idle
+    // the device legitimately goes three minutes between polls, and calling that
+    // stale would train the user to ignore the note.
+    s_env.usageAgeSec = s_lastUsageOkMs ? (now - s_lastUsageOkMs) / 1000u : 0;
+    s_env.usageStale  = s_usage.valid && s_lastUsageOkMs &&
+                        s_env.usageAgeSec > (uint32_t)s_cfg.poll_usage_idle_s + 60u;
+
+    // The Notice page. The countdown is "time until the event", not "time until
+    // the notice expires", and it is computed here at 1 Hz rather than stored
+    // so a notice that arrives while the page is showing just works.
+    const NoticeState& nt = statusChannelNotice();
+    s_noticeRev = nt.rev;
+    s_notice.valid = nt.valid;
+    s_notice.hasCountdown = nt.hasLeft;
+    s_notice.countdownSec = 0;
+    if (nt.valid) {
+      strlcpy(s_notice.kind, nt.kind, sizeof(s_notice.kind));
+      strlcpy(s_notice.text, nt.text, sizeof(s_notice.text));
+      if (nt.hasLeft) {
+        uint32_t elapsed = (now - nt.receivedMs) / 1000u;
+        s_notice.countdownSec = nt.leftSec > elapsed ? nt.leftSec - elapsed : 0;
+      }
+    } else {
+      s_notice.kind[0] = '\0';
+      s_notice.text[0] = '\0';
+    }
+
     diagSetNet(s_env.online, (int)WiFi.status(), (int)WiFi.RSSI());
 
     // The Health page's snapshot. Deliberately at the same 1 Hz cadence as the
@@ -298,12 +346,14 @@ static bool applyDeviceSettings(const DeviceSettings& st, uint16_t changed) {
 
 static UiData currentUiData() {
     UiData d;
-    d.usage   = &s_usage;
-    d.weather = &s_weather;
-    d.moon    = &s_moon;
-    d.air     = &s_air;
-    d.health  = &s_health;
-    d.hasAir  = s_cfg.waqi_token[0] != 0;
+    d.usage    = &s_usage;
+    d.weather  = &s_weather;
+    d.moon     = &s_moon;
+    d.air      = &s_air;
+    d.forecast = &s_forecast;
+    d.notice   = &s_notice;
+    d.health   = &s_health;
+    d.hasAir   = s_cfg.waqi_token[0] != 0;
     return d;
 }
 
@@ -361,6 +411,17 @@ static uint32_t uiFrameKey() {
         h = hashMix(h, s_health.lastDnsMs / 100u);
         h = hashMix(h, s_health.lastTlsMs / 100u);
     }
+    // The Usage page's staleness note changes only when it crosses into stale
+    // (the age itself is quantised to five minutes), so a healthy page still
+    // costs zero renders.
+    if (pagerPage() == UI_PAGE_USAGE && s_env.usageStale)
+        h = hashMix(h, s_env.usageAgeSec / 300u + 1u);
+    // Notice: repaint on a new/expired notice, and once a minute while its
+    // countdown runs.
+    if (pagerPage() == UI_PAGE_NOTICE) {
+        h = hashMix(h, s_noticeRev);
+        if (s_notice.hasCountdown) h = hashMix(h, s_notice.countdownSec / 60u);
+    }
     h = hashMix(h, s_dataRev);
     return h;
 }
@@ -371,6 +432,30 @@ static uint32_t uiFrameKey() {
 // the completion chimes play through later.
 static void audioBootInit() {
     if (!audioInit()) Serial.println("audio: init failed (no chimes)");
+}
+
+// Manual refresh: a tap on the title bar (the top strip, above the divider)
+// polls the page's own data now instead of waiting out its interval. That strip
+// is the one place a tap does not mean "next page", and it is also where the
+// Usage page's data age is drawn, so the cause and the effect are adjacent.
+// `pollerForce()` clears the job's backoff as well as its timer, because the
+// person asking has already decided the screen is stale.
+static void forceRefreshVisible(uint32_t now) {
+    if (now - s_lastManualRefreshMs < 5000) return;
+    s_lastManualRefreshMs = now;
+
+    switch (pagerPage()) {
+        case UI_PAGE_WEATHER:
+            pollerForce(FETCH_WEATHER, now);
+            pollerForce(FETCH_FORECAST, now);
+            break;
+        case UI_PAGE_NOTICE:
+            return;                     // pushed by the PC, nothing to fetch
+        default:
+            pollerForce(FETCH_USAGE, now);
+            break;
+    }
+    Serial.printf("refresh: page=%d\n", pagerPage());
 }
 
 // ---- UI service frame -----------------------------------------------------
@@ -412,6 +497,16 @@ static void uiFrame(uint32_t now) {
         } else {
             s_lastActivity = now;
         }
+    }
+
+    // A tap on the title bar is a manual refresh, not a page turn — the strip
+    // above the divider is the one place a tap means "now, not next" (see
+    // forceRefreshVisible()). Swallowing it here keeps the pager's gesture
+    // machine from also advancing the page on release. Not while the WiFi setup
+    // screen owns the panel: its keyboard has buttons up there.
+    if (!s_wifi.open && tp.justPressed && tp.y < 33) {
+        pagerSwallowNextTap();
+        forceRefreshVisible(now);
     }
 
 #ifdef FRAME_DUMP
@@ -502,7 +597,8 @@ static void uiFrame(uint32_t now) {
             if (waiting) {
                 usageDisplayDrawWaiting(elapsed, agent.note, agent.repo);
             } else {
-                usageDisplayDrawThinking(elapsed, agent.repo, agent.tool);
+                usageDisplayDrawThinking(elapsed, agent.repo, agent.tool,
+                                         statusChannelAgentCount());
             }
             diagMark(DIAG_UI_PUSH, 0xFFFFFFFEu);
             hwDisplayPush();
@@ -559,6 +655,15 @@ static void flushPendingTokens() {
     }
 }
 
+// Persist the trend ring on the way into a reboot/power-off. The periodic save
+// covers the five-minute window; this is what makes the last few samples survive
+// an OTA or the power key instead of vanishing with the RAM ring.
+static void saveTrendNow() {
+    if (!clockSyncValid()) return;
+    if (trendStoreSave((uint32_t)time(nullptr), millis() / 1000u))
+        s_lastTrendSaveMs = millis();
+}
+
 // Publish whatever the background fetch task finished: persist rotated tokens,
 // copy the payload into the UI's data holders and move the frame key. Runs
 // every iteration (also while the WiFi setup screen owns the display) and
@@ -572,10 +677,11 @@ static void serviceFetch() {
     // A failed poll still lands: it carries the previous payload back plus the
     // stale flags the fetcher set, exactly like the old in-place mutation.
     switch (res.job) {
-        case FETCH_USAGE:   s_usage   = res.usage;   break;
-        case FETCH_WEATHER: s_weather = res.weather; break;
-        case FETCH_MOON:    s_moon    = res.moon;    break;
-        case FETCH_AIR:     s_air     = res.air;     break;
+        case FETCH_USAGE:    s_usage    = res.usage;    break;
+        case FETCH_WEATHER:  s_weather  = res.weather;  break;
+        case FETCH_MOON:     s_moon     = res.moon;     break;
+        case FETCH_AIR:      s_air      = res.air;      break;
+        case FETCH_FORECAST: s_forecast = res.forecast; break;
     }
     // Back the host off instead of retrying it every cycle: a blocked or
     // erroring endpoint must not keep occupying the single job slot.
@@ -598,10 +704,21 @@ static void serviceFetch() {
                      s_env.hh, s_env.mm);
         }
         // One trend sample per successful usage poll: the rolling window's
-        // spend is what the trend page plots.
+        // spend is what the trend page plots. The timestamp comes from
+        // trend_store, whose virtual clock keeps the spacing of samples that
+        // survived a reboot.
         if (res.job == FETCH_USAGE) {
-            trendPush((uint32_t)(millis() / 1000u),
-                      s_usage.rollingUsedMicroCents, s_usage.rollingPercent);
+            const uint32_t nowMono = millis() / 1000u;
+            trendPush(trendNowSec(nowMono), s_usage.rollingUsedMicroCents,
+                      s_usage.rollingPercent);
+            s_lastUsageOkMs = millis();
+
+            // Persist at most every five minutes: this is a cache of the last
+            // two hours, not a log, and every write is flash on the loop task.
+            if (clockSyncValid() && millis() - s_lastTrendSaveMs >= TREND_SAVE_MS) {
+                if (trendStoreSave((uint32_t)time(nullptr), nowMono))
+                    s_lastTrendSaveMs = millis();
+            }
 
             // Threshold cues. Only a successful poll feeds this: a stale cached
             // meter must not re-arm a threshold that is already behind us.
@@ -644,6 +761,7 @@ static void otaStopped(bool ok) {
         // with the reboot and the next use of the stale one revokes the whole
         // family (see AGENTS.md).
         flushPendingTokens();
+        saveTrendNow();
         return;
     }
     // Nothing was written and the device keeps running, so drop the progress
@@ -689,6 +807,13 @@ void setup() {
     // blocked on this network.
     clockSyncRestoreFromRtc();
 
+    // Trend history from the last boot, now that the clock is plausible: the
+    // file is pruned to samples that could still belong to the current rolling
+    // window, and trend_store rebases them onto this boot's timeline. Must run
+    // before the first fetch can push a sample.
+    trendReset();
+    trendStoreRestore(clockSyncValid() ? (uint32_t)time(nullptr) : 0, millis() / 1000u);
+
     s_chimeEnabled = s_cfg.chime;
     chimeSetVolume(s_cfg.chime_volume);
     // Token store + the background fetch task. Every HTTPS fetch — including
@@ -710,19 +835,19 @@ void setup() {
         (uint32_t)s_cfg.poll_usage_s      * 1000u,
         (uint32_t)s_cfg.poll_usage_idle_s * 1000u,
         (uint32_t)s_cfg.poll_weather_s    * 1000u,
+        (uint32_t)s_cfg.poll_forecast_s   * 1000u,
         (uint32_t)s_cfg.poll_moon_s       * 1000u,
         (uint32_t)s_cfg.poll_air_s        * 1000u,
         BACKOFF_BASE_MS, BACKOFF_USAGE_MS, BACKOFF_OTHER_MS,
         JOB_DEADLINE_MS, WEDGE_PAUSE_MS, WEDGE_PAUSE_MAX_MS,
         ROAM_FAILS, ROAM_COOLDOWN_MS,
     });
-    Serial.printf("poll: usage %us (idle %us) weather %us air %us moon %us\n",
+    Serial.printf("poll: usage %us (idle %us) weather %us forecast %us air %us moon %us\n",
                   (unsigned)s_cfg.poll_usage_s, (unsigned)s_cfg.poll_usage_idle_s,
-                  (unsigned)s_cfg.poll_weather_s, (unsigned)s_cfg.poll_air_s,
-                  (unsigned)s_cfg.poll_moon_s);
+                  (unsigned)s_cfg.poll_weather_s, (unsigned)s_cfg.poll_forecast_s,
+                  (unsigned)s_cfg.poll_air_s, (unsigned)s_cfg.poll_moon_s);
 
     pagerInit();
-    trendReset();
     statusChannelSetKey(s_cfg.status_key);
     statusChannelSetSettings(st);
     statusChannelSetSettingsCallback(applyDeviceSettings);
@@ -783,6 +908,9 @@ void loop() {
     // The same channel's other transport: never fetches anything itself, so it
     // sits next to the HTTP server rather than near the pollers.
     bleStatusUpdate();
+    // Expire a notice whose TTL ran out, and any agent session whose host has
+    // gone quiet (AGENT_SESSION_TTL_MS). Cheap, loop task only.
+    statusChannelTick(millis());
     // Wireless firmware update. Blocks for the whole transfer (see ota.h) —
     // the OTA module paints the panel and pauses the pollers for its duration.
     otaUpdate();
@@ -832,6 +960,7 @@ void loop() {
         // token: hwPowerOff() cuts the rails and the device comes back holding
         // the one it already used.
         flushPendingTokens();
+        saveTrendNow();
         hwPowerOff();
     }
 
@@ -967,10 +1096,11 @@ void loop() {
                 // Seed with what is on screen so a failed poll keeps the last
                 // values and just flags them stale (weather/moon/air).
                 FetchSeed seed;
-                seed.usage   = s_usage;
-                seed.weather = s_weather;
-                seed.moon    = s_moon;
-                seed.air     = s_air;
+                seed.usage    = s_usage;
+                seed.weather  = s_weather;
+                seed.moon     = s_moon;
+                seed.air      = s_air;
+                seed.forecast = s_forecast;
                 // Only arm the timer when the job was actually accepted, so a
                 // busy worker simply retries on a later iteration.
                 if (fetchTaskStart(job, seed)) pollerStarted(job, now);

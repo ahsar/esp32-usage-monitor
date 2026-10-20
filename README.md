@@ -8,9 +8,10 @@ and a clock — and the panel reacts while the agent is working.
   <img src="docs/screens/usage.png" width="300" alt="Usage page with the 5-hour, weekly and monthly meters">
 </p>
 
-Five pages (Weather · Usage · Trend · Clock · Health) driven by touch or key,
-five weather cards, an OpenCode status bridge with chimes, a Trend page that
-plots spend rate and time-to-limit, and a Health page for the device's own link,
+Six pages (Weather · Usage · Trend · Clock · Notice · Health) driven by touch or
+key, six weather cards, an OpenCode status bridge with chimes, a Trend page that
+plots spend rate and time-to-limit, a Notice page for what the PC pushes (the next
+meeting, a finished deploy, …), and a Health page for the device's own link,
 memory and fetch timings.
 
 ## Screens
@@ -23,10 +24,11 @@ memory and fetch timings.
   <br>
   <sub><b>Weather</b> (Now card) &nbsp;·&nbsp; <b>Usage</b> &nbsp;·&nbsp; <b>Trend</b> &nbsp;·&nbsp; <b>Clock</b></sub>
   <br>
-  <sub>(the fifth page, <b>Health</b> — link, memory and last-fetch timings — is not pictured)</sub>
+  <sub>(the sixth page, <b>Health</b> — link, memory and last-fetch timings — and
+  <b>Notice</b>, what the PC last pushed, are not pictured)</sub>
 </p>
 
-The Weather page holds five vertical cards — swipe up/down to move between them:
+The Weather page holds six vertical cards — swipe up/down to move between them:
 
 <p align="center">
   <img src="docs/screens/weather-sun.png" width="200" alt="Weather card: Sun">
@@ -43,18 +45,26 @@ current weather card. These are real captures from the device — see
 
 ## Features
 
-- **Five horizontal pages** — Weather ↔ Usage ↔ Trend ↔ Clock ↔ Health: swipe,
-  tap or press Key1.
-- **Five weather cards** — Now → Sun → Air → Moon → Moonrise/Moonset.
+- **Six horizontal pages** — Weather ↔ Usage ↔ Trend ↔ Clock ↔ Notice ↔ Health:
+  swipe, tap or press Key1.
+- **Six weather cards** — Now → Forecast → Sun → Air → Moon → Moonrise/Moonset.
+  The forecast is three days of hi/lo + rain chance from Open-Meteo.
 - **Usage meters** — 5-hour rolling / weekly / monthly, each with a spend figure
   (`$3.20/$10.00`) and a reset countdown; the bars go green, yellow above 30% and
   red above 60%. The 5-hour row says **OVER** when the current rate projects past
-  the limit before the reset, and crossing 80% / 100% plays a cue once per
-  window. When the OAuth token needs re-authorising the page says so — and how —
-  instead of drawing bars that look like a fetch still in flight.
+  the limit before the reset; week/month say it when spend is more than ten points
+  above the even-burn line for the elapsed part of their window. Crossing 80% /
+  100% plays a cue once per window. The title bar shows how old the numbers are
+  (`12m old`) when they have gone stale, and a tap on that strip refreshes the
+  page's data immediately. When the OAuth token needs re-authorising the page
+  says so — and how — instead of drawing bars that look like a fetch in flight.
 - **Trend page** — 5-hour rolling spend, `$/h` burn rate, estimated time to
-  limit, plus a cumulative spend curve and per-poll bars. The history ring is
-  RAM-only, so it starts empty on every boot and fills as polls land.
+  limit, plus a cumulative spend curve and per-poll bars. The ring is restored
+  from `/trend.txt` at boot (pruned to the current rolling window), so an OTA or a
+  power cycle no longer blanks it.
+- **Notice page** — one line pushed from the PC over the same signed channel
+  (`tools/status-notice.sh`): a meeting countdown, a deploy, anything. It carries
+  a mandatory TTL, so a notice can never sit on the panel pretending to be current.
 - **Status bridge** — an OpenCode plugin drives the device over HTTP: a
   "Thinking…" animation while the agent works, "Needs you" plus an attention
   beep when it asks for permission, and a two-beep / low-beep cue when a session
@@ -145,6 +155,7 @@ the build today.
   "poll_usage_s": 60,
   "poll_usage_idle_s": 180,
   "poll_weather_s": 1800,
+  "poll_forecast_s": 10800,
   "poll_air_s": 3600,
   "poll_moon_s": 43200,
 
@@ -168,6 +179,7 @@ the build today.
 | `poll_usage_s` | `60` | Usage poll period (seconds) |
 | `poll_usage_idle_s` | `180` | Usage poll period while the device has been untouched for 30 s |
 | `poll_weather_s` | `1800` | Weather poll period |
+| `poll_forecast_s` | `10800` | Three-day forecast poll period (Open-Meteo) |
 | `poll_air_s` | `3600` | Air-quality poll period |
 | `poll_moon_s` | `43200` | Moon poll period |
 | `chime` | `true` | Play a chime when the agent finishes or needs you |
@@ -306,7 +318,10 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
     and the panel shows the connect as it happens. `tools/wifi-setup.sh
     --forget` clears the credentials and brings the setup screen back.
 - **Pages.** Swipe left/right (or tap) to move between Weather / Usage / Trend /
-  Clock / Health. On the Weather page, swipe up/down for the five cards.
+  Clock / Notice / Health. On the Weather page, swipe up/down for the six cards.
+- **Refresh now.** Tap the title bar (the strip above the divider) to poll the
+  visible page's data immediately instead of waiting for its interval; the Usage
+  page's title bar also shows how old its numbers are.
 - **Key1** cycles pages, and dismisses the "Thinking…" / "Needs you" animation.
 - **Power key** (middle, the AXP `PWRON` input): tap to power on, hold ~2.5 s to
   shut down. The press that switched the device on is ignored, so holding the key
@@ -411,6 +426,7 @@ all. See
 │   ├── ble_status.cpp/h     # the same channel over a BLE GATT service
 │   ├── clock_sync.cpp/h     # NTP bootstrap + RTC resync scheduling
 │   ├── usage_history.cpp/h  # RAM ring of spend samples (Trend page)
+│   ├── trend_store.cpp/h    # persists that ring to /trend.txt (reboot-safe)
 │   ├── storage.cpp/h        # LittleFS mount helper
 │   ├── config.h             # AppConfig + LittleFS JSON loader
 │   ├── token_store.cpp/h    # OAuth tokens persisted to LittleFS
@@ -418,14 +434,14 @@ all. See
 │   ├── http_client.cpp/h    # shared blocking HTTPS helper
 │   ├── fetch_task.cpp/h     # background fetch worker (job/result queues)
 │   ├── api_client.cpp       # OpenCode console REST client
-│   ├── weather_client.cpp/h # weather / moon / air quality
+│   ├── weather_client.cpp/h # weather / forecast / moon / air quality
 │   ├── wifi_setup.cpp/h     # WiFi setup UI (the fallback when there is no PC)
 │   ├── frame_dump.cpp/h     # -DFRAME_DUMP screen walker (screenshot tool)
 │   ├── diag.cpp/h           # boot/fetch freeze diagnostics
 │   ├── usage_display.h      # public UI drawing API
 │   ├── ui/                  # cards, trend, health, primitives, icons, lvgl_text, theme
-│   ├── parse/               # header-only parsers (usage/weather/moon/air/settings,
-│   │                        #   agent context) + status machine
+│   ├── parse/               # header-only parsers (usage/weather/forecast/moon/air/
+│   │                        #   settings, agent context + sessions, notices)
 │   ├── util/                # dependency-free helpers (host-unit-tested)
 │   ├── voice/               # I2S audio (ES8311, chimes)
 │   ├── boards/              # per-board pin definitions

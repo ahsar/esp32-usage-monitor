@@ -65,15 +65,47 @@ struct AirData {
   char observedAt[8];         // "14:00"
 };
 
+// Three-day daily forecast (Open-Meteo), the Forecast weather card. The device
+// already knows its coordinates, and Open-Meteo answers in <1 KB — wttr.in's
+// JSON is ~50 KB, which is why the one-line format stays for current conditions
+// and this is a different host.
+struct ForecastDay {
+  char   label[12];           // "Today" / "Tomorrow" / "Wed"
+  char   cond[16];            // short WMO label, e.g. "Showers"
+  int8_t maxC, minC;
+  int8_t rainPct;             // 0..100, -1 unknown
+};
+
+struct ForecastData {
+  bool valid;
+  bool stale;
+  ForecastDay day[3];
+};
+
+// A notice pushed over the device channel (parse/notice_parse.h), resolved
+// against the clock for the Notice page: `countdownSec` is how long until the
+// event starts, not how long the notice lives.
+struct NoticeData {
+  bool     valid;
+  char     kind[12];
+  char     text[64];
+  bool     hasCountdown;
+  uint32_t countdownSec;
+};
+
 // Which payload a fetch job targets. Kept here (not in fetch_task.h) so the
 // pure poll scheduler in poller.h can name jobs without pulling in the fetch
 // task's firmware-only dependencies (config.h → LittleFS/ArduinoJson). Values
 // are 1-based so 0 can mean "none".
+//
+// New jobs are appended: the value is a diag breadcrumb and the index into
+// poller.cpp's per-job arrays, and the arrays are sized from the last entry.
 enum FetchJob : uint8_t {
   FETCH_USAGE = 1,
   FETCH_WEATHER,
   FETCH_MOON,
   FETCH_AIR,
+  FETCH_FORECAST,
 };
 
 // The device's own state, for the Health page: everything that used to be

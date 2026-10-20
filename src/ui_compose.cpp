@@ -9,12 +9,13 @@ static const int PAGE_H = HW_H;
 
 static void drawPage(int page, int card, int ox, int oy, const UiData& d) {
   switch (page) {
-    case UI_PAGE_USAGE: uiDrawUsage(*d.usage, ox, oy); break;
-    case UI_PAGE_TREND: uiDrawTrend(*d.usage, ox, oy); break;
-    case UI_PAGE_CLOCK: uiDrawClock(ox, oy); break;
+    case UI_PAGE_USAGE:  uiDrawUsage(*d.usage, ox, oy); break;
+    case UI_PAGE_TREND:  uiDrawTrend(*d.usage, ox, oy); break;
+    case UI_PAGE_CLOCK:  uiDrawClock(ox, oy); break;
+    case UI_PAGE_NOTICE: uiDrawNotice(*d.notice, ox, oy); break;
     case UI_PAGE_HEALTH: uiDrawHealth(*d.health, ox, oy); break;
     default:
-      uiDrawWeatherCard(card, *d.weather, *d.moon, *d.air, d.hasAir, ox, oy);
+      uiDrawWeatherCard(card, *d.weather, *d.moon, *d.air, *d.forecast, d.hasAir, ox, oy);
       break;
   }
 }
@@ -28,14 +29,14 @@ void uiRender(const UiData& d) {
   int card = pagerCard();
 
   if (vaxis && page == UI_PAGE_WEATHER) {
-    uiDrawWeatherCard(card, *d.weather, *d.moon, *d.air, d.hasAir, 0, off);
+    uiDrawWeatherCard(card, *d.weather, *d.moon, *d.air, *d.forecast, d.hasAir, 0, off);
     // Endless carousel: the neighbour in the gap wraps at the ends, so the tile
     // is always drawn (no bounds test) — it is what makes Clock↔Weather and
     // Moonrise↔Now feel continuous mid-drag.
     if (off < 0)
-      uiDrawWeatherCard(uiCardNext(card), *d.weather, *d.moon, *d.air, d.hasAir, 0, off + PAGE_H);
+      uiDrawWeatherCard(uiCardNext(card), *d.weather, *d.moon, *d.air, *d.forecast, d.hasAir, 0, off + PAGE_H);
     else if (off > 0)
-      uiDrawWeatherCard(uiCardPrev(card), *d.weather, *d.moon, *d.air, d.hasAir, 0, off - PAGE_H);
+      uiDrawWeatherCard(uiCardPrev(card), *d.weather, *d.moon, *d.air, *d.forecast, d.hasAir, 0, off - PAGE_H);
   } else {
     drawPage(page, card, off, 0, d);
     if (off < 0)      drawPage(uiPageNext(page), card, off + PAGE_W, 0, d);

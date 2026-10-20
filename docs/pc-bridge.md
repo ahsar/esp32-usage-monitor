@@ -11,7 +11,8 @@ channel is also served over BLE for hosts the LAN cannot reach — see
 | `?state=running` | agent working | "Thinking…" animation, wakes the panel |
 | `?state=waiting` | permission/question | "Needs you" animation + attention beep |
 | `?state=done` / `?state=failed` | finished / errored | rising two-beep / low beep |
-| `?agent=1&state=…&repo=…&tool=…&note=…` | the above, plus what it is doing | same screens, with the repo/tool/elapsed and, when waiting, what it is waiting for |
+| `?agent=1&state=…&repo=…&tool=…&note=…&session=…` | the above, plus what it is doing | same screens, with the repo/tool/elapsed and, when waiting, what it is waiting for |
+| `?notice=1&kind=…&text=…&ttl=…[&left=…]` | a pushed one-liner | the Notice page, until the TTL runs out |
 
 The same channel also carries the settings channel and the WiFi credentials
 request — see below.
@@ -44,6 +45,40 @@ be tested without OpenCode. The device advertises `usage-monitor.local` over
 mDNS (`ESPmDNS`) so the plugin needs no DHCP IP — and where mDNS does not cross a
 segment (an office VLAN), the ladder in `tools/monitor-send.sh` carries the device's
 IP instead.
+
+**Two windows at once.** `session=` is a short client-chosen token (7 characters;
+every byte costs three in a percent-encoded query), and the device keeps a small
+table keyed by it (`src/parse/agent_sessions.h`). One window finishing no longer
+clears another's `running`; the screen shows `waiting` if *any* session is
+waiting, otherwise `running`, with the context of the session that owns it (the
+one blocked longest, else the most recently active). The thinking screen says
+`2 running` when more than one is active. A request without `session=` (an older
+plugin, `tools/status-ping.sh`) is the single empty-id session, so both kinds
+coexist.
+
+**A session that goes silent is forgotten.** Nothing sends `done` when a host
+crashes or a laptop sleeps, so a session not heard from for 45 minutes
+(`AGENT_SESSION_TTL_MS`) is dropped — silently: no chime, no wake, because that is
+neither success nor failure. The plugin heartbeats its active state every ten
+minutes (`heartbeatMs`) to keep a long build alive; the device treats a repeat of
+the same state as a no-op on screen, so a heartbeat cannot re-open an animation
+you dismissed with Key1, while a *state change* (a new question) does.
+
+**Notices.** `?notice=…` is the one remote string that outlives its request:
+it stays on the Notice page for its TTL. The TTL is mandatory (an unexpiring
+notice is a lie waiting to happen), the text passes the same sanitiser and caps
+as `?agent=`, and the countdown (`left=`) is to the event, not to the expiry:
+
+```sh
+tools/status-notice.sh "Standup in 8 min" --kind meeting --left 480 --ttl 900
+tools/status-notice.sh "deploy 1.4.2 is live" --ttl 600
+tools/status-notice.sh ""                       # clear it now (?notice=1&clear=1)
+```
+
+It is signed over the whole query like the settings channel, so the text is bound
+to the key. It is delivered by `monitor-send.sh`, i.e. the same HTTP → BLE ladder,
+and it does *not* wake the panel: the display is only ever dimmed, so a reminder
+is readable when you look without a chatty producer keeping the device awake.
 
 **Auth.** Port 80 is reachable by anyone on the LAN, so the endpoint takes an
 HMAC-SHA256 signature over `"<state>|<unixSeconds>"` in `X-Sig` / `X-Ts`
@@ -196,10 +231,11 @@ point: a VLAN boundary, a network that blocks multicast, or an AP that associate
 and then carries nothing (docs/network-polling.md) all break an HTTP request — and
 none of them mean anything to BLE, which never touches IP.
 
-**Scope: only what the host initiates** — `?state=`, the settings channel and the
-WiFi credentials request (which is *only* reachable over BLE until the credentials
-work). usage/weather/moon/air are fetches *the device* makes out to the internet
-and still need WiFi; BLE cannot stand in for them, and nothing pretends otherwise.
+**Scope: only what the host initiates** — `?state=`, `?agent=`, `?notice=`, the
+settings channel and the WiFi credentials request (which is *only* reachable over
+BLE until the credentials work). usage/weather/forecast/moon/air are fetches *the
+device* makes out to the internet and still need WiFi; BLE cannot stand in for
+them, and nothing pretends otherwise.
 OTA is the one host-initiated path not covered (yet) — `ArduinoOTA` is UDP-based
 and has no BLE equivalent here.
 

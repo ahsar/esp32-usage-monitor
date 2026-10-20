@@ -28,6 +28,7 @@ struct FetchSeed {
   WeatherData weather;
   MoonData    moon;
   AirData     air;
+  ForecastData forecast;
 };
 
 // One finished job. `ok` false = fetch/parse failed; the payload then carries
@@ -39,6 +40,7 @@ struct FetchResult {
   WeatherData weather;
   MoonData    moon;
   AirData     air;
+  ForecastData forecast;
 };
 
 // Create the worker task and initialise the token store. Call once from setup()

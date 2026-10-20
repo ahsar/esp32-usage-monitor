@@ -12,4 +12,12 @@
 // spend/pace/OVER and its threshold cues, and the Health page. The agent kind is
 // the one that matters for version skew: an older firmware parses `?agent=…` as
 // the settings channel and answers 400, so the plugin needs this build.
-#define FW_VERSION "0.5.0"
+//
+// 0.6.0: the trust/data batch — usage data age + tap-to-refresh, even-burn
+// verdicts for the weekly/monthly meters, a persisted trend ring, concurrent
+// agent sessions, the Notice page (`?notice=…`) and the three-day forecast card.
+// Two of those change the wire: `?agent=` gained `session=`, and `?notice=` is a
+// new kind an older firmware would answer 400 (it is the settings branch). The
+// session field is optional, so an older plugin still works; the reverse (a new
+// plugin on 0.5.0) loses only the multi-session aggregation.
+#define FW_VERSION "0.6.0"

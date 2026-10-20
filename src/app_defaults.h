@@ -21,6 +21,7 @@
 #define DEFAULT_POLL_USAGE_S     60          // active usage poll
 #define DEFAULT_POLL_USAGE_IDLE_S 180        // usage poll while idle
 #define DEFAULT_POLL_WEATHER_S   1800
+#define DEFAULT_POLL_FORECAST_S  10800      // 3-day forecast changes slowly
 #define DEFAULT_POLL_AIR_S       3600
 #define DEFAULT_POLL_MOON_S      43200
 #define DEFAULT_CHIME_VOLUME     3           // index into chime.cpp's amplitude table

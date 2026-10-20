@@ -3,12 +3,13 @@
 
 // Recent samples of the rolling (5-hour) meter, for the trend page.
 //
-// RAM only: the history is a "what has this window been doing lately" view, so
-// losing it on reboot is fine and it keeps flash writes off the hot path (the
-// ingest runs from serviceFetch() every usage poll). One sample per poll, so
-// 120 samples is ~2 h at the active 60 s cadence and ~6 h when idle.
+// One sample per successful usage poll, so 120 samples is ~2 h at the active
+// 60 s cadence and ~6 h when idle. The ring itself is RAM; trend_store.cpp
+// persists it to /trend.txt (wall-clock epochs) in between, so a reboot or an
+// OTA restores the curve instead of blanking the page. Nothing here touches
+// flash: the ingest runs from serviceFetch() on the loop task.
 struct TrendPoint {
-  uint32_t t;               // seconds, monotonic since boot
+  uint32_t t;               // seconds on the trend timeline (see trend_store.h)
   uint64_t usedMicroCents;  // rolling-window spend at that instant
   uint8_t  pct;             // rolling-window percent
 };

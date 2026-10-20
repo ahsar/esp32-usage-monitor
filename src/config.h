@@ -36,6 +36,7 @@ struct AppConfig {
   uint16_t poll_usage_s;        // active usage poll
   uint16_t poll_usage_idle_s;   // usage poll when idle
   uint16_t poll_weather_s;
+  uint16_t poll_forecast_s;     // Open-Meteo daily forecast
   uint16_t poll_air_s;
   uint16_t poll_moon_s;
 
@@ -77,6 +78,7 @@ inline void configDefaults(AppConfig& cfg) {  memset(&cfg, 0, sizeof(cfg));
   cfg.poll_usage_s      = DEFAULT_POLL_USAGE_S;
   cfg.poll_usage_idle_s = DEFAULT_POLL_USAGE_IDLE_S;
   cfg.poll_weather_s    = DEFAULT_POLL_WEATHER_S;
+  cfg.poll_forecast_s   = DEFAULT_POLL_FORECAST_S;
   cfg.poll_air_s        = DEFAULT_POLL_AIR_S;
   cfg.poll_moon_s       = DEFAULT_POLL_MOON_S;
   cfg.chime             = true;
@@ -160,6 +162,10 @@ inline bool loadConfig(AppConfig& cfg) {
   n = cfg.poll_weather_s;
   cfgLoadNumber(doc, "poll_weather_s", n, config_limits::otherPollOk);
   cfg.poll_weather_s = (uint16_t)n;
+
+  n = cfg.poll_forecast_s;
+  cfgLoadNumber(doc, "poll_forecast_s", n, config_limits::otherPollOk);
+  cfg.poll_forecast_s = (uint16_t)n;
 
   n = cfg.poll_air_s;
   cfgLoadNumber(doc, "poll_air_s", n, config_limits::otherPollOk);

@@ -1,8 +1,8 @@
 // Network poll scheduling + failure policy. See poller.h for the contract.
 //
 // Every bit of state here was lifted verbatim out of main.cpp so the behaviour
-// is unchanged: the same `Interval` timers, the same usage → weather → moon →
-// air priority, and the same exponential backoff caps.
+// is unchanged: the same `Interval` timers, the same usage → weather → forecast
+// → moon → air priority, and the same exponential backoff caps.
 #include "poller.h"
 #include "app_defaults.h"
 
@@ -15,12 +15,13 @@ PollerConfig g_cfg;
 // numbers are the constants from app_defaults.h, not a second copy of them.
 Interval s_ivUsage(DEFAULT_POLL_USAGE_S * 1000u);
 Interval s_ivWeather(DEFAULT_POLL_WEATHER_S * 1000u);
+Interval s_ivForecast(DEFAULT_POLL_FORECAST_S * 1000u);
 Interval s_ivMoon(DEFAULT_POLL_MOON_S * 1000u);
 Interval s_ivAir(DEFAULT_POLL_AIR_S * 1000u);
 
-// Indexed by FetchJob (1..FETCH_AIR); slot 0 is unused.
-uint32_t s_failStreak[FETCH_AIR + 1];
-uint32_t s_cooldownUntil[FETCH_AIR + 1];
+// Indexed by FetchJob (1..FETCH_FORECAST); slot 0 is unused.
+uint32_t s_failStreak[FETCH_FORECAST + 1];
+uint32_t s_cooldownUntil[FETCH_FORECAST + 1];
 uint32_t s_wedgeCount = 0;
 
 // Transport health (see pollerRoamDue()). Deliberately separate from the
@@ -31,10 +32,11 @@ uint32_t s_roamCooldownUntil = 0;
 
 Interval* intervalFor(FetchJob job) {
   switch (job) {
-    case FETCH_WEATHER: return &s_ivWeather;
-    case FETCH_MOON:    return &s_ivMoon;
-    case FETCH_AIR:     return &s_ivAir;
-    default:            return &s_ivUsage;
+    case FETCH_WEATHER:  return &s_ivWeather;
+    case FETCH_FORECAST: return &s_ivForecast;
+    case FETCH_MOON:     return &s_ivMoon;
+    case FETCH_AIR:      return &s_ivAir;
+    default:             return &s_ivUsage;
   }
 }
 
@@ -44,11 +46,12 @@ void pollerInit(const PollerConfig& cfg) {
   g_cfg = cfg;
   // Also drop every latch, so a fresh init (boot, or a test's setUp) starts from
   // the same state as a freshly constructed timer.
-  s_ivUsage   = Interval(cfg.usageActiveMs);
-  s_ivWeather = Interval(cfg.weatherMs);
-  s_ivMoon    = Interval(cfg.moonMs);
-  s_ivAir     = Interval(cfg.airMs);
-  for (int j = 1; j <= FETCH_AIR; ++j) {
+  s_ivUsage    = Interval(cfg.usageActiveMs);
+  s_ivWeather  = Interval(cfg.weatherMs);
+  s_ivForecast = Interval(cfg.forecastMs);
+  s_ivMoon     = Interval(cfg.moonMs);
+  s_ivAir      = Interval(cfg.airMs);
+  for (int j = 1; j <= FETCH_FORECAST; ++j) {
     s_failStreak[j]    = 0;
     s_cooldownUntil[j] = 0;
   }
@@ -75,6 +78,10 @@ bool pollerSelect(uint32_t now, bool tokensValid, bool hasAirToken, FetchJob* ou
   }
   if (s_ivWeather.due(now) && !pollerCoolingDown(FETCH_WEATHER, now)) {
     *outJob = FETCH_WEATHER;
+    return true;
+  }
+  if (s_ivForecast.due(now) && !pollerCoolingDown(FETCH_FORECAST, now)) {
+    *outJob = FETCH_FORECAST;
     return true;
   }
   if (s_ivMoon.due(now) && !pollerCoolingDown(FETCH_MOON, now)) {
@@ -134,8 +141,15 @@ void pollerRoamAttempted(uint32_t now) {
 void pollerForceAll() {
   s_ivUsage.forcePending();
   s_ivWeather.forcePending();
+  s_ivForecast.forcePending();
   s_ivMoon.forcePending();
   s_ivAir.forcePending();
+}
+
+void pollerForce(FetchJob job, uint32_t now) {
+  if (job < FETCH_USAGE || job > FETCH_FORECAST) return;
+  s_cooldownUntil[job] = 0;
+  intervalFor(job)->forcePending();
 }
 
 void pollerForceUsageIfStale(uint32_t now, uint32_t staleMs) {
@@ -151,7 +165,7 @@ void pollerPauseFor(FetchJob job, uint32_t now, uint32_t ms) {
 }
 
 void pollerPauseAll(uint32_t now, uint32_t ms) {
-  for (int j = 1; j <= FETCH_AIR; ++j) s_cooldownUntil[j] = now + ms;
+  for (int j = 1; j <= FETCH_FORECAST; ++j) s_cooldownUntil[j] = now + ms;
 }
 
 bool pollerJobWedged(uint32_t ageMs) { return ageMs >= g_cfg.jobDeadlineMs; }

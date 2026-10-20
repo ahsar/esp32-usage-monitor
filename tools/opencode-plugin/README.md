@@ -30,18 +30,29 @@ even after a DHCP move.
 
 | OpenCode V2 event | Device request | Effect |
 | --- | --- | --- |
-| `session.execution.started` | `GET /?agent=1&state=running&repo=…&tool=…` | "Thinking…" + repo/tool/elapsed, wakes the panel |
-| `permission.asked` / `question.asked` | `GET /?agent=1&state=waiting&repo=…&note=…` | "Needs you" + *what* it is waiting for + attention beep |
-| `session.execution.succeeded` | `GET /?agent=1&state=done` | rising two-beep cue |
-| `session.execution.interrupted` | `GET /?agent=1&state=done` | rising two-beep cue |
-| `session.execution.failed` | `GET /?agent=1&state=failed` | low beep |
-| `permission.replied` / `permission.rejected` | `GET /?agent=1&state=running&…` | back to working |
-| `question.replied` / `question.rejected` | `GET /?agent=1&state=running&…` | back to working |
+| `session.execution.started` | `GET /?agent=1&state=running&session=…&repo=…&tool=…` | "Thinking…" + repo/tool/elapsed, wakes the panel |
+| `permission.asked` / `question.asked` | `GET /?agent=1&state=waiting&session=…&repo=…&note=…` | "Needs you" + *what* it is waiting for + attention beep |
+| `session.execution.succeeded` | `GET /?agent=1&state=done&session=…` | rising two-beep cue |
+| `session.execution.interrupted` | `GET /?agent=1&state=done&session=…` | rising two-beep cue |
+| `session.execution.failed` | `GET /?agent=1&state=failed&session=…` | low beep |
+| `permission.replied` / `permission.rejected` | `GET /?agent=1&state=running&session=…&…` | back to working |
+| `question.replied` / `question.rejected` | `GET /?agent=1&state=running&session=…&…` | back to working |
 
 Only *transitions* are sent — the key is the whole query, so a repeat of the same
 state *and* context is dropped while a different tool inside one running session
 still repaints — and each request is fire-and-forget with a short timeout. A
 device that is off, asleep, or on another network can never slow OpenCode down.
+
+**`session` is what makes two windows work.** The plugin maps each OpenCode
+session id to a short token (`s1`, `s2`, …) and sends it on every state,
+`done`/`failed` included, so the device removes the right entry instead of
+clearing "the" agent state. Two windows working at once show `2 running`; a
+`waiting` in either one owns the screen. While a session is active the plugin also
+**re-sends its last state every ten minutes** (`heartbeatMs`): the device treats a
+repeat as a no-op on screen, but it keeps the session alive, so a host that
+crashes is forgotten after 45 minutes instead of leaving "Thinking…" up for hours.
+A heartbeat cannot re-open a screen you dismissed with Key1; only a state change
+does.
 
 **Context (the `repo`/`tool`/`note` fields).** `repo` is the basename of the
 OpenCode server's working directory — the session's project root. `tool` is the
@@ -196,6 +207,9 @@ Add it to the **global** config so every project reports to the device
 omitted, in which case `url` is used if set, then the `ESP32_MONITOR_URLS`
 (comma-separated) / `ESP32_MONITOR_URL` environment variables, and finally
 `http://usage-monitor.local`. The bridge is appended unless `"ble": false`.
+`heartbeatMs` (default 600000) is how often an active session re-sends its state
+so a crashed host is forgotten; set it to 0 to disable the heartbeat (the device
+then drops the screen 45 minutes after the last real event).
 
 ### 4. Restart the OpenCode service
 

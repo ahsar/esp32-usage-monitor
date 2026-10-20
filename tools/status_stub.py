@@ -7,7 +7,8 @@ It checks the same signatures the firmware does:
 
     ?state=...   HMAC-SHA256 over "<state>|<X-Ts>"
     ?<settings>  HMAC-SHA256 over "<raw query>|<X-Ts>"   (e.g. "chime=0&brightness=4")
-    ?agent=...   the same rule (the animation's context: repo/tool/note)
+    ?agent=...   the same rule (the animation's context: repo/tool/note/session)
+    ?notice=...  the same rule (the Notice page: kind/text/ttl/left, or clear=1)
     ?wifi_...    the same rule (the device's credentials channel; the payload is
                  echoed redacted, because it carries a passphrase)
 

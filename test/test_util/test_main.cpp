@@ -25,6 +25,9 @@
 #include "util/usage_pace.h"
 #include "util/usage_alert.h"
 #include "util/health_util.h"
+#include "util/trend_store_util.h"
+#include "parse/notice_parse.h"
+#include "parse/agent_sessions.h"
 #include "ui_model.h"
 
 void setUp() {}
@@ -1348,6 +1351,299 @@ void test_settings_json_rejects_non_numeric_location(void) {
   TEST_ASSERT_EQUAL_INT(480, s.tz_offset_min);
 }
 
+// ---- even-burn pace, notices, sessions, forecast, trend file --------------
+
+void test_usage_pace_even(void) {
+  using namespace usage_pace;
+  // A week: one day in = 14% elapsed. Ten points of slack puts the line at 24%.
+  const uint32_t reset = WINDOW_WEEK_SEC - 86400;
+  TEST_ASSERT_EQUAL_INT(14, elapsedPct(WINDOW_WEEK_SEC, reset));
+  TEST_ASSERT_EQUAL_INT(PACE_ON_TRACK, evenVerdict(20, WINDOW_WEEK_SEC, reset));
+  TEST_ASSERT_EQUAL_INT(PACE_ON_TRACK, evenVerdict(24, WINDOW_WEEK_SEC, reset));
+  TEST_ASSERT_EQUAL_INT(PACE_OVER,     evenVerdict(25, WINDOW_WEEK_SEC, reset));
+  TEST_ASSERT_EQUAL_INT(PACE_OVER,     evenVerdict(30, WINDOW_WEEK_SEC, reset));
+
+  // Resetting right now: the percentage may still be the old window's.
+  TEST_ASSERT_EQUAL_INT(PACE_UNKNOWN, evenVerdict(90, WINDOW_WEEK_SEC, 0));
+  // A countdown longer than the window means the two disagree; not negative.
+  TEST_ASSERT_EQUAL_INT(0, elapsedPct(WINDOW_WEEK_SEC, WINDOW_WEEK_SEC + 100));
+  TEST_ASSERT_EQUAL_INT(PACE_UNKNOWN,
+                        evenVerdict(90, WINDOW_WEEK_SEC, WINDOW_WEEK_SEC + 100));
+  // Fresh window: any burst beyond the slack is over-pace, and a small one is not.
+  TEST_ASSERT_EQUAL_INT(PACE_OVER,     evenVerdict(11, WINDOW_MONTH_SEC, WINDOW_MONTH_SEC));
+  TEST_ASSERT_EQUAL_INT(PACE_ON_TRACK, evenVerdict(5,  WINDOW_MONTH_SEC, WINDOW_MONTH_SEC));
+  // …and a negative percentage is clamped, not flipped into "over".
+  TEST_ASSERT_EQUAL_INT(PACE_ON_TRACK, evenVerdict(-5, WINDOW_MONTH_SEC, WINDOW_MONTH_SEC));
+}
+
+void test_weekday_from_iso(void) {
+  TEST_ASSERT_EQUAL_INT(4, weekdayFromIsoDate("2026-10-08"));   // Thursday
+  TEST_ASSERT_EQUAL_INT(2, weekdayFromIsoDate("2026-10-20"));   // Tuesday
+  TEST_ASSERT_EQUAL_INT(0, weekdayFromIsoDate("2026-10-18"));   // Sunday
+  TEST_ASSERT_EQUAL_INT(-1, weekdayFromIsoDate("nope"));
+  TEST_ASSERT_EQUAL_INT(-1, weekdayFromIsoDate(nullptr));
+}
+
+void test_notice_parse_full(void) {
+  NoticeRequest r;
+  char err[96] = {0};
+  TEST_ASSERT_TRUE(noticeParse(
+      "notice=1&kind=meeting&text=Standup%20in%208%20min&ttl=900&left=480",
+      r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("meeting", r.kind);
+  TEST_ASSERT_EQUAL_STRING("Standup in 8 min", r.text);
+  TEST_ASSERT_EQUAL_UINT32(900, r.ttlSec);
+  TEST_ASSERT_EQUAL_UINT32(480, r.leftSec);
+  TEST_ASSERT_TRUE(r.hasLeft);
+}
+
+void test_notice_parse_defaults_and_unknown_keys(void) {
+  NoticeRequest r;
+  char err[96] = {0};
+  // No kind → "note"; no left → no countdown; unknown keys ignored so a newer
+  // client can add a field without a firmware update.
+  TEST_ASSERT_TRUE(noticeParse("notice=1&text=hello&ttl=60&future=x", r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("note", r.kind);
+  TEST_ASSERT_EQUAL_STRING("hello", r.text);
+  TEST_ASSERT_FALSE(r.hasLeft);
+}
+
+void test_notice_parse_clear(void) {
+  NoticeRequest r;
+  char err[96] = {0};
+  // Clearing needs neither text nor TTL: there is nothing left to expire.
+  TEST_ASSERT_TRUE(noticeParse("notice=1&clear=1", r, err, sizeof(err)));
+  TEST_ASSERT_TRUE(r.clear);
+
+  TEST_ASSERT_TRUE(noticeParse("notice=1&clear=on&text=ignored", r, err, sizeof(err)));
+  TEST_ASSERT_TRUE(r.clear);
+  TEST_ASSERT_FALSE(noticeParse("notice=1&clear=maybe", r, err, sizeof(err)));
+}
+
+void test_notice_parse_strips_control_bytes(void) {
+  NoticeRequest r;
+  char err[96] = {0};
+  // Same rule as the agent text: refusing the whole notice over one stray byte
+  // would be worse than dropping the byte.
+  TEST_ASSERT_TRUE(noticeParse("notice=1&text=a%0Ab%7Fc&ttl=60", r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("abc", r.text);
+}
+
+void test_notice_parse_rejects(void) {
+  NoticeRequest r;
+  char err[96] = {0};
+  TEST_ASSERT_FALSE(noticeParse(nullptr, r, err, sizeof(err)));
+  TEST_ASSERT_FALSE(noticeParse("", r, err, sizeof(err)));
+  TEST_ASSERT_FALSE(noticeParse("text=hi&ttl=60", r, err, sizeof(err)));       // no marker
+  TEST_ASSERT_FALSE(noticeParse("notice=1&ttl=60", r, err, sizeof(err)));      // no text
+  TEST_ASSERT_FALSE(noticeParse("notice=1&text=hi", r, err, sizeof(err)));     // no ttl
+  TEST_ASSERT_FALSE(noticeParse("notice=1&text=hi&ttl=0", r, err, sizeof(err)));
+  TEST_ASSERT_FALSE(noticeParse("notice=1&text=hi&ttl=86401", r, err, sizeof(err)));
+  TEST_ASSERT_FALSE(noticeParse("notice=1&text=hi&ttl=60x", r, err, sizeof(err)));
+  TEST_ASSERT_FALSE(noticeParse("notice=1&text=hi&ttl=-1", r, err, sizeof(err)));
+  TEST_ASSERT_FALSE(noticeParse("notice=1&text=hi&ttl=60&left=9999999", r, err, sizeof(err)));
+  TEST_ASSERT_FALSE(noticeParse("notice=1&text=&ttl=60", r, err, sizeof(err)));
+}
+
+void test_notice_parse_length_budget(void) {
+  // The point of the caps: a fully percent-encoded request still fits the 384
+  // bytes both transports accept. 63 text chars + 11 kind chars is the worst
+  // case, so fill them with characters that encode to three bytes each.
+  char kind[12], text[64], encKind[64], encText[256], q[512];
+  memset(kind, '/', 11); kind[11] = '\0';
+  memset(text, ' ', 63); text[63] = '\0';
+  TEST_ASSERT_TRUE(urlEncode(kind, encKind, sizeof(encKind)));
+  TEST_ASSERT_TRUE(urlEncode(text, encText, sizeof(encText)));
+  snprintf(q, sizeof(q), "notice=1&kind=%s&text=%s&ttl=86400&left=604800", encKind, encText);
+  TEST_ASSERT_LESS_THAN_UINT32(384, strlen(q));
+  NoticeRequest r;
+  char err[96] = {0};
+  TEST_ASSERT_TRUE(noticeParse(q, r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_UINT32(11, strlen(r.kind));
+}
+
+void test_agent_parse_session(void) {
+  AgentRequest r;
+  char err[96] = {0};
+  TEST_ASSERT_TRUE(agentParse("agent=1&state=running&session=s12&repo=x", r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("s12", r.session);
+  TEST_ASSERT_EQUAL_STRING("x", r.info.repo);
+
+  // 7 characters is the cap (8 with the NUL): the budget has no room for more.
+  AgentRequest s;
+  TEST_ASSERT_TRUE(agentParse("agent=1&state=running&session=1234567", s, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("1234567", s.session);
+  AgentRequest t;
+  TEST_ASSERT_FALSE(agentParse("agent=1&state=running&session=12345678", t, err, sizeof(err)));
+}
+
+void test_agent_parse_length_budget(void) {
+  // The session field is what made this budget tight: every character costs
+  // three bytes when percent-encoded, and the whole request has to stay inside
+  // STATUS_QUERY_MAX (384) or it cannot be signed / sent over BLE at all.
+  char repo[28], tool[20], note[52], q[512], enc[1024];
+  memset(repo, ' ', 27); repo[27] = '\0';
+  memset(tool, ' ', 19); tool[19] = '\0';
+  memset(note, ' ', 51); note[51] = '\0';
+
+  char eRepo[128], eTool[96], eNote[256];
+  TEST_ASSERT_TRUE(urlEncode(repo, eRepo, sizeof(eRepo)));
+  TEST_ASSERT_TRUE(urlEncode(tool, eTool, sizeof(eTool)));
+  TEST_ASSERT_TRUE(urlEncode(note, eNote, sizeof(eNote)));
+  snprintf(q, sizeof(q), "agent=1&state=running&session=1234567&repo=%s&tool=%s&note=%s",
+           eRepo, eTool, eNote);
+  TEST_ASSERT_LESS_THAN_UINT32(384, strlen(q));
+
+  AgentRequest r;
+  char err[96] = {0};
+  TEST_ASSERT_TRUE(agentParse(q, r, err, sizeof(err)));
+  TEST_ASSERT_EQUAL_STRING("1234567", r.session);
+  TEST_ASSERT_EQUAL_UINT32(27, strlen(r.info.repo));
+}
+
+void test_agent_sessions_aggregate(void) {
+  AgentTable t;
+  agentSessionsClear(t);
+  AgentInfo a, b;
+  agentInfoClear(a); strcpy(a.repo, "alpha");
+  agentInfoClear(b); strcpy(b.repo, "beta");
+
+  TEST_ASSERT_NULL(agentSessionsStateName(t));
+  TEST_ASSERT_TRUE(agentSessionsApply(t, "s1", "running", a, 1000));
+  TEST_ASSERT_EQUAL_STRING("running", agentSessionsStateName(t));
+  TEST_ASSERT_TRUE(agentSessionsApply(t, "s2", "running", b, 2000));
+  TEST_ASSERT_EQUAL_INT(2, agentSessionsActive(t));
+  // The most recently heard from owns the context on the thinking screen.
+  TEST_ASSERT_EQUAL_STRING("beta", agentSessionsInfo(t)->repo);
+
+  // Waiting wins over running, and the session blocked longest owns it.
+  TEST_ASSERT_TRUE(agentSessionsApply(t, "s1", "waiting", a, 3000));
+  TEST_ASSERT_EQUAL_STRING("waiting", agentSessionsStateName(t));
+  TEST_ASSERT_EQUAL_STRING("alpha", agentSessionsInfo(t)->repo);
+  TEST_ASSERT_EQUAL_UINT32(3000, agentSessionsSince(t, 9000));
+
+  // One window finishing leaves the other alone — the bug this table exists for.
+  TEST_ASSERT_TRUE(agentSessionsApply(t, "s1", "done", AgentInfo{}, 4000));
+  TEST_ASSERT_EQUAL_STRING("running", agentSessionsStateName(t));
+  TEST_ASSERT_EQUAL_STRING("beta", agentSessionsInfo(t)->repo);
+
+  TEST_ASSERT_TRUE(agentSessionsApply(t, "s2", "failed", AgentInfo{}, 5000));
+  TEST_ASSERT_NULL(agentSessionsStateName(t));
+  TEST_ASSERT_TRUE(t.lastEndedFailed);
+
+  // A completion with no matching session is the old quiet case.
+  TEST_ASSERT_FALSE(agentSessionsApply(t, "nope", "done", AgentInfo{}, 6000));
+}
+
+void test_agent_sessions_generation(void) {
+  AgentTable t;
+  AgentInfo a;
+  agentInfoClear(a);
+  agentSessionsApply(t, "s1", "running", a, 0);
+  const uint32_t g = t.generation;
+
+  // A heartbeat is not a state change: a screen dismissed with Key1 stays down.
+  TEST_ASSERT_FALSE(agentSessionsApply(t, "s1", "running", a, 1000));
+  TEST_ASSERT_EQUAL_UINT32(g, t.generation);
+
+  // A real transition re-opens it.
+  TEST_ASSERT_TRUE(agentSessionsApply(t, "s1", "waiting", a, 2000));
+  TEST_ASSERT_TRUE(t.generation != g);
+}
+
+void test_agent_sessions_expire(void) {
+  AgentTable t;
+  AgentInfo a;
+  agentInfoClear(a);
+  agentSessionsApply(t, "s1", "running", a, 0);
+  agentSessionsApply(t, "s2", "waiting", a, 1000);
+
+  TEST_ASSERT_EQUAL_INT(0, agentSessionsExpire(t, AGENT_SESSION_TTL_MS - 1, AGENT_SESSION_TTL_MS));
+  // s1 was last heard at 0, so it is the first to go.
+  TEST_ASSERT_EQUAL_INT(1, agentSessionsExpire(t, AGENT_SESSION_TTL_MS, AGENT_SESSION_TTL_MS));
+  TEST_ASSERT_EQUAL_STRING("waiting", agentSessionsStateName(t));
+
+  TEST_ASSERT_EQUAL_INT(1, agentSessionsExpire(t, 1000 + AGENT_SESSION_TTL_MS, AGENT_SESSION_TTL_MS));
+  TEST_ASSERT_NULL(agentSessionsStateName(t));
+  // Silence is not a failure: it must not queue the failure chime.
+  TEST_ASSERT_FALSE(t.lastEndedFailed);
+}
+
+void test_agent_sessions_capacity(void) {
+  AgentTable t;
+  AgentInfo a;
+  agentInfoClear(a);
+  char id[16];
+  // One more than the table holds: the quietest is evicted, the newest is kept.
+  for (int i = 0; i < AGENT_MAX_SESSIONS + 1; i++) {
+    snprintf(id, sizeof(id), "s%d", i);
+    TEST_ASSERT_TRUE(agentSessionsApply(t, id, "running", a, 1000 + i));
+  }
+  TEST_ASSERT_EQUAL_INT(AGENT_MAX_SESSIONS, t.n);
+}
+
+void test_forecast_parse(void) {
+  const char* body =
+      "{\"daily\":{\"time\":[\"2026-10-20\",\"2026-10-21\",\"2026-10-22\"],"
+      "\"weather_code\":[3,61,0],"
+      "\"temperature_2m_max\":[18.4,16.6,20.2],"
+      "\"temperature_2m_min\":[9.1,8.4,7.0],"
+      "\"precipitation_probability_max\":[20,80,null]}}";
+  ForecastData f;
+  TEST_ASSERT_TRUE(forecastParseJson(body, f));
+  TEST_ASSERT_EQUAL_STRING("Today", f.day[0].label);
+  TEST_ASSERT_EQUAL_STRING("Tomorrow", f.day[1].label);
+  TEST_ASSERT_EQUAL_STRING("Thu", f.day[2].label);
+  TEST_ASSERT_EQUAL_INT(18, f.day[0].maxC);
+  TEST_ASSERT_EQUAL_INT(9, f.day[0].minC);
+  TEST_ASSERT_EQUAL_STRING("Overcast", f.day[0].cond);
+  TEST_ASSERT_EQUAL_STRING("Rain", f.day[1].cond);
+  TEST_ASSERT_EQUAL_INT(80, f.day[1].rainPct);
+  // A null chance is unknown, never "0% chance".
+  TEST_ASSERT_EQUAL_INT(-1, f.day[2].rainPct);
+}
+
+void test_forecast_parse_rejects(void) {
+  ForecastData f;
+  TEST_ASSERT_FALSE(forecastParseJson("not json", f));
+  TEST_ASSERT_FALSE(forecastParseJson("{}", f));
+  TEST_ASSERT_FALSE(forecastParseJson("{\"daily\":{\"time\":[\"2026-10-20\"]}}", f));
+  TEST_ASSERT_FALSE(forecastParseJson(
+      "{\"daily\":{\"time\":[],\"temperature_2m_max\":[],\"temperature_2m_min\":[]}}", f));
+}
+
+void test_forecast_path(void) {
+  char p[224];
+  TEST_ASSERT_TRUE(forecastApiPath(39.9042, 116.4074, p, sizeof(p)));
+  TEST_ASSERT_NOT_NULL(strstr(p, "latitude=39.9042"));
+  TEST_ASSERT_NOT_NULL(strstr(p, "forecast_days=3"));
+  TEST_ASSERT_NOT_NULL(strstr(p, "timezone=auto"));
+  // The cap is part of the contract: the request must not be truncated.
+  TEST_ASSERT_LESS_THAN_UINT32(sizeof(p), strlen(p));
+}
+
+void test_trend_store_line(void) {
+  TrendRecord r;
+  r.epoch = 1791436863u;
+  r.usedMicroCents = 320000000ULL;
+  r.pct = 45;
+
+  char buf[64];
+  TEST_ASSERT_EQUAL_INT(23, trendStoreLine(r, buf, sizeof(buf)));
+  TEST_ASSERT_EQUAL_STRING("1791436863,320000000,45", buf);
+
+  TrendRecord out;
+  TEST_ASSERT_TRUE(trendStoreParseLine(buf, out));
+  TEST_ASSERT_EQUAL_UINT32(r.epoch, out.epoch);
+  TEST_ASSERT_EQUAL_UINT64(r.usedMicroCents, out.usedMicroCents);
+  TEST_ASSERT_EQUAL_UINT8(r.pct, out.pct);
+
+  TEST_ASSERT_FALSE(trendStoreParseLine("", out));
+  TEST_ASSERT_FALSE(trendStoreParseLine("1791436863,320000000", out));   // truncated
+  TEST_ASSERT_FALSE(trendStoreParseLine("0,1,2", out));                  // no wall clock
+  TEST_ASSERT_FALSE(trendStoreParseLine("1791436863,1,101", out));       // pct > 100
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_civil_epoch_unix_origin);
@@ -1449,5 +1745,23 @@ int main(int, char**) {
   RUN_TEST(test_status_machine_transitions);
   RUN_TEST(test_config_limits);
   RUN_TEST(test_settings_json_rejects_non_numeric_location);
+  RUN_TEST(test_usage_pace_even);
+  RUN_TEST(test_weekday_from_iso);
+  RUN_TEST(test_notice_parse_full);
+  RUN_TEST(test_notice_parse_defaults_and_unknown_keys);
+  RUN_TEST(test_notice_parse_clear);
+  RUN_TEST(test_notice_parse_strips_control_bytes);
+  RUN_TEST(test_notice_parse_rejects);
+  RUN_TEST(test_notice_parse_length_budget);
+  RUN_TEST(test_agent_parse_session);
+  RUN_TEST(test_agent_parse_length_budget);
+  RUN_TEST(test_agent_sessions_aggregate);
+  RUN_TEST(test_agent_sessions_generation);
+  RUN_TEST(test_agent_sessions_expire);
+  RUN_TEST(test_agent_sessions_capacity);
+  RUN_TEST(test_forecast_parse);
+  RUN_TEST(test_forecast_parse_rejects);
+  RUN_TEST(test_forecast_path);
+  RUN_TEST(test_trend_store_line);
   return UNITY_END();
 }

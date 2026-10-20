@@ -13,6 +13,7 @@ static PollerConfig testCfg() {
       /* usageActiveMs    */ 60000,
       /* usageIdleMs      */ 180000,
       /* weatherMs        */ 1800000,
+      /* forecastMs       */ 10800000,
       /* moonMs           */ 43200000,
       /* airMs            */ 3600000,
       /* backoffBaseMs    */ 60000,
@@ -34,6 +35,7 @@ void tearDown() {}
 // (pollerInit() leaves them all pending, exactly like a fresh boot.)
 static void parkOthers(uint32_t now) {
   pollerStarted(FETCH_WEATHER, now);
+  pollerStarted(FETCH_FORECAST, now);
   pollerStarted(FETCH_MOON, now);
   pollerStarted(FETCH_AIR, now);
 }
@@ -58,6 +60,8 @@ void test_priority_order_and_air_gate(void) {
   pollerStarted(job, 0);
   TEST_ASSERT_TRUE(pollerSelect(0, true, false, &job)); TEST_ASSERT_EQUAL(FETCH_WEATHER, job);
   pollerStarted(job, 0);
+  TEST_ASSERT_TRUE(pollerSelect(0, true, false, &job)); TEST_ASSERT_EQUAL(FETCH_FORECAST, job);
+  pollerStarted(job, 0);
   TEST_ASSERT_TRUE(pollerSelect(0, true, false, &job)); TEST_ASSERT_EQUAL(FETCH_MOON, job);
   pollerStarted(job, 0);
   // Nothing left: air needs a token.
@@ -74,8 +78,10 @@ void test_started_arms_timer(void) {
   TEST_ASSERT_EQUAL(FETCH_USAGE, job);
   pollerStarted(job, 0);
 
-  // The other three are still pending, so they drain before usage comes due.
+  // The other four are still pending, so they drain before usage comes due.
   TEST_ASSERT_TRUE(pollerSelect(30000, true, true, &job)); TEST_ASSERT_EQUAL(FETCH_WEATHER, job);
+  pollerStarted(job, 30000);
+  TEST_ASSERT_TRUE(pollerSelect(30000, true, true, &job)); TEST_ASSERT_EQUAL(FETCH_FORECAST, job);
   pollerStarted(job, 30000);
   TEST_ASSERT_TRUE(pollerSelect(30000, true, true, &job)); TEST_ASSERT_EQUAL(FETCH_MOON, job);
   pollerStarted(job, 30000);
@@ -176,21 +182,40 @@ void test_failure_rearms_timer(void) {
   TEST_ASSERT_TRUE(pollerSelect(0, true, true, &job));
   TEST_ASSERT_EQUAL(FETCH_WEATHER, job);
   pollerStarted(job, 0);
+  // Park the rest so only weather's timing is under test here.
+  pollerStarted(FETCH_FORECAST, 0);
+  pollerStarted(FETCH_MOON, 0);
+  pollerStarted(FETCH_AIR, 0);
 
   pollerResult(FETCH_WEATHER, false, true, 1000);   // fails at t=1 s
   TEST_ASSERT_TRUE(pollerCoolingDown(FETCH_WEATHER, 1000));
 
-  // Still inside the cooldown, so the re-armed timer must not actually run
-  // (moon/air are pending and take the slot instead).
-  TEST_ASSERT_TRUE(pollerSelect(60000, false, true, &job));
-  TEST_ASSERT_EQUAL(FETCH_MOON, job);
+  // Still inside the cooldown, so the re-armed timer must not actually run —
+  // and nothing else is due either, so the slot stays empty.
+  TEST_ASSERT_FALSE(pollerSelect(60000, false, true, &job));
 
   // One minute later the cooldown is spent: weather is back, 60 s after the
   // failure — not 30 minutes, and without any key press or reconnect. (Without
-  // the re-arm this returns FETCH_MOON too, because the interval alone would
-  // keep weather out of rotation until t=1800 s.)
+  // the re-arm this stays empty, because the interval alone would keep weather
+  // out of rotation until t=1800 s.)
   TEST_ASSERT_TRUE(pollerSelect(61000, false, true, &job));
   TEST_ASSERT_EQUAL(FETCH_WEATHER, job);
+}
+
+// A manual refresh (a tap on the title bar) bypasses the backoff: the person
+// asking has already decided the screen is stale.
+void test_force_job_clears_backoff(void) {
+  parkOthers(0);
+  pollerResult(FETCH_FORECAST, false, true, 0);
+  TEST_ASSERT_TRUE(pollerCoolingDown(FETCH_FORECAST, 1000));
+
+  FetchJob job;
+  TEST_ASSERT_FALSE(pollerSelect(1000, false, false, &job));   // parked + cooling
+
+  pollerForce(FETCH_FORECAST, 1000);
+  TEST_ASSERT_FALSE(pollerCoolingDown(FETCH_FORECAST, 1000));
+  TEST_ASSERT_TRUE(pollerSelect(1000, false, false, &job));
+  TEST_ASSERT_EQUAL(FETCH_FORECAST, job);
 }
 
 void test_pause_for(void) {
@@ -209,6 +234,7 @@ void test_pause_all_blocks_every_job(void) {
   TEST_ASSERT_FALSE(pollerSelect(1000, true, true, &job));
   TEST_ASSERT_TRUE(pollerCoolingDown(FETCH_USAGE, 1000));
   TEST_ASSERT_TRUE(pollerCoolingDown(FETCH_WEATHER, 1000));
+  TEST_ASSERT_TRUE(pollerCoolingDown(FETCH_FORECAST, 1000));
   TEST_ASSERT_TRUE(pollerCoolingDown(FETCH_MOON, 1000));
   TEST_ASSERT_TRUE(pollerCoolingDown(FETCH_AIR, 1000));
 
@@ -307,6 +333,7 @@ int main(int argc, char** argv) {
   RUN_TEST(test_cooldown_blocks_then_expires);
   RUN_TEST(test_success_clears_backoff);
   RUN_TEST(test_failure_rearms_timer);
+  RUN_TEST(test_force_job_clears_backoff);
   RUN_TEST(test_pause_for);
   RUN_TEST(test_pause_all_blocks_every_job);
   RUN_TEST(test_pause_all_zero_clears);

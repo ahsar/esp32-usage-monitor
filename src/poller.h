@@ -14,6 +14,7 @@ struct PollerConfig {
   uint32_t usageActiveMs;   // poll_usage_s
   uint32_t usageIdleMs;     // poll_usage_idle_s
   uint32_t weatherMs;
+  uint32_t forecastMs;
   uint32_t moonMs;
   uint32_t airMs;
   uint32_t backoffBaseMs;   // first failure: this, then ×2 per further streak
@@ -74,6 +75,12 @@ void pollerRoamAttempted(uint32_t now);
 
 // Force every poller due now (used right after WiFi associates).
 void pollerForceAll();
+
+// Force one job due now *and* clear its backoff, for a manual refresh (a tap on
+// the status bar). The cooldown exists to protect a dead host from the
+// scheduler, not from a person who has just decided the screen is stale — but
+// the caller rate-limits it so a tap cannot become a poll storm.
+void pollerForce(FetchJob job, uint32_t now);
 
 // screenWake(): force a usage poll when the meter has gone stale, rate-limited
 // so a chatty status webhook cannot spam fetches.
