@@ -8,9 +8,10 @@ and a clock — and the panel reacts while the agent is working.
   <img src="docs/screens/usage.png" width="300" alt="Usage page with the 5-hour, weekly and monthly meters">
 </p>
 
-Four pages (Weather · Usage · Trend · Clock) driven by touch or key, five
-weather cards, an OpenCode status bridge with chimes, and a Trend page that plots
-spend rate and time-to-limit.
+Five pages (Weather · Usage · Trend · Clock · Health) driven by touch or key,
+five weather cards, an OpenCode status bridge with chimes, a Trend page that
+plots spend rate and time-to-limit, and a Health page for the device's own link,
+memory and fetch timings.
 
 ## Screens
 
@@ -21,6 +22,8 @@ spend rate and time-to-limit.
   <img src="docs/screens/clock.png" width="200" alt="Clock page">
   <br>
   <sub><b>Weather</b> (Now card) &nbsp;·&nbsp; <b>Usage</b> &nbsp;·&nbsp; <b>Trend</b> &nbsp;·&nbsp; <b>Clock</b></sub>
+  <br>
+  <sub>(the fifth page, <b>Health</b> — link, memory and last-fetch timings — is not pictured)</sub>
 </p>
 
 The Weather page holds five vertical cards — swipe up/down to move between them:
@@ -40,20 +43,27 @@ current weather card. These are real captures from the device — see
 
 ## Features
 
-- **Four horizontal pages** — Weather ↔ Usage ↔ Trend ↔ Clock: swipe, tap or
-  press Key1.
+- **Five horizontal pages** — Weather ↔ Usage ↔ Trend ↔ Clock ↔ Health: swipe,
+  tap or press Key1.
 - **Five weather cards** — Now → Sun → Air → Moon → Moonrise/Moonset.
-- **Usage meters** — 5-hour rolling / weekly / monthly, each with a reset
-  countdown; the bars go green, yellow above 30% and red above 60%. When the
-  OAuth token needs re-authorising the page says so — and how — instead of
-  drawing bars that look like a fetch still in flight.
+- **Usage meters** — 5-hour rolling / weekly / monthly, each with a spend figure
+  (`$3.20/$10.00`) and a reset countdown; the bars go green, yellow above 30% and
+  red above 60%. The 5-hour row says **OVER** when the current rate projects past
+  the limit before the reset, and crossing 80% / 100% plays a cue once per
+  window. When the OAuth token needs re-authorising the page says so — and how —
+  instead of drawing bars that look like a fetch still in flight.
 - **Trend page** — 5-hour rolling spend, `$/h` burn rate, estimated time to
   limit, plus a cumulative spend curve and per-poll bars. The history ring is
   RAM-only, so it starts empty on every boot and fills as polls land.
 - **Status bridge** — an OpenCode plugin drives the device over HTTP: a
   "Thinking…" animation while the agent works, "Needs you" plus an attention
   beep when it asks for permission, and a two-beep / low-beep cue when a session
-  succeeds or fails.
+  succeeds or fails. The screens carry context too — the project, the tool and
+  the elapsed time while it works, and what it is actually asking for when it
+  needs you.
+- **Health page** — the device's own state on the panel: WiFi rssi, uptime, free
+  heap (internal / PSRAM), the outcome and age of the last fetch and its DNS/TLS
+  timings, and the firmware version. All of it used to need a USB cable.
 - **Chimes** are synthesised at boot on the ES8311 codec — nothing to upload. Soft
   struck notes rather than beeps, with a loudness (`volume`) you can set live.
 - **Remote settings** — chime (and its volume), brightness and the whole location (place,
@@ -296,7 +306,7 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
     and the panel shows the connect as it happens. `tools/wifi-setup.sh
     --forget` clears the credentials and brings the setup screen back.
 - **Pages.** Swipe left/right (or tap) to move between Weather / Usage / Trend /
-  Clock. On the Weather page, swipe up/down for the five cards.
+  Clock / Health. On the Weather page, swipe up/down for the five cards.
 - **Key1** cycles pages, and dismisses the "Thinking…" / "Needs you" animation.
 - **Power key** (middle, the AXP `PWRON` input): tap to power on, hold ~2.5 s to
   shut down. The press that switched the device on is ignored, so holding the key
@@ -310,14 +320,17 @@ agent's state:
 
 | OpenCode V2 event | Request | Device |
 |---|---|---|
-| `session.execution.started` | `?state=running` | "Thinking…" animation, wakes the panel |
-| `permission.asked` | `?state=waiting` | "Needs you" animation + attention beep |
-| `session.execution.succeeded` / `interrupted` | `?state=done` | rising two-beep cue |
-| `session.execution.failed` | `?state=failed` | low beep |
+| `session.execution.started` | `?agent=1&state=running&repo=…&tool=…` | "Thinking…" + project/tool/elapsed, wakes the panel |
+| `permission.asked` / `question.asked` | `?agent=1&state=waiting&repo=…&note=…` | "Needs you" + what it is asking for + attention beep |
+| `session.execution.succeeded` / `interrupted` | `?agent=1&state=done` | rising two-beep cue |
+| `session.execution.failed` | `?agent=1&state=failed` | low beep |
 
-Every request is signed with `HMAC-SHA256(status_key, "<state>|<unixSeconds>")`
-in `X-Sig` / `X-Ts`; a bad or missing signature gets `401` and changes nothing,
-and a ±60 s window blocks replays. See
+Every request is signed with `HMAC-SHA256(status_key, "<payload>|<unixSeconds>")`
+in `X-Sig` / `X-Ts` — the whole query for the `agent=` form, just the state word
+for a bare `?state=`; a bad or missing signature gets `401` and changes nothing,
+and a ±60 s window blocks replays. The context travels in the signed query on
+purpose: the animation screen is the one place remote text is drawn, and it must
+not be possible to edit it into a captured ping. See
 [`tools/opencode-plugin/README.md`](tools/opencode-plugin/README.md) for setup,
 and `tools/status-ping.sh` to drive the endpoint by hand.
 
@@ -410,8 +423,9 @@ all. See
 │   ├── frame_dump.cpp/h     # -DFRAME_DUMP screen walker (screenshot tool)
 │   ├── diag.cpp/h           # boot/fetch freeze diagnostics
 │   ├── usage_display.h      # public UI drawing API
-│   ├── ui/                  # cards, trend, primitives, icons, lvgl_text, theme
-│   ├── parse/               # header-only parsers (usage/weather/moon/air/settings)
+│   ├── ui/                  # cards, trend, health, primitives, icons, lvgl_text, theme
+│   ├── parse/               # header-only parsers (usage/weather/moon/air/settings,
+│   │                        #   agent context) + status machine
 │   ├── util/                # dependency-free helpers (host-unit-tested)
 │   ├── voice/               # I2S audio (ES8311, chimes)
 │   ├── boards/              # per-board pin definitions
@@ -426,9 +440,10 @@ all. See
 ## Tests
 
 The pure helpers under `src/util/` (epoch/date parsing, weather-icon kind, moon
-phase, AQI label, trend math, `Interval`, the shared config/settings ranges), the
-header-only parsers under `src/parse/` (usage meters, wttr one-line, moon/air
-JSON, the settings/WiFi requests, the HTTP and BLE framings and the agent state
+phase, AQI label, trend math, the usage pace/alert thresholds and the health
+formatting, `Interval`, the shared config/settings ranges), the header-only
+parsers under `src/parse/` (usage meters, wttr one-line, moon/air JSON, the
+settings/WiFi/agent requests, the HTTP and BLE framings and the agent state
 machine) and the poll scheduler in `src/poller.cpp` are free of Arduino and
 hardware dependencies and covered by host unit tests — no hardware needed:
 

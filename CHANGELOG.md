@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-20
+
+### Added
+
+- **The agent screens say what the agent is doing.** The OpenCode plugin now
+  sends `?agent=1&state=…&repo=…&tool=…&note=…`, so "Thinking..." carries the
+  project, the tool and how long the run has been going, and "Needs you" carries
+  what it is waiting for (the permission's command, or the question) instead of
+  leaving you to walk back to the keyboard to find out.
+
+  It is a new request kind rather than more fields on `?state=`, and that is a
+  security decision: a state ping keeps its original value-only signature — the
+  device finds `state=running` anywhere in the query and signs just that word — so
+  any other field in the same query would arrive unsigned, and a LAN peer who
+  captured a ping could append `&note=…` and dictate what the panel says. The
+  agent request is signed over the whole raw query (the settings rule); unlike
+  settings it is *not* refused when `status_key` is empty — that rule protects a
+  persisted write, while this is as ephemeral as the animation it decorates, and
+  refusing it would break a keyless bench setup that worked before.
+  `src/parse/agent_parse.h` owns the caps (repo 27 / tool 19 / note 51 chars, so
+  a fully percent-encoded request still fits `STATUS_QUERY_MAX` and therefore the
+  BLE frame), strips control bytes, and rejects an unknown state or an over-long
+  field with a `400` that changes nothing; unknown *keys* are ignored, because
+  nothing here is persisted and a newer client should be able to add a field. The
+  card clips to the panel width itself rather than trusting the client's idea of
+  a 184 px screen. A client that sends no context — an older plugin,
+  `tools/status-ping.sh` — gets exactly the screens it had before.
+
+  The elapsed time is measured on the device (`statusChannelThinkingSince()`), not
+  taken from a host timestamp the device cannot check. `done`/`failed` carry no
+  context on purpose, so the device's copy is cleared and the next run cannot show
+  a stale repo. `question.asked`/`question.replied`/`question.rejected` now map to
+  waiting/running too: a question blocks the agent exactly like a permission.
+
+- **The Usage page shows spend, and warns before the window ends.** Each meter
+  now carries `$used/$limit` next to its reset countdown — not on the label's
+  line, where the percentage's font and right alignment would collide with it —
+  and the five-hour row can show an **OVER** tag when the current rate projects
+  past the limit before the reset.
+  The pace verdict is only computed for the five-hour meter: it is the only
+  meter whose rate the device measures, and fabricating one for the
+  weekly/monthly counts would be worse than showing none. It is `unknown` (no
+  tag) rather than `on track` when there is no measured rate yet, because a fresh
+  boot is not evidence of safety (`src/util/usage_pace.h`, host-tested). The rate
+  comes from the same ring the Trend page reads (`trendBurnPerHour()`), so the
+  two pages cannot disagree.
+
+  Crossing 80 % and 100 % of the rolling meter plays a cue once per window, from
+  `src/util/usage_alert.h` (also host-tested). A roll-over is detected from the
+  meter losing spend, not from its countdown: two consecutive windows of the same
+  length report the same countdown. The cues reuse the attention sounds
+  ("needs you" taps at 80 %, the low note at 100 %) rather than adding a fourth
+  note — a dedicated pair can follow if daily use finds them ambiguous. It
+  respects `chime`, fires only on a successful poll, and seeds from the boot state
+  so a device that powers on into a 96 % meter does not beep at every power-on.
+
+- **A Health page** (the fifth page, after Clock) that replaces reaching for a
+  USB cable: WiFi rssi (or `down`), uptime, free heap (internal / PSRAM), the
+  outcome and age of the last fetch, that fetch's DNS and TLS timings, the
+  firmware version, and a footer for `token ok • BLE on`. All of it used to be
+  visible only over USB CDC (`diag`'s periodic line, `tools/link_probe.py`), which
+  is exactly the cable you do not want to fetch when the panel looks stale. It is
+  read-only by construction — nothing on the page starts a fetch, writes flash or
+  touches the radio.
+
+  The data comes from `main.cpp`'s `refreshEnv()` filling a `HealthData`, not from
+  `src/diag.*`, which is documented as temporary and expected to be deleted. The
+  HTTP phase timings are a best-effort cross-task read of single aligned 32-bit
+  stores (`httpLastTimings()`) — a value can be one refresh stale, never torn, and
+  nothing acts on it. Health is the only page whose content moves on its own, so
+  `uiFrameKey()` mixes its fields in — but only while Health is visible, and only
+  after rounding (uptime to the minute, rssi to 5 dBm, heap to 4 KB/64 KB, fetch
+  age to 10 s), which keeps the "a static minute costs zero renders" property that
+  pays for the animation screens.
+
+## [0.4.0] - 2026-10-19
+
 ### Added
 
 - **The WiFi passphrase can be typed on a PC instead of the setup screen's
@@ -608,6 +685,8 @@ Initial tracked baseline: three-page UI (Weather / Usage / Clock) on the Wavesha
 ESP32-S3-Touch-AMOLED-2.16, OAuth device flow, WiFi setup UI, dirty-region display
 pushes, and host unit tests for the pure helpers and parsers.
 
-[Unreleased]: https://github.com/ahsar/esp32-usage-monitor/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ahsar/esp32-usage-monitor/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ahsar/esp32-usage-monitor/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/ahsar/esp32-usage-monitor/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/ahsar/esp32-usage-monitor/releases/tag/v0.3.0
 [0.1.0]: https://github.com/ahsar/esp32-usage-monitor/releases/tag/v0.1.0
