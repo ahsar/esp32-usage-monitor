@@ -2,7 +2,10 @@
 #include "ui/ui_internal.h"
 #include "usage_display.h"
 #include "ui/theme.h"
+#include "usage_history.h"
 #include "util/value_util.h"
+#include "util/trend_util.h"
+#include "util/usage_pace.h"
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -44,11 +47,25 @@ void uiDrawUsage(const UsageData& data, int ox, int oy) {
     return;
   }
 
-  struct Row { const char* label; int pct; uint32_t reset; };
+  // Only the five-hour meter gets a pace verdict: it is the only meter whose
+  // burn rate the device measures (the RAM ring the Trend page draws). Projecting
+  // the weekly/monthly counts at that rate would be a fiction — see
+  // util/usage_pace.h.
+  usage_pace::Verdict pace = usage_pace::verdict(
+      data.rollingUsedMicroCents, data.rollingLimitMicroCents,
+      trendBurnPerHour(), data.rollingResetSec);
+
+  struct Row {
+    const char* label; int pct; uint32_t reset;
+    uint64_t used, limit; bool paced;
+  };
   Row rows[3] = {
-    { "5-HOUR",  data.rollingPercent, data.rollingResetSec },
-    { "WEEKLY",  data.weeklyPercent,  data.weeklyResetSec  },
-    { "MONTHLY", data.monthlyPercent, data.monthlyResetSec },
+    { "5-HOUR",  data.rollingPercent, data.rollingResetSec,
+      data.rollingUsedMicroCents, data.rollingLimitMicroCents, true },
+    { "WEEKLY",  data.weeklyPercent,  data.weeklyResetSec,
+      data.weeklyUsedMicroCents,  data.weeklyLimitMicroCents,  false },
+    { "MONTHLY", data.monthlyPercent, data.monthlyResetSec,
+      data.monthlyUsedMicroCents, data.monthlyLimitMicroCents, false },
   };
 
   for (int i = 0; i < 3; i++) {
@@ -65,6 +82,24 @@ void uiDrawUsage(const UsageData& data, int ox, int oy) {
 
     roundBar(SAFE_L, top + 26, SAFE_W, 14, ok ? rows[i].pct : 0, col);
 
+    // Spend shares the countdown's line: "$3.20/$10.00" on the left, "resets in
+    // …" on the right. It cannot go on the label's line — the percentage is a
+    // 20 px font right-aligned in the same column, so a second right-aligned
+    // string there would sit on top of it. Compact (no spaces around the slash)
+    // because the longest realistic pair is still narrower than the gap.
+    char money[40];
+    if (!ok) {
+      snprintf(money, sizeof(money), "--");
+    } else if (rows[i].limit) {
+      char a[24], b[24];
+      trend::formatUsd(a, sizeof(a), rows[i].used);
+      trend::formatUsd(b, sizeof(b), rows[i].limit);
+      snprintf(money, sizeof(money), "%s/%s", a, b);
+    } else {
+      trend::formatUsd(money, sizeof(money), rows[i].used);
+    }
+    textAt(F_SMALL, COL_MUTED, SAFE_L, top + 50, money);
+
     char reset[24];
     if (!ok) { snprintf(reset, sizeof(reset), "no data"); }
     else if (rows[i].reset == 0) { snprintf(reset, sizeof(reset), "resetting soon"); }
@@ -74,6 +109,17 @@ void uiDrawUsage(const UsageData& data, int ox, int oy) {
       snprintf(reset, sizeof(reset), "resets in %s", t);
     }
     textRight(F_SMALL, COL_MUTED, SAFE_R, top + 50, reset);
+
+    // The verdict only ever *adds* a word, and the absence of a tag is the good
+    // case — nothing to decode. It sits between the spend and the countdown, and
+    // is dropped if this row's numbers ever leave no room (none of the shipped
+    // meters do), so it can never land on top of the countdown.
+    if (ok && rows[i].paced && pace == usage_pace::PACE_OVER) {
+      int x = SAFE_L + textW(F_SMALL, money) + 6;
+      int tagEnd = SAFE_R - textW(F_SMALL, reset) - 4;
+      if (x + textW(F_SMALL, "OVER") <= tagEnd)
+        textAt(F_SMALL, COL_YELLOW, x, top + 50, "OVER");
+    }
   }
 }
 

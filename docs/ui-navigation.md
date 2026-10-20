@@ -28,9 +28,28 @@ Text is rendered with LVGL Montserrat (anti-aliased, all copy in English) — se
 
 ## Usage page (and its "re-authorise" state)
 
-Three meters — 5-hour rolling / weekly / monthly — each with a reset countdown,
-drawn green under 30 %, yellow to 60 %, red above (`src/ui/cards.cpp`,
-`uiDrawUsage`). The page has one other state: when the worker has no usable
+Three meters — 5-hour rolling / weekly / monthly — each with a percentage, a bar,
+a spend figure (`$3.20/$10.00`, left of the countdown on the same line), and a
+reset countdown, drawn green under 30 %, yellow to 60 %, red above
+(`src/ui/cards.cpp`, `uiDrawUsage`).
+
+The 5-hour row can also carry an **OVER** tag (yellow, left of the countdown),
+from `src/util/usage_pace.h`: spend + (current rate × time to reset) is projected
+out to the reset, and the tag appears when that exceeds the limit. Only the
+5-hour meter gets a verdict: it is the only meter whose rate the device measures
+(the RAM ring the Trend page reads, `trendBurnPerHour()` — so the two pages
+cannot disagree), and projecting the weekly/monthly counts at that rate would be
+a fiction. With fewer than two samples the verdict is "unknown" and no tag is
+drawn, which is deliberate — a fresh boot is not evidence of safety.
+
+Crossing 80 % and 100 % of the rolling meter plays a cue (the "needs you" taps
+and the low note, reused) exactly once per window, from the host-tested state
+machine in `src/util/usage_alert.h`. A window roll-over is detected from the
+meter losing spend, not from its countdown: two windows of the same length
+report the same countdown. It respects the `chime` setting and, like the
+re-authorise cue, only ever fires on a successful poll.
+
+The page has one other state: when the worker has no usable
 refresh token, the bars are replaced by **AUTH NEEDED** (yellow) or **AUTH
 EXPIRED** (red, when the meter had data to lose) plus the way out —
 `run tools/authorize.py` / `then uploadfs` — because a token the endpoint has

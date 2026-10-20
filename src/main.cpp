@@ -20,6 +20,7 @@
 #include "usage_history.h"
 #include "poller.h"
 #include "util/interval.h"
+#include "util/usage_alert.h"
 #include "hw/hw.h"
 #include "hw/net.h"
 #include "voice/i2s_audio.h"
@@ -173,6 +174,14 @@ static UiEnv s_env;
 static bool s_authSeen  = false;   // the boot state has been sampled
 static bool s_authWasOk = true;
 static bool s_authCue   = false;   // to be played by loop()
+
+// Spend thresholds (80% / 100% of the rolling meter) are edges too, and much
+// more likely to repeat than a token death, so the crossing logic lives in its
+// own host-tested state machine (util/usage_alert.h). Here the events only arm a
+// one-shot flag; loop()'s chime dispatch consumes it on the task that owns audio.
+static usage_alert::State s_usageAlert;
+static bool s_usageCueWarn = false;
+static bool s_usageCueFull = false;
 
 static void refreshEnv(uint32_t now) {
     if (!s_ivEnv.due(now)) return;
@@ -529,6 +538,15 @@ static void serviceFetch() {
         if (res.job == FETCH_USAGE) {
             trendPush((uint32_t)(millis() / 1000u),
                       s_usage.rollingUsedMicroCents, s_usage.rollingPercent);
+
+            // Threshold cues. Only a successful poll feeds this: a stale cached
+            // meter must not re-arm a threshold that is already behind us.
+            switch (usage_alert::tick(s_usageAlert, s_usage.rollingPercent,
+                                      s_usage.rollingUsedMicroCents)) {
+                case usage_alert::EV_WARN: s_usageCueWarn = true; break;
+                case usage_alert::EV_FULL: s_usageCueFull = true; break;
+                default: break;
+            }
         }
         s_dataRev++;
     }
@@ -760,6 +778,12 @@ void loop() {
     // one chunk per loop() iteration cannot keep the I2S DMA fed.
     if (s_chimeEnabled) {
         if (s_authCue) { s_authCue = false; chimePlay(CHIME_FAILED); }
+        // Spend thresholds reuse the attention cues deliberately: 80% is "look at
+        // me" (the two soft taps) and 100% is "something went wrong" (the low
+        // note). A dedicated pair of notes can follow if the shared ones turn out
+        // to be ambiguous in daily use.
+        if (s_usageCueWarn) { s_usageCueWarn = false; chimePlay(CHIME_WAITING); }
+        if (s_usageCueFull) { s_usageCueFull = false; chimePlay(CHIME_FAILED); }
         switch (statusChannelTakeEvent()) {
             case STATUS_EV_DONE:    chimePlay(CHIME_DONE);    break;
             case STATUS_EV_FAILED:  chimePlay(CHIME_FAILED);  break;
@@ -768,6 +792,8 @@ void loop() {
         }
     } else {
         s_authCue = false;
+        s_usageCueWarn = false;
+        s_usageCueFull = false;
         statusChannelTakeEvent();   // drop it rather than fire it late
     }
 

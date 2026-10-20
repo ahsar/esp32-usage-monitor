@@ -25,3 +25,10 @@ const TrendPoint& trendAt(int i);
 // True when the newest sample's spend is below the previous one, i.e. the
 // window reset between the last two polls (the curve has a discontinuity).
 bool trendLastWasReset();
+
+// Spend rate over the whole retained window, in microcents/hour (0 when there
+// are fewer than two samples, or the window reset inside it). Both the Trend
+// page and the Usage page's pace verdict read the rate from here, so the two
+// cannot drift apart — and neither one derives it from a single poll interval,
+// which would be wild after a slow one.
+uint64_t trendBurnPerHour();

@@ -21,6 +21,8 @@
 #include "parse/status_machine.h"
 #include "util/config_limits.h"
 #include "util/trend_util.h"
+#include "util/usage_pace.h"
+#include "util/usage_alert.h"
 #include "ui_model.h"
 
 void setUp() {}
@@ -903,6 +905,82 @@ void test_trend_format_eta(void) {
   TEST_ASSERT_EQUAL_STRING("3d 4h", b);
 }
 
+// ---- usage pace -----------------------------------------------------------
+
+void test_usage_pace_verdict(void) {
+  // $1.00 of a $10.00 limit, $2.00/h, 1 h to reset → projected $3.00, on track.
+  TEST_ASSERT_EQUAL_INT(usage_pace::PACE_ON_TRACK,
+                        usage_pace::verdict(100000000ULL, 1000000000ULL, 200000000ULL, 3600));
+  // Same meter at $10.00/h → projected $11.00, over.
+  TEST_ASSERT_EQUAL_INT(usage_pace::PACE_OVER,
+                        usage_pace::verdict(100000000ULL, 1000000000ULL, 1000000000ULL, 3600));
+  // A zero rate is "not measured yet", never "safe".
+  TEST_ASSERT_EQUAL_INT(usage_pace::PACE_UNKNOWN,
+                        usage_pace::verdict(100000000ULL, 1000000000ULL, 0, 3600));
+  // A meter with no limit gets no verdict.
+  TEST_ASSERT_EQUAL_INT(usage_pace::PACE_UNKNOWN,
+                        usage_pace::verdict(100000000ULL, 0, 200000000ULL, 3600));
+  // Resetting right now: nothing to project.
+  TEST_ASSERT_EQUAL_INT(usage_pace::PACE_UNKNOWN,
+                        usage_pace::verdict(100000000ULL, 1000000000ULL, 200000000ULL, 0));
+}
+
+void test_usage_pace_projection(void) {
+  // $1.00 + ($2.00/h × 1800 s) = $2.00.
+  TEST_ASSERT_EQUAL_UINT64(200000000ULL,
+      usage_pace::projectedAtReset(100000000ULL, 200000000ULL, 1800));
+  // No burn → the projection is just what is already spent.
+  TEST_ASSERT_EQUAL_UINT64(100000000ULL,
+      usage_pace::projectedAtReset(100000000ULL, 0, 7200));
+}
+
+// ---- usage alert thresholds ----------------------------------------------
+
+void test_usage_alert_crossings(void) {
+  usage_alert::State s;
+  // Booting into a 96% meter is not a crossing — and no cue at every power-on.
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_NONE, usage_alert::tick(s, 96, 960));
+  // Neither is staying there.
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_NONE, usage_alert::tick(s, 97, 970));
+
+  usage_alert::State t;
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_NONE,   usage_alert::tick(t, 10, 100));
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_NONE,   usage_alert::tick(t, 79, 790));
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_WARN,   usage_alert::tick(t, 80, 800));
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_NONE,   usage_alert::tick(t, 85, 850));  // once
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_FULL,   usage_alert::tick(t, 100, 1000));
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_NONE,   usage_alert::tick(t, 100, 1000)); // once
+}
+
+void test_usage_alert_jump_is_one_cue(void) {
+  usage_alert::State s;
+  usage_alert::tick(s, 10, 100);
+  // 70 → 100 in one poll must not queue the 80% cue as well.
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_FULL, usage_alert::tick(s, 100, 1000));
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_NONE, usage_alert::tick(s, 100, 1000));
+}
+
+void test_usage_alert_rearms_after_reset(void) {
+  usage_alert::State s;
+  usage_alert::tick(s, 10, 100);
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_WARN, usage_alert::tick(s, 80, 800));
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_FULL, usage_alert::tick(s, 100, 1000));
+  // The window rolls over: spend drops, both thresholds re-arm.
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_NONE, usage_alert::tick(s, 2, 20));
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_WARN, usage_alert::tick(s, 81, 810));
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_FULL, usage_alert::tick(s, 100, 1000));
+}
+
+void test_usage_alert_reset_helper(void) {
+  usage_alert::State s;
+  usage_alert::tick(s, 10, 100);
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_WARN, usage_alert::tick(s, 90, 900));
+  usage_alert::reset(s);
+  TEST_ASSERT_FALSE(s.seen);
+  // A fresh seed, so a re-authorised device does not beep for an old crossing.
+  TEST_ASSERT_EQUAL_INT(usage_alert::EV_NONE, usage_alert::tick(s, 90, 900));
+}
+
 void test_usage_parse_micro_cents(void) {
   const char* json =
       "{\"access\":{\"meters\":{"
@@ -1205,6 +1283,12 @@ int main(int, char**) {
   RUN_TEST(test_trend_format_usd);
   RUN_TEST(test_trend_burn_and_eta);
   RUN_TEST(test_trend_format_eta);
+  RUN_TEST(test_usage_pace_verdict);
+  RUN_TEST(test_usage_pace_projection);
+  RUN_TEST(test_usage_alert_crossings);
+  RUN_TEST(test_usage_alert_jump_is_one_cue);
+  RUN_TEST(test_usage_alert_rearms_after_reset);
+  RUN_TEST(test_usage_alert_reset_helper);
   RUN_TEST(test_usage_parse_micro_cents);
   RUN_TEST(test_ui_model_page_wrap);
   RUN_TEST(test_ui_model_card_wrap);

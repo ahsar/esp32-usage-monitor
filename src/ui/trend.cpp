@@ -109,14 +109,9 @@ void uiDrawTrend(const UsageData& data, int ox, int oy) {
   // Rate + ETA come from the retained window, not a single poll, so one slow
   // interval doesn't produce a wild number.
   if (haveCost) {
-    uint64_t burn = 0;
-    if (n >= 2) {
-      const TrendPoint& a = trendAt(0);
-      const TrendPoint& b = trendAt(n - 1);
-      uint64_t delta = b.usedMicroCents > a.usedMicroCents
-                           ? b.usedMicroCents - a.usedMicroCents : 0;
-      burn = trend::burnPerHour(delta, b.t - a.t);
-    }
+    // The rate over the whole retained window (usage_history owns the rule, so
+    // the Usage page's pace verdict cannot disagree with this line).
+    uint64_t burn = trendBurnPerHour();
 
     char rate[24];
     trend::formatBurn(rate, sizeof(rate), burn);

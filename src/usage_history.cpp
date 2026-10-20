@@ -1,4 +1,5 @@
 #include "usage_history.h"
+#include "util/trend_util.h"
 #include <string.h>
 
 static TrendPoint s_pts[TREND_MAX];
@@ -39,3 +40,12 @@ const TrendPoint& trendAt(int i) {
 }
 
 bool trendLastWasReset() { return s_lastReset; }
+
+uint64_t trendBurnPerHour() {
+  if (s_count < 2) return 0;
+  const TrendPoint& a = s_pts[0];
+  const TrendPoint& b = s_pts[s_count - 1];
+  uint64_t delta = b.usedMicroCents > a.usedMicroCents
+                       ? b.usedMicroCents - a.usedMicroCents : 0;
+  return trend::burnPerHour(delta, b.t - a.t);
+}
