@@ -7,6 +7,12 @@ struct HttpResponse {
   String date;   // raw Date header value (used as a clock fallback)
 };
 
+// Phase timings (DNS resolve / TLS connect / body read) of the most recent
+// httpRequest(), for the Health page. Best-effort cross-task read — see the
+// note on the statics in http_client.cpp: each field is an aligned 32-bit
+// store, so a value can be one refresh stale but never torn. Display only.
+void httpLastTimings(uint32_t& dnsMs, uint32_t& tlsMs, uint32_t& readMs);
+
 // Blocking HTTP(S) request over TLS with chain verification against the ESP-IDF
 // CA bundle. `extraHeaders` is raw header lines terminated with "\r\n" (no
 // trailing blank line).

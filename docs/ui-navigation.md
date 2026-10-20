@@ -1,9 +1,9 @@
 # UI / navigation
 
-- Horizontal pages: **Weather ↔ Usage ↔ Trend ↔ Clock**.
+- Horizontal pages: **Weather ↔ Usage ↔ Trend ↔ Clock ↔ Health**.
 - Weather has vertical cards: **Now → Sun → Air → Moon → Moonrise**.
 - Both axes are **endless carousels**: dragging past the last page/card keeps
-  following the finger and brings in the far end (Clock ↔ Weather, Moonrise ↔
+  following the finger and brings in the far end (Health ↔ Weather, Moonrise ↔
   Now), and releasing commits the wrap. There is no end-of-strip resistance and
   no snapping back at the ends.
 - Drag follows the finger and snaps; tap advances; Key1 cycles. Dots: bottom row
@@ -90,6 +90,32 @@ Two things to keep in mind when editing this page:
   (controller running, service registered). The BLE library keeps no advertising
   state and exposes nothing to query (its GAP handlers are empty), so a scan from
   the PC — `tools/ble-bridge.py --scan` — remains the only real test.
+
+## Health page
+
+The last page (`src/ui/health.cpp`) is the device describing itself: WiFi (or
+`down`), uptime, free heap (internal / PSRAM), the outcome and age of the last
+fetch, that fetch's DNS and TLS timings, the firmware version, and a footer line
+for the two booleans (`token ok • BLE on`). It exists because all of that used to
+be visible only over USB CDC — `diag`'s periodic line and `tools/link_probe.py` —
+which is exactly the cable you do not want to reach for when the panel looks
+stale. It is read-only by construction: nothing on the page starts a fetch,
+writes flash or touches the radio.
+
+Data comes from `main.cpp`'s `refreshEnv()` (the existing 1 Hz tick) filling a
+`HealthData` (`src/data_types.h`), deliberately **not** from `src/diag.*`, which
+is documented as temporary. The two HTTP phase times are a best-effort
+cross-task read of single 32-bit words (`httpLastTimings()`).
+
+One layout note and one rendering note:
+
+- Page dots at `SAFE_B - 5` (= 211): content stays above y≈205, like Clock.
+- **The frame key is quantised for this page.** Health is the only page whose
+  content moves on its own, so `uiFrameKey()` mixes its fields in — but only while
+  Health is the visible page, and only after rounding (uptime to the minute, rssi
+  to 5 dBm, heap to 4 KB/64 KB, fetch age to 10 s). Raw values would mean a
+  full-frame push every second; the quantisation keeps the "a static minute costs
+  zero renders" property that pays for the animation screens.
 
 ## Trend page
 

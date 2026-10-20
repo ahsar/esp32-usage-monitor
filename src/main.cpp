@@ -28,11 +28,19 @@
 #include "version.h"
 #include <WiFi.h>
 #include <ESPmDNS.h>
+#include <esp_heap_caps.h>
 
 static UsageData s_usage;
 static WeatherData s_weather;
 static MoonData s_moon;
 static AirData s_air;
+// The device's own state (Health page). Sampling is cheap and lives in
+// refreshEnv(); what the last *fetch* did is recorded in serviceFetch(), the one
+// place that sees a finished job.
+static HealthData s_health;
+static int8_t   s_lastFetchJob    = 0;      // FetchJob of the last finished job
+static bool     s_lastFetchOk     = false;
+static uint32_t s_lastFetchDoneMs = 0;      // millis() of that finish, 0 = never
 static AppConfig s_cfg;
 // config.json as loaded, before /settings.json is overlaid. Every settings change
 // re-derives s_cfg from this, so clearing an override restores the configured
@@ -223,6 +231,24 @@ static void refreshEnv(uint32_t now) {
     }
     s_authWasOk = authOk;
     diagSetNet(s_env.online, (int)WiFi.status(), (int)WiFi.RSSI());
+
+    // The Health page's snapshot. Deliberately at the same 1 Hz cadence as the
+    // rest of the env: it is read-only, and the frame key quantises it further.
+    s_health.valid        = true;
+    s_health.online       = s_env.online;
+    s_health.rssi         = (int)WiFi.RSSI();
+    s_health.uptimeSec    = now / 1000u;
+    s_health.heapInternal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    s_health.heapPsram    = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    s_health.tokensValid  = authOk;
+    s_health.bleUp        = s_env.bleUp;
+    s_health.lastJob      = s_lastFetchJob;
+    s_health.lastOk       = s_lastFetchOk;
+    s_health.lastFetchAgeSec = s_lastFetchDoneMs
+                                   ? (now - s_lastFetchDoneMs) / 1000u : 0;
+    httpLastTimings(s_health.lastDnsMs, s_health.lastTlsMs, s_health.lastReadMs);
+    strlcpy(s_health.fwVersion, FW_VERSION, sizeof(s_health.fwVersion));
+
     uiSetEnv(s_env);
 }
 
@@ -276,6 +302,7 @@ static UiData currentUiData() {
     d.weather = &s_weather;
     d.moon    = &s_moon;
     d.air     = &s_air;
+    d.health  = &s_health;
     d.hasAir  = s_cfg.waqi_token[0] != 0;
     return d;
 }
@@ -310,6 +337,30 @@ static uint32_t uiFrameKey() {
     // The Usage page swaps its whole body for the "re-authorise" message, so a
     // token dying has to move the key or the stale bars would stay on screen.
     h = hashMix(h, s_env.authNeeded ? 1u : 0u);
+    // Health is the one page whose content moves on its own (rssi, uptime, heap,
+    // the age of the last fetch), so it has to be mixed in or the page would
+    // freeze at whatever it showed first. Only while it is the visible page:
+    // including it unconditionally would repaint every other page on every tick.
+    //
+    // Quantised on purpose. Raw values change every second, and every change is
+    // a full-frame push (16-70 ms) on a page nobody is looking at — the "a
+    // static minute costs zero renders" property is what pays for the animations
+    // elsewhere. Uptime is to the minute, rssi to 5 dBm, heap to 4 KB, the fetch
+    // age to 10 s; each is far below what the reader can act on.
+    if (pagerPage() == UI_PAGE_HEALTH) {
+        h = hashMix(h, (uint32_t)(s_health.rssi / 5));
+        h = hashMix(h, s_health.uptimeSec / 60u);
+        h = hashMix(h, s_health.heapInternal / 4096u);
+        h = hashMix(h, s_health.heapPsram / 65536u);
+        h = hashMix(h, s_health.lastFetchAgeSec / 10u);
+        h = hashMix(h, (uint32_t)s_health.lastJob |
+                       (s_health.lastOk ? 0x100u : 0) |
+                       (s_health.online ? 0x200u : 0) |
+                       (s_health.tokensValid ? 0x400u : 0) |
+                       (s_health.bleUp ? 0x800u : 0));
+        h = hashMix(h, s_health.lastDnsMs / 100u);
+        h = hashMix(h, s_health.lastTlsMs / 100u);
+    }
     h = hashMix(h, s_dataRev);
     return h;
 }
@@ -523,6 +574,13 @@ static void serviceFetch() {
     // Back the host off instead of retrying it every cycle: a blocked or
     // erroring endpoint must not keep occupying the single job slot.
     PollerOutcome oc = pollerResult(res.job, res.ok, !httpTransportFailed(), millis());
+
+    // What the Health page reports as "Last". Recorded here rather than in
+    // refreshEnv() so a failed poll counts too — the interesting case is often
+    // the one that did not succeed.
+    s_lastFetchJob    = (int8_t)res.job;
+    s_lastFetchOk     = res.ok;
+    s_lastFetchDoneMs = millis();
     if (!res.ok) {
         Serial.printf("fetch %s failed x%u; retry in %lus\n",
                       fetchJobName(res.job), (unsigned)oc.streak,

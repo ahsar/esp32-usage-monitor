@@ -12,6 +12,7 @@ static void drawPage(int page, int card, int ox, int oy, const UiData& d) {
     case UI_PAGE_USAGE: uiDrawUsage(*d.usage, ox, oy); break;
     case UI_PAGE_TREND: uiDrawTrend(*d.usage, ox, oy); break;
     case UI_PAGE_CLOCK: uiDrawClock(ox, oy); break;
+    case UI_PAGE_HEALTH: uiDrawHealth(*d.health, ox, oy); break;
     default:
       uiDrawWeatherCard(card, *d.weather, *d.moon, *d.air, d.hasAir, ox, oy);
       break;

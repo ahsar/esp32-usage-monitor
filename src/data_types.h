@@ -75,3 +75,29 @@ enum FetchJob : uint8_t {
   FETCH_MOON,
   FETCH_AIR,
 };
+
+// The device's own state, for the Health page: everything that used to be
+// visible only over USB CDC (`diag`'s periodic line, `link_probe.py`). Filled by
+// main.cpp's refreshEnv() from cheap sources only — no fetch, no flash, no I2C —
+// so it can ride the existing 1 Hz env tick.
+//
+// Deliberately *not* sourced from src/diag.*: that file is documented as
+// temporary, and a permanent page must not depend on the thing that is meant to
+// be deleted.
+struct HealthData {
+  bool     valid;             // false until the first refresh
+  bool     online;            // STA associated
+  int      rssi;              // dBm; downlink only (see hw/net.h)
+  uint32_t uptimeSec;
+  uint32_t heapInternal;      // bytes free in internal SRAM
+  uint32_t heapPsram;         // bytes free in PSRAM
+  bool     tokensValid;       // a usable refresh token is present
+  bool     bleUp;             // the BLE fallback came up (not proof it advertises)
+  int8_t   lastJob;           // FetchJob of the last finished job, 0 = none yet
+  bool     lastOk;            // …and whether it succeeded
+  uint32_t lastFetchAgeSec;   // seconds since that job finished
+  uint32_t lastDnsMs;         // phase timings of the last request attempted
+  uint32_t lastTlsMs;
+  uint32_t lastReadMs;
+  char     fwVersion[12];
+};

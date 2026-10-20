@@ -37,6 +37,21 @@ static const uint32_t DNS_HANDOVER_MS = 60000;
 // TLS handshake cap — the setter takes SECONDS (see the note in httpRequest()).
 static const uint32_t HANDSHAKE_TIMEOUT_S = 30;
 
+// Phase timings of the most recent request, for the Health page. Written only
+// by the fetch task (every httpRequest() runs there) and read by the loop task
+// for display; each field is a single aligned 32-bit store, so a reader can see
+// a mix of old and new values for one refresh but cannot see a torn one. That is
+// the whole contract — no locking, no snapshot task, because nothing acts on it.
+static volatile uint32_t s_lastDnsMs  = 0;
+static volatile uint32_t s_lastTlsMs  = 0;
+static volatile uint32_t s_lastReadMs = 0;
+
+void httpLastTimings(uint32_t& dnsMs, uint32_t& tlsMs, uint32_t& readMs) {
+  dnsMs  = s_lastDnsMs;
+  tlsMs  = s_lastTlsMs;
+  readMs = s_lastReadMs;
+}
+
 // See http_client.h: "the path carried nothing" flag for the last request.
 static bool s_transportFailed = false;
 
@@ -155,6 +170,8 @@ bool httpRequest(const char* host, const char* method, const char* path,
     return false;
   }
   uint32_t dnsMs = millis() - tDns;
+  s_lastDnsMs  = dnsMs;
+  s_lastReadMs = 0;          // a fresh attempt: don't show the previous read
 
   diagMark(DIAG_HTTP_CONNECT, 0);
   diagMarkHost(host);
@@ -170,6 +187,7 @@ bool httpRequest(const char* host, const char* method, const char* path,
     return false;
   }
   uint32_t connMs = millis() - tConn;
+  s_lastTlsMs = connMs;
   diagMark(DIAG_HTTP_CONNECTED, millis());
 
   size_t bodyLen = body ? strlen(body) : 0;
@@ -226,6 +244,7 @@ bool httpRequest(const char* host, const char* method, const char* path,
   diagMark(DIAG_HTTP_DONE, raw.length());
 
   uint32_t readMs = millis() - start;
+  s_lastReadMs = readMs;
   int hdrEnd = raw.indexOf("\r\n\r\n");
   if (hdrEnd < 0) {
     Serial.printf("http: %s no response headers ip=%s dns=%lums tls=%lums "

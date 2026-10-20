@@ -14,6 +14,10 @@ void uiDrawWeatherCard(int card, const WeatherData& w, const MoonData& m,
                        const AirData& a, bool hasAirToken, int ox, int oy);
 void uiDrawClock(int ox, int oy);
 
+// The device's own state: link, uptime, memory, the last fetch, firmware. Read
+// only — this page never causes a fetch, a flash write or a radio change.
+void uiDrawHealth(const HealthData& h, int ox, int oy);
+
 void uiDrawPageDots(int activePage);
 void uiDrawCardDots(int activeCard, int count);
 

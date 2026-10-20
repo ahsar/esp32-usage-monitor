@@ -23,6 +23,7 @@
 #include "util/trend_util.h"
 #include "util/usage_pace.h"
 #include "util/usage_alert.h"
+#include "util/health_util.h"
 #include "ui_model.h"
 
 void setUp() {}
@@ -981,6 +982,52 @@ void test_usage_alert_reset_helper(void) {
   TEST_ASSERT_EQUAL_INT(usage_alert::EV_NONE, usage_alert::tick(s, 90, 900));
 }
 
+// ---- health formatting ----------------------------------------------------
+
+void test_health_format_uptime(void) {
+  char b[16];
+  health_fmt::formatUptime(b, sizeof(b), 0);
+  TEST_ASSERT_EQUAL_STRING("0m", b);
+  health_fmt::formatUptime(b, sizeof(b), 42 * 60);
+  TEST_ASSERT_EQUAL_STRING("42m", b);
+  health_fmt::formatUptime(b, sizeof(b), 4 * 3600 + 2 * 60);
+  TEST_ASSERT_EQUAL_STRING("4h 02m", b);
+  health_fmt::formatUptime(b, sizeof(b), 3 * 86400 + 4 * 3600 + 59 * 60);
+  TEST_ASSERT_EQUAL_STRING("3d 04h", b);
+}
+
+void test_health_format_bytes(void) {
+  char b[16];
+  health_fmt::formatBytes(b, sizeof(b), 512);
+  TEST_ASSERT_EQUAL_STRING("512B", b);
+  health_fmt::formatBytes(b, sizeof(b), 4096);
+  TEST_ASSERT_EQUAL_STRING("4K", b);
+  health_fmt::formatBytes(b, sizeof(b), 1024u * 1024u + 400u * 1024u);
+  TEST_ASSERT_EQUAL_STRING("1.3M", b);
+}
+
+void test_health_format_age(void) {
+  char b[16];
+  health_fmt::formatAge(b, sizeof(b), 5);
+  TEST_ASSERT_EQUAL_STRING("5s", b);
+  health_fmt::formatAge(b, sizeof(b), 3 * 60 + 20);
+  TEST_ASSERT_EQUAL_STRING("3m", b);
+  health_fmt::formatAge(b, sizeof(b), 2 * 3600 + 30);
+  TEST_ASSERT_EQUAL_STRING("2h", b);
+  health_fmt::formatAge(b, sizeof(b), 86400 * 9);
+  TEST_ASSERT_EQUAL_STRING("9d", b);
+}
+
+void test_health_format_ms(void) {
+  char b[16];
+  health_fmt::formatMs(b, sizeof(b), 0);
+  TEST_ASSERT_EQUAL_STRING("0ms", b);
+  health_fmt::formatMs(b, sizeof(b), 820);
+  TEST_ASSERT_EQUAL_STRING("820ms", b);
+  health_fmt::formatMs(b, sizeof(b), 1840);
+  TEST_ASSERT_EQUAL_STRING("1.8s", b);
+}
+
 void test_usage_parse_micro_cents(void) {
   const char* json =
       "{\"access\":{\"meters\":{"
@@ -1289,6 +1336,10 @@ int main(int, char**) {
   RUN_TEST(test_usage_alert_jump_is_one_cue);
   RUN_TEST(test_usage_alert_rearms_after_reset);
   RUN_TEST(test_usage_alert_reset_helper);
+  RUN_TEST(test_health_format_uptime);
+  RUN_TEST(test_health_format_bytes);
+  RUN_TEST(test_health_format_age);
+  RUN_TEST(test_health_format_ms);
   RUN_TEST(test_usage_parse_micro_cents);
   RUN_TEST(test_ui_model_page_wrap);
   RUN_TEST(test_ui_model_card_wrap);
