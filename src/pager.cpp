@@ -120,7 +120,12 @@ bool pagerUpdate() {
   // A tap that woke the screen must not also page — but a *drag* that woke it
   // should still scroll, so the swallow only survives while the gesture is
   // still an undecided tap (cleared as soon as an axis locks below).
-  if (s_swallowTouch && !tp.down) s_swallowTouch = false;
+  //
+  // `justReleased` is exempt: the release frame is the one that *consumes* the
+  // swallow (see swallowTap below), so clearing it here first would make every
+  // swallowed tap page after all. The clause only exists to drop a swallow left
+  // behind when the touch ended without a release reaching us.
+  if (s_swallowTouch && !tp.down && !tp.justReleased) s_swallowTouch = false;
 
   if (tp.justPressed) {
     // A new touch landing on an in-flight commit used to silently cancel it
