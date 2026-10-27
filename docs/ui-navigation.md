@@ -117,6 +117,41 @@ a secret. It is also the answer to a real problem: mDNS does not cross a VLAN
 boundary, so `usage-monitor.local` can simply not resolve on a segmented network,
 and this saves reaching for a serial console to find the IP.
 
+### The charging animation
+
+The battery row (`drawBatteryRow()` in `src/ui/cards.cpp`) is the one animated
+thing outside the agent screens. While charging:
+
+- a **shimmer sweeps the whole pill**, left cap to right cap, once every 2 s
+  (`BAND_MS`) — like a phone's charging bar, not just the filled part: it is
+  bright where it crosses the fill and a dim wash where it crosses the empty
+  track, so the bar reads as one strip being fed. It is three overlapping rounded
+  pills trailing a bright head, clamped to the track, so it never squares off
+  either end of the bar;
+- the percentage and the `charging` word **breathe** between the pill's colour and
+  near-white (1.6 s), and a small bolt after them breathes with it
+  (`drawChargeBolt()`, its own 10 px glyph — the weather one is 18 px and offset);
+- two outlines just outside the pill **glow** on the same breath.
+
+`full` (`usbPresent` without `charging`) is deliberately **static**: one steady
+faint halo, no sweep. A device that keeps blinking after the charge finished is
+lying about its state, and the two conditions read differently at a glance because
+of it.
+
+Three pieces have to agree, and each has its own host-tested gate —
+`charge_anim::active(charging, dimmed, page)` in `src/util/charge_anim.h`:
+
+| Where | What it does |
+|---|---|
+| `uiFrameKey()` (`main.cpp`) | mixes `now / CHARGE_ANIM_MS` (80 ms ≈ 12 fps) only while the gate is open, so the sweep gets a repaint without making any other page or the dimmed panel pay for one |
+| `uiSetAnimMs()` (`main.cpp` → `primitives.cpp`) | hands the card a clock; **0 means "draw a static frame"**, which is what the dimmed panel and the `FRAME_DUMP` walk get |
+| `drawBatteryRow()` | draws the breath from that clock, so it moves exactly when the key moves |
+
+The *shape* of the sweep is pure math in `src/util/charge_anim.h` (band position,
+the fade-out at both ends that hides the wrap, and the "fill too short to animate"
+case), because a band that pops in at full brightness or spills over a rounded cap
+is a rendering bug no compiler catches. It is covered by `test/test_util`.
+
 Two things to keep in mind when editing this page:
 
 - **`uiDrawPageDots()` draws across it.** The page dots sit at `SAFE_B - 5`

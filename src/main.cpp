@@ -22,6 +22,7 @@
 #include "poller.h"
 #include "util/interval.h"
 #include "util/usage_alert.h"
+#include "util/charge_anim.h"
 #include "hw/hw.h"
 #include "hw/net.h"
 #include "voice/i2s_audio.h"
@@ -124,6 +125,12 @@ static const uint32_t IDLE_DIM_MS   = 30000;   // 30 s idle → dim
 static const uint8_t  DIM_LEVEL     = 0;       // BRIGHT_LUT[0] = 50/255
 static const uint32_t IDLE_NET_MS   = 30000;   // idle > this → slow the pollers
 static const uint32_t ANIM_FRAME_MS = 60;      // blink anims: cap the push rate
+// The Clock page's charging animation (the comet sweeping the battery pill).
+// ~12 fps: the sweep moves ~5 logical px per frame at the 2.4 s cycle, which
+// reads as motion, while a full-frame push is 16-70 ms — pushing at the agent
+// screens' 60 ms cadence would spend most of the loop inside the QSPI blit.
+// Slow it to 120 if the panel feels sluggish to the touch while on USB.
+static const uint32_t CHARGE_ANIM_MS = 80;
 
 // ---- fetch scheduling safety nets ------------------------------------------
 // A worker that stops making progress must never stop *every* poller again
@@ -368,7 +375,12 @@ static uint32_t hashMix(uint32_t h, uint32_t v) {
 // canvas would come out pixel-identical, so uiFrame() skips the render and the
 // full-frame push entirely — this is what keeps idle cost near zero without
 // diffing pixels.
-static uint32_t uiFrameKey() {
+//
+// `now` is only needed for the Clock page's charging animation: while that is
+// running the key has to move on its own or the sweep would freeze on its first
+// frame. The tick is gated on the animation being *visible* (see
+// charge_anim::active), so no other page and no dimmed panel pays for it.
+static uint32_t uiFrameKey(uint32_t now) {
     uint32_t flags = (s_env.timeValid ? 1u : 0u) | (s_env.online ? 2u : 0u) |
                      (s_env.charging  ? 4u : 0u) | (s_env.usbPresent ? 8u : 0u);
     uint32_t h = 2166136261u;
@@ -379,6 +391,12 @@ static uint32_t uiFrameKey() {
     h = hashMix(h, (uint32_t)s_env.hh);
     h = hashMix(h, (uint32_t)s_env.mm);
     h = hashMix(h, (uint32_t)s_env.batteryPct);
+    // The charging animation is the one thing on the Clock page that moves by
+    // itself. Only while it is actually running: awake, charging, and that page
+    // on screen — otherwise a plugged-in device would repaint every 80 ms while
+    // the user reads the Usage meter, and a dimmed panel would never settle.
+    if (charge_anim::active(s_env.charging, s_screenDim, pagerPage()))
+        h = hashMix(h, now / CHARGE_ANIM_MS);
     // The clock page shows these, and a DHCP lease can change both without any
     // other input, so they have to move the key or the page would keep rendering
     // the old address.
@@ -610,9 +628,14 @@ static void uiFrame(uint32_t now) {
     } else {
         // Re-render only when something visible actually changed: a static
         // minute costs zero renders and zero panel traffic.
-        uint32_t key = uiFrameKey();
+        uint32_t key = uiFrameKey(now);
         if (s_forceRender || !s_frameKeyValid || key != s_frameKey) {
             uint32_t t0 = millis();
+            // Animation clock for the cards. 0 means "static frame": it is what
+            // the dimmed panel and the FRAME_DUMP walk get, and it is why the
+            // card can draw a settled pill without knowing about idle state.
+            uiSetAnimMs(charge_anim::active(s_env.charging, s_screenDim, pagerPage())
+                            ? now : 0u);
             diagMark(DIAG_UI_RENDER, key);
             uiRender(currentUiData());
             diagMark(DIAG_UI_PUSH, key);

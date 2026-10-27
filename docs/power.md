@@ -31,6 +31,21 @@ Nothing changed ⇒ no render and no panel traffic at all. Most screens hold HH:
 (not seconds), so a static minute renders exactly once and the idle loop can run
 for minutes with zero CPU drawing and zero QSPI.
 
+The one exception is self-moving content, and it is mixed into the key only while
+it is actually on screen:
+
+- the **agent screens** (Thinking / Needs you) never touch the key — they draw on
+  their own cadence (`ANIM_FRAME_MS` = 60 ms) and invalidate the key when they end;
+- the **Clock page's charging sweep** is part of the page, so its tick *is* part
+  of the key: `now / CHARGE_ANIM_MS` (80 ms ≈ 12 fps) is mixed in only when
+  `charge_anim::active()` says charging + Clock visible + panel awake. Slower than
+  the agent screens on purpose: a 16–70 ms full-frame push at 60 ms spends most of
+  the loop inside the QSPI blit, and 5 logical px of travel per frame still reads
+  as motion. Going idle (dim) closes the gate, so the panel freezes on its last
+  frame instead of drawing in the dark — and the one repaint that closes it passes
+  `uiSetAnimMs(0)` to the cards, which is how the frozen frame comes out settled
+  rather than mid-sweep.
+
 Each render is a **full-frame push**: `hwDisplayPush()` (`src/hw/display.cpp`)
 blits the whole 368×448 window in one QSPI transaction. We deliberately do *not*
 track dirty rectangles any more — this CO5300 misbehaves when a frame is split

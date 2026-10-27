@@ -148,3 +148,9 @@ void uiBeginFrame() {
 }
 
 void uiSetEnv(const UiEnv& env) { g_env = env; }
+
+// 0 = static frame (see usage_display.h). A card asks for this rather than for a
+// flag so there is exactly one way to say "do not move".
+static uint32_t g_animMs = 0;
+void uiSetAnimMs(uint32_t ms) { g_animMs = ms; }
+uint32_t uiAnimMs() { return g_animMs; }

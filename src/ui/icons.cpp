@@ -64,6 +64,14 @@ static void drawFog(int cx, int cy, uint16_t c) {
   spr.fillRoundRect(X(cx - 14), Y(cy + 8), 28, 3, 2, c);
 }
 
+// The battery row's bolt: the same two-triangle shape as drawBolt(), scaled to
+// ~10 logical px so it sits on a text baseline. The weather glyph is 18 px tall
+// and offset for a sky icon — reusing it would push the whole row around.
+void drawChargeBolt(int cx, int cy, uint16_t c) {
+  spr.fillTriangle(X(cx - 1), Y(cy), X(cx + 4), Y(cy - 5), X(cx + 1), Y(cy), c);
+  spr.fillTriangle(X(cx + 1), Y(cy), X(cx - 4), Y(cy + 5), X(cx - 1), Y(cy), c);
+}
+
 void drawWeatherIcon(int kind, int cx, int cy) {
   switch (kind) {
     case 0:

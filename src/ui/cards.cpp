@@ -6,6 +6,7 @@
 #include "util/value_util.h"
 #include "util/trend_util.h"
 #include "util/usage_pace.h"
+#include "util/charge_anim.h"
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -360,6 +361,150 @@ void uiDrawWeatherCard(int card, const WeatherData& w, const MoonData& m,
 
 static const char* WEEKDAYS[7] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
 
+// ---- battery row -----------------------------------------------------------
+// The charging treatment lives on this page because this is the device's own
+// status page: a sweep and a breathing halo are the difference between "it is on
+// the desk" and "it is drinking power". It is the only animated content outside
+// the agent screens, so main.cpp gates it (charge_anim::active: charging + Clock
+// visible + panel awake) and hands the cards a clock through uiSetAnimMs().
+
+// Scale an RGB565 colour towards black (0..1). The background is black, so this
+// is a pure brightness ramp — enough for a glowing shape with no alpha blend.
+static uint16_t dim565(uint16_t c, float f) {
+  if (f < 0.0f) f = 0.0f;
+  if (f > 1.0f) f = 1.0f;
+  int r = (int)(((c >> 11) & 0x1F) * f + 0.5f);
+  int g = (int)(((c >>  5) & 0x3F) * f + 0.5f);
+  int b = (int)(( c        & 0x1F) * f + 0.5f);
+  return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+// Blend `a` towards `b` by t in [0,1]. dim565() can only darken, and the charging
+// highlight has to be brighter than the pill it sits in.
+static uint16_t mix565(uint16_t a, uint16_t b, float t) {
+  if (t < 0.0f) t = 0.0f;
+  if (t > 1.0f) t = 1.0f;
+  int ar = (a >> 11) & 0x1F, ag = (a >> 5) & 0x3F, ab = a & 0x1F;
+  int br = (b >> 11) & 0x1F, bg = (b >> 5) & 0x3F, bb = b & 0x1F;
+  int r  = (int)(ar + (br - ar) * t + 0.5f);
+  int g  = (int)(ag + (bg - ag) * t + 0.5f);
+  int bl = (int)(ab + (bb - ab) * t + 0.5f);
+  return (uint16_t)((r << 11) | (g << 5) | bl);
+}
+
+// One full breath over `periodMs`, in [0,1]; smooth at both ends (no strobe).
+static float breathe01(uint32_t elapsedMs, uint32_t periodMs) {
+  float phase = (float)(elapsedMs % periodMs) / (float)periodMs;
+  return 0.5f - 0.5f * cosf(2.0f * (float)M_PI * phase);
+}
+
+// The pill's geometry, shared by the bar, the halo and the sweep so they cannot
+// drift apart. BAR_R is the fill's own cap radius, which is what the sweep has to
+// keep away from (see charge_anim::sweep). BAR_Y sits 6 px below the row's
+// baseline: the halo needs room above the pill, and the text's descenders stop
+// at y≈158, so the outermost ring cannot read as an underline under the words.
+static const int BAR_Y   = 162;
+static const int BAR_H   = 12;
+static const int BAR_R   = (BAR_H - 2) / 2;
+static const int BAND_W  = 14;          // logical px, the comet's head
+static const uint32_t BAND_MS = 2000;   // one sweep, left cap to right cap of the
+                                        // whole track (phone-shimmer pace)
+
+// roundBar()'s fill maths, repeated here because the sweep needs to know how far
+// it may travel. Kept identical on purpose: if the two ever disagree the band
+// would poke out of the fill.
+static int barFillW(int pct) {
+  if (pct < 0) pct = 0;
+  if (pct > 100) pct = 100;
+  int fw = (SAFE_W - 2) * pct / 100;
+  if (fw > 0 && fw < BAR_H) fw = BAR_H;   // keep the pill cap intact
+  return fw;
+}
+
+// Halo around the pill: two outlines just outside it. Charging breathes them,
+// "plugged in and full" keeps one steady faint pair, and on battery there is no
+// halo at all. `k` is 0..1 brightness.
+static void drawChargeGlow(uint16_t col, bool plugged, float k) {
+  if (!plugged) return;
+  spr.drawRoundRect(X(SAFE_L - 2), Y(BAR_Y - 2), SAFE_W + 4, BAR_H + 4,
+                    (BAR_H + 4) / 2, dim565(col, 0.28f * k));
+  spr.drawRoundRect(X(SAFE_L - 3), Y(BAR_Y - 3), SAFE_W + 6, BAR_H + 6,
+                    (BAR_H + 6) / 2, dim565(col, 0.14f * k));
+}
+
+// One pill of the comet, clipped to [clipL, clipR). Slivers are skipped: a
+// rounded rect narrower than its own cap radius looks like a nick in the bar.
+static void cometPill(int l, int r, int clipL, int clipR, uint16_t col) {
+  if (l < clipL) l = clipL;
+  if (r > clipR) r = clipR;
+  if (r - l < 6) return;
+  spr.fillRoundRect(X(l), Y(BAR_Y) + 1, r - l, BAR_H - 2, BAR_R, col);
+}
+
+// The comet, sweeping the *whole* pill like a phone's charging shimmer: bright
+// where it crosses the fill, and a dim wash where it crosses the empty track, so
+// the strip reads as one bar being fed rather than only its filled part moving.
+//
+// Three overlapping pills trail the head, brightest at the front. Each is a
+// rounded rect of its own and is clamped to the track, so neither end of the bar
+// gets squared off — which is exactly what a plain rect at the extremes would do.
+// `animMs` is the uiAnimMs() clock.
+static void drawChargeSweep(int pct, uint32_t animMs, uint16_t col) {
+  const int trackX   = SAFE_L + 1;
+  const int trackW   = SAFE_W - 2;
+  const int trackEnd = trackX + trackW;
+  const int fillEnd  = trackX + barFillW(pct);
+
+  charge_anim::Band band =
+      charge_anim::sweep(animMs, trackX, trackW, BAND_MS, BAND_W, BAR_R);
+  if (band.w <= 0 || band.alpha == 0) return;
+
+  static const float kTrail[3] = { 0.85f, 0.50f, 0.28f };
+  const float a = (float)band.alpha / 255.0f;
+  for (int i = 2; i >= 0; i--) {
+    const int l = band.x - i * (band.w / 2);
+    const int r = l + band.w;
+    cometPill(l, r, trackX, fillEnd,  mix565(col,       COL_TEXT, kTrail[i] * a));
+    cometPill(l, r, fillEnd, trackEnd, mix565(COL_TRACK, col,     0.55f * kTrail[i] * a));
+  }
+}
+
+// "Battery 82% charging ⚡". The percentage and the state word breathe while
+// charging; the label stays muted so the row still reads as a label, not a banner.
+static void drawBatteryRow() {
+  const bool charging = g_env.charging;
+  const bool plugged  = charging || g_env.usbPresent;
+  uint16_t bcol = g_env.batteryPct <= 20 ? COL_RED
+                : g_env.batteryPct <= 40 ? COL_YELLOW : COL_GREEN;
+
+  // 0 = static frame (dimmed panel, or nothing animating): the pill is then
+  // drawn at the trough of the breath, which is why the formula below never
+  // reaches black.
+  const uint32_t anim = uiAnimMs();
+  float b = (charging && anim) ? breathe01(anim, 1600) : 0.0f;
+  float glow = charging ? (0.35f + 0.65f * b) : 0.45f;
+  uint16_t hi = charging ? mix565(bcol, COL_TEXT, 0.25f + 0.5f * b) : bcol;
+
+  drawChargeGlow(bcol, plugged, glow);
+  roundBar(SAFE_L, BAR_Y, SAFE_W, BAR_H, g_env.batteryPct, bcol);
+  if (charging) drawChargeSweep(g_env.batteryPct, anim, bcol);
+
+  char buf[8];
+  textAt(F_BODY, COL_DIM, SAFE_L, 156, "Battery");
+  int x = SAFE_L + textW(F_BODY, "Battery") + 5;
+  snprintf(buf, sizeof(buf), "%d%%", g_env.batteryPct);
+  textAt(F_BODY, hi, x, 156, buf);
+  x += textW(F_BODY, buf) + 6;
+
+  if (charging) {
+    textAt(F_BODY, hi, x, 156, "charging");
+    x += textW(F_BODY, "charging") + 6;
+    drawChargeBolt(x + 3, 152, hi);
+  } else if (g_env.usbPresent) {
+    textAt(F_BODY, COL_GREEN, x, 156, "full");
+  }
+}
+
 void uiDrawClock(int ox, int oy) {
   g_ox = ox; g_oy = oy;
   cardBg();
@@ -380,14 +525,7 @@ void uiDrawClock(int ox, int oy) {
 
   spr.drawFastHLine(X(SAFE_L), Y(134), SAFE_W, COL_LINE);
 
-  uint16_t bcol = g_env.batteryPct <= 20 ? COL_RED
-                : g_env.batteryPct <= 40 ? COL_YELLOW : COL_GREEN;
-  const char* bstate = g_env.charging ? "charging" : (g_env.usbPresent ? "full" : "");
-  if (bstate[0]) snprintf(buf, sizeof(buf), "Battery %d%%  %s", g_env.batteryPct, bstate);
-  else           snprintf(buf, sizeof(buf), "Battery %d%%", g_env.batteryPct);
-  textAt(F_BODY, COL_DIM, SAFE_L, 156, buf);
-
-  roundBar(SAFE_L, 160, SAFE_W, 12, g_env.batteryPct, bcol);
+  drawBatteryRow();
 
   // Device identity, at the bottom of its own page. Kept above y≈205 because
   // uiDrawPageDots() puts the page dots at SAFE_B - 5 (= 211), centred — the one
@@ -526,24 +664,9 @@ void uiDrawNotice(const NoticeData& n, int ox, int oy) {
 // ring: a dim halo plus a brighter core outline whose radius and brightness
 // rise and fall on a sine, so the panel glows like a breathing light instead of
 // strobing. There is no bitmap here any more — the old 555 clip-art is gone.
+// dim565()/breathe01() come from the battery row above, so the two animations
+// share one definition of "a breath".
 // ---------------------------------------------------------------------------
-
-// Scale an RGB565 colour towards black (0..1). The background is black, so this
-// is a pure brightness ramp — enough for a glowing ring with no alpha blend.
-static uint16_t dim565(uint16_t c, float f) {
-  if (f < 0.0f) f = 0.0f;
-  if (f > 1.0f) f = 1.0f;
-  int r = (int)(((c >> 11) & 0x1F) * f + 0.5f);
-  int g = (int)(((c >>  5) & 0x3F) * f + 0.5f);
-  int b = (int)(( c        & 0x1F) * f + 0.5f);
-  return (uint16_t)((r << 11) | (g << 5) | b);
-}
-
-// One full breath over `periodMs`, in [0,1]; smooth at both ends (no strobe).
-static float breathe01(uint32_t elapsedMs, uint32_t periodMs) {
-  float phase = (float)(elapsedMs % periodMs) / (float)periodMs;
-  return 0.5f - 0.5f * cosf(2.0f * (float)M_PI * phase);
-}
 
 // A breathing ring at logical centre (cx, cy): three dim halo outlines plus a
 // brighter core, all growing and brightening together. The core never reaches

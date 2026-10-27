@@ -6,6 +6,11 @@
 void uiBeginFrame();
 void uiSetEnv(const UiEnv& env);
 
+// Animation clock for the cards, set once per render. 0 means "draw a static
+// frame" — the dimmed panel, a build with FRAME_DUMP, and any page that is not
+// animated all get that, so a card never has to know why motion is not wanted.
+void uiSetAnimMs(uint32_t ms);
+
 // Cards are drawn at (ox, oy) so two of them can be composed for the swipe
 // transition. Each card paints its own background rect.
 void uiDrawUsage(const UsageData& u, int ox, int oy);

@@ -25,6 +25,7 @@
 #include "util/usage_pace.h"
 #include "util/usage_alert.h"
 #include "util/health_util.h"
+#include "util/charge_anim.h"
 #include "util/trend_store_util.h"
 #include "parse/notice_parse.h"
 #include "parse/agent_sessions.h"
@@ -1644,6 +1645,74 @@ void test_trend_store_line(void) {
   TEST_ASSERT_FALSE(trendStoreParseLine("1791436863,1,101", out));       // pct > 100
 }
 
+// ---- charge_anim ----------------------------------------------------------
+// The Clock page's charging shimmer: the band must stay inside the track's
+// straight section, fade out at both ends (that is what hides the wrap), and
+// simply not exist on a strip too short to travel in.
+
+static const int T_TRACK_X = 9;     // SAFE_L + 1
+static const int T_TRACK_W = 166;   // SAFE_W - 2, i.e. the whole bar
+static const int T_BAND_W  = 14;
+static const int T_CAP     = 5;     // (BAR_H - 2) / 2
+
+void test_charge_anim_sweep_ends(void) {
+  // At t=0 the band sits on the left cap and is invisible; at the far end it is
+  // invisible again, so the wrap never shows a pop.
+  charge_anim::Band first = charge_anim::sweep(0, T_TRACK_X, T_TRACK_W, 2000, T_BAND_W, T_CAP);
+  TEST_ASSERT_EQUAL_INT(T_TRACK_X + T_CAP, first.x);
+  TEST_ASSERT_EQUAL_INT(T_BAND_W, first.w);
+  TEST_ASSERT_EQUAL_UINT8(0, first.alpha);
+
+  charge_anim::Band wrapped = charge_anim::sweep(2000, T_TRACK_X, T_TRACK_W, 2000, T_BAND_W, T_CAP);
+  TEST_ASSERT_EQUAL_INT(first.x, wrapped.x);
+  TEST_ASSERT_EQUAL_UINT8(first.alpha, wrapped.alpha);
+
+  // Mid-cycle: brightest, and centred on the straight section.
+  charge_anim::Band mid = charge_anim::sweep(1000, T_TRACK_X, T_TRACK_W, 2000, T_BAND_W, T_CAP);
+  TEST_ASSERT_EQUAL_UINT8(255, mid.alpha);
+  int lo = T_TRACK_X + T_CAP;
+  int hi = T_TRACK_X + T_TRACK_W - T_CAP - T_BAND_W;
+  TEST_ASSERT_EQUAL_INT((lo + hi) / 2, mid.x);
+}
+
+void test_charge_anim_sweep_stays_in_track(void) {
+  int lo = T_TRACK_X + T_CAP;
+  int hi = T_TRACK_X + T_TRACK_W - T_CAP - T_BAND_W;
+  int prev = lo;
+  for (uint32_t t = 0; t < 2000; t += 40) {   // one cycle, excluding the wrap
+    charge_anim::Band b = charge_anim::sweep(t, T_TRACK_X, T_TRACK_W, 2000, T_BAND_W, T_CAP);
+    TEST_ASSERT_GREATER_OR_EQUAL_INT(lo, b.x);
+    TEST_ASSERT_LESS_OR_EQUAL_INT(hi, b.x);
+    TEST_ASSERT_EQUAL_INT(T_BAND_W, b.w);
+    // Monotonic across one cycle: the band travels one way only.
+    TEST_ASSERT_GREATER_OR_EQUAL_INT(prev, b.x);
+    prev = b.x;
+  }
+}
+
+void test_charge_anim_sweep_short_strip_is_off(void) {
+  // A track narrower than two caps plus a band has nowhere to travel: nothing is
+  // drawn, rather than a highlight jittering in place.
+  charge_anim::Band b = charge_anim::sweep(1000, T_TRACK_X, 10, 2000, T_BAND_W, T_CAP);
+  TEST_ASSERT_EQUAL_INT(0, b.w);
+  TEST_ASSERT_EQUAL_UINT8(0, b.alpha);
+
+  // Exactly the minimum still works (hi == lo gives a single position).
+  int minW = 2 * T_CAP + T_BAND_W;
+  charge_anim::Band ok = charge_anim::sweep(1000, T_TRACK_X, minW, 2000, T_BAND_W, T_CAP);
+  TEST_ASSERT_EQUAL_INT(T_BAND_W, ok.w);
+  TEST_ASSERT_EQUAL_UINT8(255, ok.alpha);
+}
+
+void test_charge_anim_gate(void) {
+  // Only charging + awake + the Clock page may animate. Anything else must leave
+  // the frame key still, or the panel repaints at 12 fps for nothing.
+  TEST_ASSERT_TRUE(charge_anim::active(true, false, UI_PAGE_CLOCK));
+  TEST_ASSERT_FALSE(charge_anim::active(false, false, UI_PAGE_CLOCK));  // on battery
+  TEST_ASSERT_FALSE(charge_anim::active(true, true, UI_PAGE_CLOCK));    // dimmed
+  TEST_ASSERT_FALSE(charge_anim::active(true, false, UI_PAGE_USAGE));   // other page
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_civil_epoch_unix_origin);
@@ -1763,5 +1832,9 @@ int main(int, char**) {
   RUN_TEST(test_forecast_parse_rejects);
   RUN_TEST(test_forecast_path);
   RUN_TEST(test_trend_store_line);
+  RUN_TEST(test_charge_anim_sweep_ends);
+  RUN_TEST(test_charge_anim_sweep_stays_in_track);
+  RUN_TEST(test_charge_anim_sweep_short_strip_is_off);
+  RUN_TEST(test_charge_anim_gate);
   return UNITY_END();
 }

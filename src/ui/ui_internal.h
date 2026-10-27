@@ -36,8 +36,15 @@ void statusBar(const char* title);
 // Clipped before the clock so it can never run into it.
 void statusBar2(const char* title, const char* note, uint16_t noteColor);
 
+// Animation clock (see uiSetAnimMs). 0 = static frame.
+uint32_t uiAnimMs();
+
 // icons.cpp
 void drawWeatherIcon(int kind, int cx, int cy);
+// The little bolt next to the Clock page's "charging" word. Its own glyph rather
+// than the weather one: that one is 18 logical px tall and sized for a sky icon,
+// this one has to sit on the battery row's baseline without pushing the text.
+void drawChargeBolt(int cx, int cy, uint16_t c);
 void drawWindArrow(int x, int y, const char* dir, uint16_t c);
 void drawMoon(int cx, int cy, int r, int illumPct, bool waxing, uint16_t lit);
 uint16_t usageColor(int pct);
