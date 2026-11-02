@@ -1284,14 +1284,13 @@ void test_status_machine_transitions(void) {
   TEST_ASSERT_TRUE(statusMachineApply(m, "running", 700));
   TEST_ASSERT_FALSE(statusMachineApply(m, "failed", 800));
   TEST_ASSERT_EQUAL_INT(STATUS_EV_FAILED, m.pending);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_FAILED, statusMachineTakeEvent(m));
 
-  // Key1's dismiss is silent and leaves any pending event alone (the failure
-  // cue from the step above is still queued).
+  // The expiry path applies a transition without queueing a cue: a session that
+  // went quiet is not a completion, and it must not ring.
   TEST_ASSERT_TRUE(statusMachineApply(m, "running", 900));
-  statusMachineClear(m);
+  TEST_ASSERT_FALSE(statusMachineApply(m, "done", 950, /*allowCue=*/false));
   TEST_ASSERT_EQUAL_INT(STATUS_IDLE, m.state);
-  TEST_ASSERT_EQUAL_INT(STATUS_EV_FAILED, m.pending);
-  statusMachineTakeEvent(m);
   TEST_ASSERT_EQUAL_INT(STATUS_EV_NONE, m.pending);
 
   // Unknown/absent state names are no-ops.
@@ -1521,7 +1520,7 @@ void test_agent_sessions_aggregate(void) {
   TEST_ASSERT_TRUE(agentSessionsApply(t, "s1", "waiting", a, 3000));
   TEST_ASSERT_EQUAL_STRING("waiting", agentSessionsStateName(t));
   TEST_ASSERT_EQUAL_STRING("alpha", agentSessionsInfo(t)->repo);
-  TEST_ASSERT_EQUAL_UINT32(3000, agentSessionsSince(t, 9000));
+  TEST_ASSERT_EQUAL_UINT32(3000, agentSessionsAt(t, 0)->since);
 
   // One window finishing leaves the other alone — the bug this table exists for.
   TEST_ASSERT_TRUE(agentSessionsApply(t, "s1", "done", AgentInfo{}, 4000));
@@ -1581,6 +1580,109 @@ void test_agent_sessions_capacity(void) {
     TEST_ASSERT_TRUE(agentSessionsApply(t, id, "running", a, 1000 + i));
   }
   TEST_ASSERT_EQUAL_INT(AGENT_MAX_SESSIONS, t.n);
+}
+
+// The card order: waiting first (blocked longest first), then running (most
+// recently heard from first) — and card 0 is always the session the single-screen
+// design showed, because the owner is defined as the first card.
+void test_agent_sessions_order(void) {
+  AgentTable t;
+  AgentInfo a, b, c;
+  agentInfoClear(a); strcpy(a.repo, "alpha");
+  agentInfoClear(b); strcpy(b.repo, "beta");
+  agentInfoClear(c); strcpy(c.repo, "gamma");
+
+  agentSessionsApply(t, "s1", "running", a, 1000);
+  agentSessionsApply(t, "s2", "running", b, 2000);
+  agentSessionsApply(t, "s3", "waiting", c, 3000);
+
+  int idx[AGENT_MAX_SESSIONS];
+  TEST_ASSERT_EQUAL_INT(3, agentSessionsOrder(t, idx, AGENT_MAX_SESSIONS));
+  // Waiting leads even though it was heard from last.
+  TEST_ASSERT_EQUAL_STRING("s3", t.s[idx[0]].id);
+  // Running: most recently heard from first.
+  TEST_ASSERT_EQUAL_STRING("s2", t.s[idx[1]].id);
+  TEST_ASSERT_EQUAL_STRING("s1", t.s[idx[2]].id);
+  TEST_ASSERT_EQUAL_PTR(&t.s[idx[0]], agentSessionsOwner(t));
+  TEST_ASSERT_EQUAL_STRING("gamma", agentSessionsAt(t, 0)->info.repo);
+  TEST_ASSERT_NULL(agentSessionsAt(t, 3));
+
+  // A second session blocks too: the one blocked longest goes first, so card 0
+  // does not jump when a question arrives later.
+  agentSessionsApply(t, "s2", "waiting", b, 4000);
+  TEST_ASSERT_EQUAL_INT(3, agentSessionsOrder(t, idx, AGENT_MAX_SESSIONS));
+  TEST_ASSERT_EQUAL_STRING("s3", t.s[idx[0]].id);
+  TEST_ASSERT_EQUAL_STRING("s2", t.s[idx[1]].id);
+
+  // The capacity cap is respected rather than overflowed.
+  TEST_ASSERT_EQUAL_INT(1, agentSessionsOrder(t, idx, 1));
+}
+
+// The per-session waiting cue: the aggregate machine can only chime on its own
+// transition, so a second question arriving while the screen is already amber
+// used to be silent.
+void test_agent_sessions_waiting_cue(void) {
+  AgentTable t;
+  AgentInfo a;
+  agentInfoClear(a);
+
+  bool entered = false;
+  TEST_ASSERT_TRUE(agentSessionsApply(t, "s1", "running", a, 0, &entered));
+  TEST_ASSERT_FALSE(entered);
+
+  TEST_ASSERT_TRUE(agentSessionsApply(t, "s1", "waiting", a, 1000, &entered));
+  TEST_ASSERT_TRUE(entered);
+
+  // A heartbeat in the same state is not a new question.
+  TEST_ASSERT_FALSE(agentSessionsApply(t, "s1", "waiting", a, 2000, &entered));
+  TEST_ASSERT_FALSE(entered);
+
+  // Answered, then blocked again: a cue each time.
+  agentSessionsApply(t, "s1", "running", a, 3000, &entered);
+  TEST_ASSERT_FALSE(entered);
+  agentSessionsApply(t, "s1", "waiting", a, 4000, &entered);
+  TEST_ASSERT_TRUE(entered);
+
+  // A session that *starts* waiting is a cue too.
+  agentSessionsApply(t, "s2", "waiting", a, 5000, &entered);
+  TEST_ASSERT_TRUE(entered);
+  TEST_ASSERT_EQUAL_INT(2, agentSessionsWaiting(t));
+}
+
+// A completion in the middle of a multi-session day is otherwise completely
+// silent: the aggregate never leaves running, so neither the chime nor the screen
+// changes. The table records what ended, for the status bar's "esp32 done".
+void test_agent_sessions_ended(void) {
+  AgentTable t;
+  AgentInfo a, b;
+  agentInfoClear(a); strcpy(a.repo, "esp32-usage-monitor");
+  agentInfoClear(b); strcpy(b.repo, "blog");
+  agentSessionsApply(t, "s1", "running", a, 1000);
+  agentSessionsApply(t, "s2", "running", b, 2000);
+
+  TEST_ASSERT_EQUAL_UINT32(0, t.endedRev);
+  TEST_ASSERT_TRUE(agentSessionsApply(t, "s2", "done", AgentInfo{}, 3000));
+  TEST_ASSERT_EQUAL_UINT32(1, t.endedRev);
+  TEST_ASSERT_EQUAL_STRING("blog", t.endedRepo);
+  TEST_ASSERT_EQUAL_UINT32(3000, t.endedMs);
+  TEST_ASSERT_FALSE(t.endedFailed);
+  // The other session is untouched — the whole point of the table.
+  TEST_ASSERT_EQUAL_INT(1, agentSessionsActive(t));
+  TEST_ASSERT_EQUAL_STRING("esp32-usage-monitor", agentSessionsInfo(t)->repo);
+}
+
+// Expiry is not a completion: a host that went quiet must not flash "done" over
+// the status bar, and must not queue a chime.
+void test_agent_sessions_expire_is_not_ended(void) {
+  AgentTable t;
+  AgentInfo a;
+  agentInfoClear(a); strcpy(a.repo, "blog");
+  agentSessionsApply(t, "s1", "running", a, 0);
+
+  TEST_ASSERT_EQUAL_INT(1, agentSessionsExpire(t, AGENT_SESSION_TTL_MS, AGENT_SESSION_TTL_MS));
+  TEST_ASSERT_EQUAL_UINT32(0, t.endedRev);
+  TEST_ASSERT_EQUAL_STRING("", t.endedRepo);
+  TEST_ASSERT_FALSE(t.endedFailed);
 }
 
 void test_forecast_parse(void) {
@@ -1828,6 +1930,10 @@ int main(int, char**) {
   RUN_TEST(test_agent_sessions_generation);
   RUN_TEST(test_agent_sessions_expire);
   RUN_TEST(test_agent_sessions_capacity);
+  RUN_TEST(test_agent_sessions_order);
+  RUN_TEST(test_agent_sessions_waiting_cue);
+  RUN_TEST(test_agent_sessions_ended);
+  RUN_TEST(test_agent_sessions_expire_is_not_ended);
   RUN_TEST(test_forecast_parse);
   RUN_TEST(test_forecast_parse_rejects);
   RUN_TEST(test_forecast_path);

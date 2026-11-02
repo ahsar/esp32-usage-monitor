@@ -711,57 +711,71 @@ static void textCenterFit(const lv_font_t* f, uint16_t col, int cx, int baseline
   textCenter(f, col, cx, baseline, buf);
 }
 
+// "2/3", in the footer's left corner. The dots say how many sessions there are;
+// this says which one is on screen in a form that survives a glance from across
+// the desk (a 3 px dot at the panel edge does not).
+static void cardPosition(int pos, int total, int baseline) {
+  if (total <= 1) return;
+  char buf[12];
+  snprintf(buf, sizeof(buf), "%d/%d", pos + 1, total);
+  textAt(F_SMALL, COL_MUTED, SAFE_L, baseline, buf);
+}
+
 void usageDisplayDrawThinking(uint32_t elapsedMs, const char* repo, const char* tool,
-                              int running) {
+                              int pos, int total) {
   g_ox = 0; g_oy = 0;
   spr.fillScreen(COL_BG);
-  drawBreathingRing(HW_W / 2, SAFE_T + 58, 28, COL_THINK, breathe01(elapsedMs, 2200));
-  textCenter(F_HEAD, COL_TEXT, HW_W / 2, SAFE_T + 132, "Thinking...");
+  drawBreathingRing(HW_W / 2, SAFE_T + 52, 28, COL_THINK, breathe01(elapsedMs, 2200));
+  textCenter(F_HEAD, COL_TEXT, HW_W / 2, SAFE_T + 124, "Thinking...");
 
-  // What it is working on, then for how long. Both lines are optional: an old
-  // plugin that sends no context still gets exactly the screen it had before,
-  // just laid out a little higher.
+  // What it is working on. Both lines are optional: an old plugin that sends no
+  // context still gets exactly the screen it had before, just laid out a little
+  // higher.
   char line[80];
   if ((repo && repo[0]) || (tool && tool[0])) {
     if (repo && repo[0] && tool && tool[0]) snprintf(line, sizeof(line), "%s \u2022 %s", repo, tool);
     else                                    snprintf(line, sizeof(line), "%s", repo && repo[0] ? repo : tool);
-    textCenterFit(F_SMALL, COL_DIM, HW_W / 2, SAFE_T + 156, line, SAFE_W);
+    textCenterFit(F_SMALL, COL_DIM, HW_W / 2, SAFE_T + 150, line, SAFE_W);
   }
 
   // The elapsed time is the screen's own clock (the device measures the run, it
-  // does not trust a host timestamp). With more than one session going, the
-  // count joins it — "2 running" is the difference between one window working
-  // and two, which the single-session screen used to hide.
+  // does not trust a host timestamp) — and this card's own, not the stack's: two
+  // windows started ten minutes apart have to read as ten minutes apart.
   char elapsed[16];
   fmtElapsed(elapsed, sizeof(elapsed), elapsedMs);
-  if (running > 1) snprintf(line, sizeof(line), "%d running \u2022 %s", running, elapsed);
-  else             snprintf(line, sizeof(line), "%s", elapsed);
-  textCenter(F_SMALL, COL_MUTED, HW_W / 2, SAFE_T + 174, line);
+  cardPosition(pos, total, SAFE_T + 176);
+  textRight(F_SMALL, COL_MUTED, SAFE_R, SAFE_T + 176, elapsed);
+  if (total > 1) uiDrawAgentDots(pos, total);
 }
 
 // Agent is blocked on a permission / question. Same breathing ring, but amber
 // and a touch faster and stronger, with a bang in the middle, so a glance still
-// says "it needs you" rather than "it is working" — and now it also says *what*
-// it is waiting for, which is the difference between walking over to the desk
-// and walking over to the keyboard.
-void usageDisplayDrawWaiting(uint32_t elapsedMs, const char* note, const char* repo) {
+// says "it needs you" rather than "it is working" — and it says *which* project
+// is asking and *what* it is waiting for, which is the difference between walking
+// over to the desk and walking over to the keyboard.
+void usageDisplayDrawWaiting(uint32_t elapsedMs, const char* note, const char* repo,
+                             int pos, int total) {
   g_ox = 0; g_oy = 0;
   spr.fillScreen(COL_BG);
   float b = breathe01(elapsedMs, 1300);
-  drawBreathingRing(HW_W / 2, SAFE_T + 52, 30, COL_ORANGE, b);
-  textCenter(F_BIG, dim565(COL_YELLOW, 0.65f + 0.35f * b), HW_W / 2, SAFE_T + 84, "!");
-  textCenter(F_HEAD, COL_TEXT, HW_W / 2, SAFE_T + 124, "Needs you");
+  drawBreathingRing(HW_W / 2, SAFE_T + 48, 30, COL_ORANGE, b);
+  textCenter(F_BIG, dim565(COL_YELLOW, 0.65f + 0.35f * b), HW_W / 2, SAFE_T + 78, "!");
+  textCenter(F_HEAD, COL_TEXT, HW_W / 2, SAFE_T + 114, "Needs you");
+
+  // The project above the question: with several windows open, the question text
+  // alone does not say which one you have to walk back to.
+  if (repo && repo[0]) textCenterFit(F_SMALL, COL_DIM, HW_W / 2, SAFE_T + 140, repo, SAFE_W);
 
   if (note && note[0])
-    textCenterFit(F_BODY, COL_TEXT, HW_W / 2, SAFE_T + 150, note, SAFE_W);
+    textCenterFit(F_BODY, COL_TEXT, HW_W / 2, SAFE_T + 164, note, SAFE_W);
 
-  // One footer line: the window resets are the same as the thinking screen's.
-  char line[80];
+  // One footer row: how long this session has been blocked, and which card of the
+  // stack it is when there is more than one.
   char elapsed[16];
   fmtElapsed(elapsed, sizeof(elapsed), elapsedMs);
-  if (repo && repo[0]) snprintf(line, sizeof(line), "%s \u2022 %s", repo, elapsed);
-  else                 snprintf(line, sizeof(line), "%s", elapsed);
-  textCenterFit(F_SMALL, COL_MUTED, HW_W / 2, SAFE_T + 174, line, SAFE_W);
+  cardPosition(pos, total, SAFE_T + 190);
+  textRight(F_SMALL, COL_MUTED, SAFE_R, SAFE_T + 190, elapsed);
+  if (total > 1) uiDrawAgentDots(pos, total);
 }
 
 // Firmware update in flight. Painted from the OTA progress callback (loop() is

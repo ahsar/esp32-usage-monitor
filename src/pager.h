@@ -39,6 +39,16 @@ void pagerStep(int dir);
 // page enters from the right.
 void pagerPageStep(int dir);
 
+// The agent screens' own axis. While they own the panel (main.cpp decides, and
+// calls this every frame before pagerUpdate()), the horizontal axis steps the
+// *session cards* instead of the pages: a tap or a flick reports one step
+// through pagerTakeAgentStep() and the page underneath does not move. It used to
+// page invisibly under the animation, which is the same class of bug as an
+// unresponsive button — the gesture had no feedback at all.
+void pagerSetAgentMode(bool on);
+// The accumulated card steps since the last call (+1 = next card), or 0.
+int  pagerTakeAgentStep();
+
 // Direct jumps (used by the FRAME_DUMP debug walker).
 void pagerSetPage(int page);
 void pagerSetCard(int card);

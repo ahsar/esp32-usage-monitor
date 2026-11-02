@@ -75,12 +75,12 @@ x86_64-only binary and needs an arm64 replacement) is in the README,
 
 | Path | Role — touch it when… |
 |---|---|
-| `src/main.cpp` | Entrypoint: `setup()`/`loop()` wiring, `uiFrame` render gate + idle/dim, power-off, chime dispatch, WiFi/mDNS bring-up. **Tunables live at the top.** |
+| `src/main.cpp` | Entrypoint: `setup()`/`loop()` wiring, `uiFrame` render gate + idle/dim, the agent modal/ambient decision and card selection, power-off, chime dispatch, WiFi/mDNS bring-up. **Tunables live at the top.** |
 | `src/poller.{h,cpp}` | Poll schedule + exponential backoff + wedge ladder + AP re-selection trigger. **Pure & host-tested** — change here, not in `main.cpp`, for anything about *when/what* to fetch. |
 | `src/data_types.h` | Shared PODs (`UsageData`, `WeatherData`, `MoonData`, `AirData`, `HealthData`) + `FetchJob`. Add a payload field here. |
 | `src/ui_model.h` | Neutral UI enums (`UiPage`, `UiWeatherCard`) + `UiEnv`. Add a page/card here. |
 | `src/ui_compose.{h,cpp}` | Picks page/card(s) for the pager state incl. the two-tile swipe transition. |
-| `src/pager.{h,cpp}` | Two-axis gesture + snap/animation state machine. Touch/drag behaviour. |
+| `src/pager.{h,cpp}` | Two-axis gesture + snap/animation state machine. Touch/drag behaviour, including the agent card stack's axis (`pagerSetAgentMode`). |
 | `src/usage_display.h` | Public UI drawing API (frame setup, page/card renderers, dots). |
 | `src/ui/` | Drawing impl: `cards`, `trend`, `health`, `primitives` (fonts + text helpers), `icons`, `lvgl_text`, shared palette `theme.h`. |
 | `src/usage_history.{h,cpp}` | Ring of rolling spend samples feeding the trend page. |
@@ -210,9 +210,28 @@ linked deep dive before changing the area.
   session table (`agent_sessions.h`): any waiting wins, else any running, else idle;
   a session silent for 45 min is dropped without a chime. Key1 dismisses the
   *screen* and a heartbeat must not re-open it — only a state change does (that is
-  what `generation` is for). Do not go back to one last-wins state: two OpenCode
-  windows is a real setup and one window's `done` must not clear the other's
-  `running`.
+  what `generation` is for). The dismissal is a view flag
+  (`statusChannelDismissed()`), **not** a reset of the state machine: clearing the
+  machine is what used to lose the completion chime for a run you dismissed. Do not
+  go back to one last-wins state: two OpenCode windows is a real setup and one
+  window's `done` must not clear the other's `running`.
+- **One card per session, and running is ambient, waiting is modal.** The agent
+  screens are a stack of cards (`statusChannelAgentCards()` → `drawAgentCard()`):
+  card 0 is the aggregate owner, and the order (waiting first, blocked longest
+  first, then running, most recently heard from first) lives only in
+  `agentSessionsOrder()`, so the owner and the first card cannot disagree. Only
+  **waiting** owns the panel indefinitely; **running** owns it for `AGENT_HOLD_MS`
+  (3 s, the "it started" confirmation) and then hands it back to the dashboard with
+  the status bar's chip (`s_env.agentNote`) carrying the count. That split is the
+  point: with several windows, a permanently occupied panel is a panel that shows
+  nothing, and the chip also keeps "needs you" honest after a Key1 dismissal (it
+  reads the *table*, not the state machine). The horizontal axis (swipe, side keys,
+  tap) steps cards while they are up — never pages underneath, which was input
+  with no feedback. The selection is pinned by session token, not by index, or a
+  session entering waiting would swap the card under the reader's eyes. Keep the
+  per-session waiting chime (`enteredWaiting` out-parameter): the aggregate
+  transition only rings for the first question, and the second one used to arrive
+  in silence.
 - **`src/diag.*` is temporary but load-bearing** — it is what makes a wedged
   fetch or a frozen UI diagnosable over USB CDC. Don't delete it while the
   watchdog still relies on its breadcrumbs.
@@ -230,7 +249,7 @@ linked deep dive before changing the area.
 
 Read the relevant one before changing that area:
 
-- [docs/ui-navigation.md](docs/ui-navigation.md) — pages, weather cards, the clock page's device identity (LAN address + BLE state), the usage page's spend/pace/OVER rules, the health page (and its quantised frame key), trend page, no-IMU note.
+- [docs/ui-navigation.md](docs/ui-navigation.md) — pages, weather cards, the agent cards (one per session, modal vs ambient), the clock page's device identity (LAN address + BLE state), the usage page's spend/pace/OVER rules, the health page (and its quantised frame key), trend page, no-IMU note.
 - [docs/power.md](docs/power.md) — power key, display power/heat, dim rules, radio.
 - [docs/text-lvgl.md](docs/text-lvgl.md) — the LVGL rasteriser, fonts, `fonts/` build hook.
 - [docs/threading-fetch.md](docs/threading-fetch.md) — fetch task, bounded blocking, safety nets.

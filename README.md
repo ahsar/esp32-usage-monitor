@@ -66,11 +66,14 @@ current weather card. These are real captures from the device — see
   (`tools/status-notice.sh`): a meeting countdown, a deploy, anything. It carries
   a mandatory TTL, so a notice can never sit on the panel pretending to be current.
 - **Status bridge** — an OpenCode plugin drives the device over HTTP: a
-  "Thinking…" animation while the agent works, "Needs you" plus an attention
-  beep when it asks for permission, and a two-beep / low-beep cue when a session
-  succeeds or fails. The screens carry context too — the project, the tool and
-  the elapsed time while it works, and what it is actually asking for when it
-  needs you.
+  "Thinking…" card while the agent works, "Needs you" plus an attention beep when
+  it asks for permission, and a two-beep / low-beep cue when a session succeeds or
+  fails. The cards carry context too — the project, the tool and the elapsed time
+  while it works, and what it is actually asking for when it needs you. With
+  several OpenCode windows open there is **one card per session** (swipe or tap to
+  step through them) instead of one merged screen, and only "Needs you" keeps the
+  panel: a working agent hands it back after a few seconds with `2 running` in the
+  title bar, so the weather and the meter stay visible all day.
 - **Health page** — the device's own state on the panel: WiFi rssi, uptime, free
   heap (internal / PSRAM), the outcome and age of the last fetch and its DNS/TLS
   timings, and the firmware version. All of it used to need a USB cable.
@@ -319,10 +322,13 @@ fails with `mklittlefs: Bad CPU type in executable`. Download the
     --forget` clears the credentials and brings the setup screen back.
 - **Pages.** Swipe left/right (or tap) to move between Weather / Usage / Trend /
   Clock / Notice / Health. On the Weather page, swipe up/down for the six cards.
+- **Agent cards.** While an OpenCode session is live the panel shows one card per
+  session; swipe left/right, tap, or use the side keys to step through them.
 - **Refresh now.** Tap the title bar (the strip above the divider) to poll the
   visible page's data immediately instead of waiting for its interval; the Usage
   page's title bar also shows how old its numbers are.
-- **Key1** cycles pages, and dismisses the "Thinking…" / "Needs you" animation.
+- **Key1** cycles pages; while an OpenCode session is live it dismisses the
+  agent cards, and (with them down) brings them back.
 - **Power key** (middle, the AXP `PWRON` input): tap to power on, hold ~2.5 s to
   shut down. The press that switched the device on is ignored, so holding the key
   a moment too long will not power it straight back off.
@@ -335,10 +341,15 @@ agent's state:
 
 | OpenCode V2 event | Request | Device |
 |---|---|---|
-| `session.execution.started` | `?agent=1&state=running&repo=…&tool=…` | "Thinking…" + project/tool/elapsed, wakes the panel |
-| `permission.asked` / `question.asked` | `?agent=1&state=waiting&repo=…&note=…` | "Needs you" + what it is asking for + attention beep |
-| `session.execution.succeeded` / `interrupted` | `?agent=1&state=done` | rising two-beep cue |
-| `session.execution.failed` | `?agent=1&state=failed` | low beep |
+| `session.execution.started` | `?agent=1&state=running&session=…&repo=…&tool=…` | "Thinking…" card for a few seconds, then `running` in the title bar |
+| `permission.asked` / `question.asked` | `?agent=1&state=waiting&session=…&repo=…&note=…` | "Needs you" + what it is asking for + attention beep, until dismissed |
+| `session.execution.succeeded` / `interrupted` | `?agent=1&state=done&session=…` | rising two-beep cue (+ `esp32 done` if others keep running) |
+| `session.execution.failed` | `?agent=1&state=failed&session=…` | low beep |
+
+`session=` is what makes several windows work: the device keys a small table by it
+and shows one card per live session (see
+[`docs/pc-bridge.md`](docs/pc-bridge.md) and
+[`docs/ui-navigation.md`](docs/ui-navigation.md)).
 
 Every request is signed with `HMAC-SHA256(status_key, "<payload>|<unixSeconds>")`
 in `X-Sig` / `X-Ts` — the whole query for the `agent=` form, just the state word

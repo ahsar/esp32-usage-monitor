@@ -84,7 +84,13 @@ void cardBg() {
   spr.fillRect(g_ox, g_oy, HW_W, HW_H, COL_BG);
 }
 
-void statusBar(const char* title) { statusBar2(title, nullptr, COL_MUTED); }
+void statusBar(const char* title) {
+  // The agent chip rides in the note slot (see statusBar2), so every page gets it
+  // for free — it is the one thing that must stay visible while the agent screens
+  // are collapsed, on whichever page the user happens to be looking at.
+  statusBar2(title, g_env.agentNote[0] ? g_env.agentNote : nullptr,
+             g_env.agentNoteAlert ? COL_ORANGE : COL_THINK);
+}
 
 void statusBar2(const char* title, const char* note, uint16_t noteColor) {
   spr.fillCircle(X(SAFE_L + 3), Y(20), 3, g_env.online ? COL_GREEN : COL_RED);
@@ -135,6 +141,20 @@ void uiDrawCardDots(int active, int count) {
   int y0 = SAFE_T + SAFE_H / 2 - (count - 1) * span / 2;
   for (int i = 0; i < count; i++) {
     int y = y0 + i * span;
+    int r = (i == active) ? 3 : 2;
+    spr.fillCircle(x, y, r, (i == active) ? COL_TEXT : COL_MUTED);
+  }
+}
+
+void uiDrawAgentDots(int active, int count) {
+  if (count < 2) return;   // one session: the screen it has always had
+  if (count > 8) count = 8;
+  int cx = HW_W / 2;
+  int y = SAFE_B - 5;
+  int span = count > 6 ? 10 : 12;
+  int x0 = cx - (count - 1) * span / 2;
+  for (int i = 0; i < count; i++) {
+    int x = x0 + i * span;
     int r = (i == active) ? 3 : 2;
     spr.fillCircle(x, y, r, (i == active) ? COL_TEXT : COL_MUTED);
   }

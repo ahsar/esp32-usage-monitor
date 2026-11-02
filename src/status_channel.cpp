@@ -159,38 +159,60 @@ static void syncAgent(uint32_t now, bool allowCue) {
   const char* st = agentSessionsStateName(s_agents);
   const char* ev = st ? st : (s_agents.lastEndedFailed ? "failed" : "done");
 
-  bool changed = statusMachineApply(s_machine, ev, now);
+  bool changed = statusMachineApply(s_machine, ev, now, allowCue);
   if (changed && allowCue && s_wakeCb) s_wakeCb();
-  if (!allowCue) statusMachineTakeEvent(s_machine);   // drop any cue it queued
 }
 
 bool     statusChannelThinking()      { return statusMachineThinking(s_machine); }
 bool     statusChannelWaiting()       { return statusMachineWaiting(s_machine); }
-uint32_t statusChannelThinkingSince() { return agentSessionsSince(s_agents, millis()); }
+uint32_t statusChannelStateSince()    { return statusMachineSince(s_machine); }
 int      statusChannelAgentCount()    { return agentSessionsActive(s_agents); }
+int      statusChannelAgentWaitingCount() { return agentSessionsWaiting(s_agents); }
+
+int statusChannelAgentCards(AgentCard* out, int cap) {
+  if (!out || cap <= 0) return 0;
+  int idx[AGENT_MAX_SESSIONS];
+  int m = agentSessionsOrder(s_agents, idx, AGENT_MAX_SESSIONS);
+  if (m > cap) m = cap;
+  for (int i = 0; i < m; i++) {
+    const AgentSession& s = s_agents.s[idx[i]];
+    memset(&out[i], 0, sizeof(out[i]));
+    snprintf(out[i].id, sizeof(out[i].id), "%s", s.id);
+    out[i].waiting = !strcmp(s.state, "waiting");
+    out[i].info    = s.info;
+    out[i].sinceMs = s.since;
+  }
+  return m;
+}
+
+const char* statusChannelAgentJustEnded(uint32_t now, uint32_t windowMs, bool* failed) {
+  if (failed) *failed = s_agents.endedFailed;
+  if (!s_agents.endedRev) return nullptr;
+  if ((uint32_t)(now - s_agents.endedMs) >= windowMs) return nullptr;
+  return s_agents.endedRepo;
+}
 
 void statusChannelClearThinking() {
+  // Hide the screen; deliberately *not* statusMachineClear(). The machine has to
+  // keep following the sessions, because a completion only queues its chime when
+  // the machine still knows something was running — clearing it here meant a run
+  // you dismissed with Key1 finished in total silence (no chime, no screen).
   s_dismissed    = true;
   s_dismissedGen = s_agents.generation;
-  statusMachineClear(s_machine);
 }
+bool statusChannelDismissed() { return s_dismissed; }
 StatusEvent statusChannelTakeEvent()  { return statusMachineTakeEvent(s_machine); }
 
 const NoticeState& statusChannelNotice() { return s_notice; }
 
 void statusChannelTick(uint32_t now) {
   // Expiry is silent on purpose: the host went away, which is neither a success
-  // nor a failure, and waking the panel to say so would be wrong.
-  if (agentSessionsExpire(s_agents, now, AGENT_SESSION_TTL_MS)) {
-    // Keep a cue that a request handled earlier in this same loop iteration
-    // already queued (a real `done` from HTTP, say): an expiry is silent, but it
-    // must not swallow someone else's completion.
-    StatusEvent keep = statusMachineTakeEvent(s_machine);
-    statusMachineClear(s_machine);
+  // nor a failure, and waking the panel to say so would be wrong. Re-deriving the
+  // aggregate once for the sessions that are left keeps them honest without
+  // touching the cue slot at all (`allowCue = false`), so an expiry can neither
+  // ring nor swallow a completion another request queued this iteration.
+  if (agentSessionsExpire(s_agents, now, AGENT_SESSION_TTL_MS))
     syncAgent(now, /*allowCue=*/false);
-    statusMachineTakeEvent(s_machine);   // drop the cue our own transition queued
-    if (keep != STATUS_EV_NONE) s_machine.pending = keep;
-  }
 
   if (s_notice.valid && (int32_t)(now - s_notice.expiresMs) >= 0) {
     s_notice.valid = false;
@@ -292,16 +314,24 @@ static const char* channelAgent(const StatusReq& r, char* body, size_t cap) {
   // published together, so the first frame that can see the new state already
   // has the text that goes with it. A repeat of the same state is a no-op there
   // (no chime, no wake), which is what makes the plugin's heartbeat free.
-  agentSessionsApply(s_agents, req.session, req.state, req.info, millis());
+  bool enteredWaiting = false;
+  agentSessionsApply(s_agents, req.session, req.state, req.info, millis(), &enteredWaiting);
   syncAgent(millis(), true);
+
+  // The cue belongs to the *session*, not to the aggregate: once one question is
+  // on screen, a second window asking one used to arrive in complete silence.
+  // `pending` is a single slot, so two questions in one burst still ring once —
+  // which is what a chime for "something needs you" should do anyway.
+  if (enteredWaiting && s_machine.pending == STATUS_EV_NONE)
+    s_machine.pending = STATUS_EV_WAITING;
 
   // Not a secret (unlike the WiFi query), but bounded: repo/tool are short by
   // construction and the note is the interesting part when diagnosing a plugin
   // that sends the wrong field.
   const AgentInfo& a = statusChannelAgentInfo();
-  Serial.printf("agent=%s session=%s active=%d repo=%s tool=%s note=%s\n", req.state,
-                req.session[0] ? req.session : "-", s_agents.n,
-                a.repo, a.tool, a.note);
+  Serial.printf("agent=%s session=%s active=%d waiting=%d repo=%s tool=%s note=%s\n",
+                req.state, req.session[0] ? req.session : "-", s_agents.n,
+                agentSessionsWaiting(s_agents), a.repo, a.tool, a.note);
   setBody(body, cap, "OK");
   return "200 OK";
 }
@@ -454,8 +484,11 @@ const char* statusChannelHandle(const StatusReq& r, char* body, size_t cap) {
   int si = agentSessionFind(s_agents, "");
   if (si >= 0) info = s_agents.s[si].info;
   else         agentInfoClear(info);
-  agentSessionsApply(s_agents, "", st, info, millis());
+  bool enteredWaiting = false;
+  agentSessionsApply(s_agents, "", st, info, millis(), &enteredWaiting);
   syncAgent(millis(), true);
+  if (enteredWaiting && s_machine.pending == STATUS_EV_NONE)
+    s_machine.pending = STATUS_EV_WAITING;
   Serial.printf("state=%s\n", st);
 
   setBody(body, cap, "OK");

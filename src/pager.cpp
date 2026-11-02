@@ -26,6 +26,11 @@ static const uint32_t ANIM_MS = 170;
 
 static bool s_swallowTouch = false;
 
+// The agent screens' axis (see pagerSetAgentMode): while it is on, the
+// horizontal gesture steps session cards and never touches s_page/s_card.
+static bool s_agentMode = false;
+static int  s_agentSteps = 0;
+
 void pagerInit() {
   s_page = UI_PAGE_WEATHER;
   s_card = UI_WC_NOW;
@@ -34,6 +39,8 @@ void pagerInit() {
   s_touchActive = false;
   s_swallowTouch = false;
   s_dragAxis = 0;
+  s_agentMode = false;
+  s_agentSteps = 0;
 }
 
 int   pagerPage()      { return s_page; }
@@ -108,6 +115,70 @@ void pagerPageStep(int dir) {
   startAnim(false, 0.0f, dir > 0 ? -(float)PAGE_W : (float)PAGE_W, dir);
 }
 
+void pagerSetAgentMode(bool on) {
+  if (on == s_agentMode) return;
+  s_agentMode = on;
+  // Leaving the mode drops any half-finished gesture: the next one belongs to the
+  // page axis, and a touch origin captured under the old rules would read as a
+  // huge swipe on the release.
+  s_touchActive = false;
+  s_dragAxis    = 0;
+  s_swallowTouch = false;
+  s_off         = 0.0f;
+  s_animating   = false;
+  s_agentSteps  = 0;
+}
+
+int pagerTakeAgentStep() {
+  int d = s_agentSteps;
+  s_agentSteps = 0;
+  return d;
+}
+
+// How far a finger travels before the card changes. There is no slide animation
+// to watch here (the agent screens are full-panel, drawn over the pager), so the
+// step is ratcheted *during* the drag — one card per this many logical px — and
+// the gesture answers immediately instead of waiting for the release. That is
+// also why the release only has to deal with taps.
+static const int AGENT_STEP_PX = 34;
+
+static bool agentUpdate(const HwTouch& tp) {
+  int steps0 = s_agentSteps;
+
+  // Same rule as the page axis: a tap that only woke the screen must not also
+  // step a card. A drag clears the swallow (it is a real gesture).
+  if (s_swallowTouch && !tp.down && !tp.justReleased) s_swallowTouch = false;
+
+  if (tp.justPressed) {
+    s_touchActive = true;
+    s_tx0 = tp.x;
+    s_ty0 = tp.y;
+  }
+
+  if (s_touchActive && tp.down) {
+    int dx = tp.x - s_tx0;
+    if (abs(dx) >= AGENT_STEP_PX) {
+      // Content follows the finger, like every other axis: dragging left brings
+      // the next card in.
+      s_agentSteps += (dx < 0) ? 1 : -1;
+      s_tx0 += (dx < 0) ? -AGENT_STEP_PX : AGENT_STEP_PX;
+      s_swallowTouch = false;
+    }
+  }
+
+  if (s_touchActive && tp.justReleased) {
+    s_touchActive = false;
+    bool swallowTap = s_swallowTouch;
+    s_swallowTouch = false;
+    bool tap = abs(tp.x - s_tx0) < 8 && abs(tp.y - s_ty0) < 8;
+    // A tap steps to the next card, exactly like pagerAdvance() on the Weather
+    // page: the agent screens are a card stack, and this is the axis they own.
+    if (!swallowTap && tap && s_agentSteps == steps0) s_agentSteps += 1;
+  }
+
+  return s_agentSteps != steps0;
+}
+
 bool pagerUpdate() {
   int  pg0   = s_page;
   int  wc0   = s_card;
@@ -116,6 +187,11 @@ bool pagerUpdate() {
 
   const HwTouch& tp = hwTouch();
   uint32_t now = millis();
+
+  // The agent screens own the horizontal axis while they are up; the page/card
+  // state underneath is untouched, so dismissing them lands exactly where the
+  // user left the pager.
+  if (s_agentMode) return agentUpdate(tp);
 
   // A tap that woke the screen must not also page — but a *drag* that woke it
   // should still scroll, so the swallow only survives while the gesture is

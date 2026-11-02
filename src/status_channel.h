@@ -133,19 +133,50 @@ void statusChannelSetWifiCallback(bool (*cb)(const WifiCred&));
 // waiting, else the most recently active.
 const AgentInfo& statusChannelAgentInfo();
 
-// True while the agent owns the screen (running or waiting).
+// One session as the agent screens draw it: a card in the stack.
+struct AgentCard {
+  char     id[AGENT_SESSION_ID_CAP];   // the client's short token (pins a selection)
+  bool     waiting;
+  AgentInfo info;
+  uint32_t sinceMs;                    // millis() when this card's state began
+};
+
+// Fill up to `cap` cards in the screen's order (waiting first, blocked longest
+// first; then running, most recently heard from first) and return how many were
+// filled. Card 0 is the session statusChannelAgentInfo() describes, so a single
+// session is exactly the screen the device has always drawn.
+int statusChannelAgentCards(AgentCard* out, int cap);
+
+// True while the agent state machine is active (running or waiting). This is the
+// *state*, not who owns the panel: main.cpp decides that from this, the running
+// hold (AGENT_HOLD_MS) and statusChannelDismissed().
 bool     statusChannelThinking();
 // True only in the waiting (needs-you) state.
 bool     statusChannelWaiting();
-// How long the screen's current state has lasted (the owning session's start).
-uint32_t statusChannelThinkingSince();
-// How many sessions are active — the thinking screen says "2 running" when more
-// than one OpenCode window is working.
+// When the aggregate state last changed (running/waiting/idle). This is the
+// "it just started working" clock: unlike a card's own `sinceMs`, it does not
+// move when one session hands the screen over to another.
+uint32_t statusChannelStateSince();
+// How many sessions are active — the card stack's length.
 int      statusChannelAgentCount();
+// How many of them are waiting on the user. Read from the table rather than the
+// machine on purpose: a Key1 dismissal drops the machine to idle without
+// answering anything, and the status bar must still say "needs you".
+int      statusChannelAgentWaitingCount();
+// The repo of the session that completed within `windowMs` (nullptr when none),
+// with `failed` saying which of the two completion chimes it earned. With more
+// than one session open this is the only trace a `done` in the middle leaves.
+const char* statusChannelAgentJustEnded(uint32_t now, uint32_t windowMs, bool* failed);
 // Drop back to idle without producing an event (used by Key1). This dismisses
 // the *screen*, not the sessions: a heartbeat or a context update will not bring
 // it back, but a state change (a new question) will.
 void     statusChannelClearThinking();
+// True while the user has hidden the agent screen for the current generation
+// (Key1). Kept separate from the state machine on purpose: the machine still has
+// to follow the sessions while the screen is hidden, or the completion chime for
+// a run that was dismissed would be lost (`statusMachineApply` only queues a
+// completion while it is not idle).
+bool     statusChannelDismissed();
 
 // One-shot completion events, consumed by loop() to fire the right chime.
 // statusChannelClearThinking() never produces one, and neither does a session

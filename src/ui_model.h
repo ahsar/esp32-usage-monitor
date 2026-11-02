@@ -66,4 +66,13 @@ struct UiEnv {
   // can say "re-authorise" instead of drawing three grey bars that look like a
   // fetch still in flight.
   bool     authNeeded;
+
+  // The status bar's agent chip, formatted by main.cpp. The agent screens are not
+  // allowed to own the panel while an agent merely *works* (with several OpenCode
+  // windows that would be most of the day), so this is what keeps "2 running"
+  // visible on top of an ordinary page. It also carries the two things the panel
+  // would otherwise swallow: "needs you" once the modal screen has been
+  // dismissed, and the name of a session that finished while others kept going.
+  char     agentNote[20];   // empty = no chip
+  bool     agentNoteAlert;  // amber (someone is waiting) rather than working-blue
 };

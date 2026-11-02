@@ -3,6 +3,7 @@
 #include "ui_model.h"
 #include "pager.h"
 #include "ui_compose.h"
+#include "usage_display.h"
 #include "wifi_setup.h"
 #include "poller.h"
 #include "hw/display.h"
@@ -92,10 +93,53 @@ bool frameDumpWifiTick(uint32_t now) {
   return true;
 }
 
+// ── agent cards ─────────────────────────────────────────────────────────────
+// The card stack cannot be reached by the page walk either: it is drawn from
+// uiFrame()'s modal branch and it needs live sessions. So the walk seeds its own
+// three cards — the one-session screen, a 2-of-3 thinking card and a 1-of-2
+// waiting card with a question — which is exactly the set of layouts that used to
+// be untestable without pushing real events at the device.
+static const int kAGENT_DUMP_N = 3;
+static uint32_t s_agentIdx  = 0;
+static uint32_t s_agentNext = 0;
+static bool     s_agentPaused = false;
+
+bool frameDumpAgentTick(uint32_t now) {
+  if (s_agentIdx >= (uint32_t)kAGENT_DUMP_N) return false;
+  if (!s_agentPaused) {
+    // Same reason as the wifi walk: ~4.5 s of blocking serial writes, and a fetch
+    // log line landing in the middle of a canvas corrupts the capture.
+    s_agentPaused = true;
+    pollerPauseAll(now, 15000);
+  }
+  if (now < s_agentNext) return true;
+  s_agentNext = now + 1500;
+
+  // A fixed breath position rather than 0: the ring is dimmest at the trough, and
+  // a still should show the shape it actually has.
+  const uint32_t ms = 1200;
+  switch (s_agentIdx) {
+    case 0:
+      usageDisplayDrawThinking(ms, "esp32-usage-monitor", "bash", 0, 1);
+      break;
+    case 1:
+      usageDisplayDrawThinking(ms, "esp32-usage-m..", "edit", 1, 3);
+      break;
+    default:
+      usageDisplayDrawWaiting(ms, "Bash(rm -rf ./build/*)", "blog", 0, 2);
+      break;
+  }
+  dumpCanvas(20 + s_agentIdx);   // 20+ so the page/wifi frames keep their names
+  s_agentIdx++;
+  if (s_agentIdx >= (uint32_t)kAGENT_DUMP_N) pollerPauseAll(millis(), 0);
+  return true;
+}
+
 void frameDumpTick(uint32_t now, const UiData& d) {
-  // The WiFi setup screens come first, one canvas per tick, from
-  // frameDumpWifiTick(); the page walk below keeps its own counter.
-  if (s_wifiIdx < (uint32_t)kWIFI_DUMP_N) return;
+  // The WiFi setup screens and the agent cards come first, one canvas per tick
+  // from their own walkers; the page walk below keeps its own counter.
+  if (s_wifiIdx  < (uint32_t)kWIFI_DUMP_N) return;
+  if (s_agentIdx < (uint32_t)kAGENT_DUMP_N) return;
   if (s_dumpIdx >= (uint32_t)(UI_PAGE_COUNT + UI_WC_COUNT - 1)) return;
   if (now < s_dumpNext) return;
   // Wait for real data (or give up after 60s) so the cards aren't placeholders.

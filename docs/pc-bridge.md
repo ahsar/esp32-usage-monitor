@@ -8,10 +8,10 @@ channel is also served over BLE for hosts the LAN cannot reach — see
 
 | Request | State | Device |
 |---|---|---|
-| `?state=running` | agent working | "Thinking…" animation, wakes the panel |
-| `?state=waiting` | permission/question | "Needs you" animation + attention beep |
-| `?state=done` / `?state=failed` | finished / errored | rising two-beep / low beep |
-| `?agent=1&state=…&repo=…&tool=…&note=…&session=…` | the above, plus what it is doing | same screens, with the repo/tool/elapsed and, when waiting, what it is waiting for |
+| `?state=running` | agent working | "Thinking…" card, wakes the panel, then hands it back with a `running` chip |
+| `?state=waiting` | permission/question | "Needs you" card + attention beep; stays up until dismissed |
+| `?state=done` / `?state=failed` | finished / errored | rising two-beep / low beep (+ `esp32 done` in the chip if others keep running) |
+| `?agent=1&state=…&repo=…&tool=…&note=…&session=…` | the above, plus what it is doing | the same card, with the repo/tool/elapsed and, when waiting, what it is waiting for |
 | `?notice=1&kind=…&text=…&ttl=…[&left=…]` | a pushed one-liner | the Notice page, until the TTL runs out |
 
 The same channel also carries the settings channel and the WiFi credentials
@@ -84,8 +84,14 @@ sends no context (an older plugin, `tools/status-ping.sh`) still gets the same
 screens it had before; the `?state=` path is untouched.
 
 `done`/`failed` only chime on a real transition, and never for the Key1 dismiss,
-so hand-dismissing the animation stays silent. Do **not** rely on V1 event names
-(`session.idle`, `session.status`, `permission.updated`) — V2 does not emit them.
+so hand-dismissing the animation stays silent. Hiding the screen is a *view* flag
+(`statusChannelDismissed()`), not a reset of the state machine — which is what
+keeps the completion chime for a run you dismissed (the machine still knows
+something was running when the `done` arrives). The *waiting* cue is per session
+rather than per transition (`enteredWaiting` in `agent_sessions.h`): with one
+question already on screen, a second window asking one would otherwise arrive in
+complete silence. Do **not** rely on V1 event names (`session.idle`,
+`session.status`, `permission.updated`) — V2 does not emit them.
 `tools/status-ping.sh` drives the same endpoint by hand, so the firmware path can
 be tested without OpenCode. The device advertises `usage-monitor.local` over
 mDNS (`ESPmDNS`) so the plugin needs no DHCP IP — and where mDNS does not cross a
@@ -95,20 +101,45 @@ IP instead.
 **Two windows at once.** `session=` is a short client-chosen token (7 characters;
 every byte costs three in a percent-encoded query), and the device keeps a small
 table keyed by it (`src/parse/agent_sessions.h`). One window finishing no longer
-clears another's `running`; the screen shows `waiting` if *any* session is
-waiting, otherwise `running`, with the context of the session that owns it (the
-one blocked longest, else the most recently active). The thinking screen says
-`2 running` when more than one is active. A request without `session=` (an older
-plugin, `tools/status-ping.sh`) is the single empty-id session, so both kinds
-coexist.
+clears another's `running`, and the panel shows **one card per session** rather
+than one aggregated screen: the horizontal axis (swipe, side keys, or a tap)
+steps the stack, the dots at the bottom say how many cards there are, and `2/3` in
+the footer says which one is showing. Card 0 is the session that owns the screen —
+blocked longest when anything is waiting, else the most recently active — so a
+single session still looks like the screen it always was. A request without
+`session=` (an older plugin, `tools/status-ping.sh`) is the single empty-id
+session, so both kinds coexist.
+
+The plugin's token is a **per-process tag plus a counter** (`k3fa1`, `k3fa2`, …),
+not a bare counter: two OpenCode windows are two plugin processes, and both used to
+hand out `s1`, which fused them into one device entry — one window's `done` deleted
+the other's `running`, and two questions overwrote each other. Its heartbeat keeps
+one entry per session for the same reason.
+
+**Waiting takes the panel, working does not.** A `waiting` session owns the screen
+until it is dismissed (Key1) — that is the whole reason the device sits on the
+desk. A `running` one owns it only for three seconds (`AGENT_HOLD_MS`: the "it
+started" confirmation) and then hands it back to whatever page was showing, with a
+chip in the status bar carrying `running` / `2 running` in the working blue. That
+matters when several windows are open, where "something is always working" would
+otherwise mean the weather, the meter and the clock are never visible again. The
+chip is read from the *session table*, not the state machine, so after a Key1
+dismissal it says `needs you` / `2 waiting` in amber instead of going quiet about a
+blocked session. Key1 while the cards are down re-opens them (the count is not the
+whole story — "what is it doing right now" has to be answerable without waiting for
+the next event). A completion in the middle of a multi-session day — no aggregate
+transition, so no chime and no screen change — flashes `esp32 done` in the same
+slot for eight seconds (`AGENT_ENDED_MS`).
 
 **A session that goes silent is forgotten.** Nothing sends `done` when a host
 crashes or a laptop sleeps, so a session not heard from for 45 minutes
 (`AGENT_SESSION_TTL_MS`) is dropped — silently: no chime, no wake, because that is
 neither success nor failure. The plugin heartbeats its active state every ten
-minutes (`heartbeatMs`) to keep a long build alive; the device treats a repeat of
-the same state as a no-op on screen, so a heartbeat cannot re-open an animation
-you dismissed with Key1, while a *state change* (a new question) does.
+minutes (`heartbeatMs`) to keep a long build alive, and sends `done` for everything
+it knew when the process unloads, so closing a window takes its card down at once;
+the TTL is only the backstop for a crash. The device treats a repeat of the same
+state as a no-op on screen, so a heartbeat cannot re-open an animation you
+dismissed with Key1, while a *state change* (a new question) does.
 
 **Notices.** `?notice=…` is the one remote string that outlives its request:
 it stays on the Notice page for its TTL. The TTL is mandatory (an unexpiring

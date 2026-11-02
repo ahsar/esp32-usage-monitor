@@ -95,6 +95,18 @@ const NOTE_MAX = 51
 // needs identity, not the id's meaning (AGENT_SESSION_CAP in agent_parse.h).
 const SESSION_MAX = 7
 
+/**
+ * A per-process discriminator for the session tokens.
+ *
+ * The sequence number below is per *process*, and two OpenCode windows are two
+ * processes: both used to hand out `s1`, so the device's table fused them into
+ * one entry — one window's `done` deleted the other's `running`, and two
+ * questions overwrote each other's text. Four random base-36 characters make a
+ * collision between windows about as likely as one in 1.7 million; the device
+ * only compares tokens, it never parses them.
+ */
+const SESSION_TAG = (Math.random().toString(36) + "0000").slice(2, 6)
+
 /** One line, printable ASCII, within the device's cap. */
 function clip(v: unknown, max: number): string | undefined {
   if (typeof v !== "string") return undefined
@@ -289,7 +301,10 @@ export default Plugin.define({
         // A counter, not the id: stable for the life of this process, short
         // enough for the device's field cap, and never reused while the map
         // lives. Clearing at 256 only ever affects sessions that are long gone.
-        t = `s${++sessionSeq}`.slice(0, SESSION_MAX)
+        // The process tag is what keeps two windows from both calling
+        // themselves "s1" (see SESSION_TAG).
+        const seq = (++sessionSeq % 46656).toString(36)
+        t = `${SESSION_TAG}${seq}`.slice(0, SESSION_MAX)
         if (sessionTokens.size > 256) sessionTokens.clear()
         sessionTokens.set(id, t)
       }
@@ -369,10 +384,16 @@ export default Plugin.define({
     // A heartbeat while a session is active. The device treats a repeat of the
     // same state as a no-op on screen, but it refreshes that session's liveness,
     // which is what lets AGENT_SESSION_TTL_MS forget a host that crashed instead
-    // of leaving "Thinking..." up for hours. Ten minutes against a 45-minute TTL
-    // leaves room for a few lost sends.
+    // of leaving a card up for hours. Ten minutes against a 45-minute TTL leaves
+    // room for a few lost sends.
+    //
+    // One entry per session, not one for the newest: with two sessions in this
+    // process, a single "last active" query only kept the second one alive, and
+    // the first silently aged out of the device's table while it was still
+    // working.
     const heartbeatMs = Number(options.heartbeatMs ?? 600000)
-    let lastActive: string | undefined
+    /** session token → the running/waiting query that keeps it alive. */
+    const activeQueries = new Map<string, string>()
     let heartbeat: ReturnType<typeof setInterval> | undefined
 
     const controller = new AbortController()
@@ -392,7 +413,9 @@ export default Plugin.define({
           const props = (event as any)?.properties ?? {}
           const session = tokenFor(props.sessionID ?? props.info?.id ?? props.session?.id)
           const query = buildQuery(state, withContext ? eventContext(event, sessionDirs) : {}, session)
-          lastActive = withContext ? query : undefined
+          const key = session ?? ""
+          if (withContext) activeQueries.set(key, query)
+          else             activeQueries.delete(key)
           if (query === lastQuery) continue
           lastQuery = query
           void send(query)
@@ -404,7 +427,7 @@ export default Plugin.define({
 
     if (typeof setInterval === "function" && heartbeatMs > 0) {
       heartbeat = setInterval(() => {
-        if (lastActive) void send(lastActive)
+        for (const query of activeQueries.values()) void send(query)
       }, heartbeatMs)
       // A heartbeat must not be the reason the process stays alive.
       if (typeof (heartbeat as any)?.unref === "function") (heartbeat as any).unref()
@@ -413,6 +436,13 @@ export default Plugin.define({
     return () => {
       controller.abort()
       if (heartbeat) clearInterval(heartbeat)
+      // A window that is closed must not leave its card behind for the TTL to
+      // find. Fire-and-forget like everything else here: the process is going
+      // away, so the send may not survive it — the TTL is the backstop, this is
+      // the case where the panel is right immediately.
+      for (const key of activeQueries.keys())
+        void send(buildQuery("done", {}, key || undefined))
+      activeQueries.clear()
     }
   },
 })

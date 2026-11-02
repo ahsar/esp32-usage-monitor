@@ -20,4 +20,10 @@
 // new kind an older firmware would answer 400 (it is the settings branch). The
 // session field is optional, so an older plugin still works; the reverse (a new
 // plugin on 0.5.0) loses only the multi-session aggregation.
-#define FW_VERSION "0.6.0"
+//
+// 0.7.0: multi-session UX — one agent *card* per session instead of one aggregate
+// screen, a status-bar chip so a working agent no longer owns the panel all day,
+// and the plugin's per-process session token (two windows used to collide on
+// `s1`). Wire-compatible with 0.6.0 in both directions: no field was added or
+// changed, only what the device does with them.
+#define FW_VERSION "0.7.0"

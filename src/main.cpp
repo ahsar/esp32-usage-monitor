@@ -125,6 +125,16 @@ static const uint32_t IDLE_DIM_MS   = 30000;   // 30 s idle → dim
 static const uint8_t  DIM_LEVEL     = 0;       // BRIGHT_LUT[0] = 50/255
 static const uint32_t IDLE_NET_MS   = 30000;   // idle > this → slow the pollers
 static const uint32_t ANIM_FRAME_MS = 60;      // blink anims: cap the push rate
+// How long a *running* agent keeps the panel. Long enough to notice that it
+// started, short enough that the dashboard comes back on its own — the status
+// bar's chip takes over after this (see refreshEnv). Waiting has no such limit:
+// it owns the panel until it is dismissed.
+static const uint32_t AGENT_HOLD_MS = 3000;
+// How long "esp32 done" stays in the status bar after a session finishes while
+// others keep going. Without it, a completion in the middle of a multi-session
+// day is completely silent: the aggregate never leaves running, so there is no
+// chime and no screen change either.
+static const uint32_t AGENT_ENDED_MS = 8000;
 // The Clock page's charging animation (the comet sweeping the battery pill).
 // ~12 fps: the sweep moves ~5 logical px per frame at the 2.4 s cycle, which
 // reads as motion, while a full-frame push is 16-70 ms — pushing at the agent
@@ -287,6 +297,30 @@ static void refreshEnv(uint32_t now) {
 
     diagSetNet(s_env.online, (int)WiFi.status(), (int)WiFi.RSSI());
 
+    // The status bar's agent chip. The waiting count comes from the session
+    // table, not the state machine: a Key1 dismissal drops the machine to idle
+    // without answering anything, so the machine would go quiet about a session
+    // that is still blocked on the user.
+    {
+        int waitingN = statusChannelAgentWaitingCount();
+        int agents   = statusChannelAgentCount();
+        bool failed  = false;
+        const char* ended = statusChannelAgentJustEnded(now, AGENT_ENDED_MS, &failed);
+        s_env.agentNote[0]   = '\0';
+        s_env.agentNoteAlert = false;
+        if (waitingN > 0) {
+            if (waitingN > 1) snprintf(s_env.agentNote, sizeof(s_env.agentNote), "%d waiting", waitingN);
+            else              snprintf(s_env.agentNote, sizeof(s_env.agentNote), "needs you");
+            s_env.agentNoteAlert = true;
+        } else if (ended && ended[0]) {
+            snprintf(s_env.agentNote, sizeof(s_env.agentNote), "%s %s", ended,
+                     failed ? "failed" : "done");
+        } else if (agents > 0) {
+            if (agents > 1) snprintf(s_env.agentNote, sizeof(s_env.agentNote), "%d running", agents);
+            else            snprintf(s_env.agentNote, sizeof(s_env.agentNote), "running");
+        }
+    }
+
     // The Health page's snapshot. Deliberately at the same 1 Hz cadence as the
     // rest of the env: it is read-only, and the frame key quantises it further.
     s_health.valid        = true;
@@ -440,6 +474,12 @@ static uint32_t uiFrameKey(uint32_t now) {
         h = hashMix(h, s_noticeRev);
         if (s_notice.hasCountdown) h = hashMix(h, s_notice.countdownSec / 60u);
     }
+    // The agent chip moves on its own: a session starting or ending changes the
+    // text, and "esp32 done" expires after AGENT_ENDED_MS with no other event to
+    // trigger the repaint that takes it away.
+    for (const char* p = s_env.agentNote; *p; p++)
+        h = hashMix(h, (uint32_t)(uint8_t)*p);
+    h = hashMix(h, s_env.agentNoteAlert ? 1u : 0u);
     h = hashMix(h, s_dataRev);
     return h;
 }
@@ -474,6 +514,74 @@ static void forceRefreshVisible(uint32_t now) {
             break;
     }
     Serial.printf("refresh: page=%d\n", pagerPage());
+}
+
+// ---- the agent screens: one card per session ------------------------------
+// While the agent owns the panel it shows *one session at a time*, in the table's
+// order (statusChannelAgentCards): waiting first, and card 0 is the session the
+// single-screen design always showed. The horizontal axis steps the stack, so N
+// concurrent windows are N readable screens instead of one aggregate.
+//
+// Key1 re-opens a dismissed/expired screen while any session is live. Recorded
+// against the aggregate `since` so the next real transition (a new question, a
+// new run) takes over and the re-open cannot stick forever.
+static bool     s_agentForceOpen  = false;
+static uint32_t s_agentForceSince = 0;
+// The card the user last stepped to, pinned by session token rather than index:
+// the stack re-orders when a session enters waiting (waiting cards move to the
+// front), and an index would silently swap the card under the reader's eyes.
+// Empty = card 0, the owner.
+static char     s_agentPick[AGENT_SESSION_ID_CAP] = {0};
+
+static bool agentModal(uint32_t now, bool waiting, bool thinking, int agents) {
+    if (agents <= 0) {
+        s_agentForceOpen = false;
+        return false;
+    }
+    if (s_agentForceOpen && s_agentForceSince != statusChannelStateSince())
+        s_agentForceOpen = false;      // the run it was opened for is over
+    if (s_agentForceOpen) return true;
+    // Key1 hid the screen for this generation: a heartbeat must not undo it, and
+    // neither must the running hold (that one has already been seen).
+    if (statusChannelDismissed()) return false;
+    if (waiting) return true;
+    return thinking && (now - statusChannelStateSince()) < AGENT_HOLD_MS;
+}
+
+// Position of the pinned card in `cards`, falling back to the owner when that
+// session has ended.
+static int agentPickIndex(const AgentCard* cards, int n) {
+    if (n <= 0) return 0;
+    if (s_agentPick[0]) {
+        for (int i = 0; i < n; i++)
+            if (!strcmp(cards[i].id, s_agentPick)) return i;
+        s_agentPick[0] = '\0';
+    }
+    return 0;
+}
+
+static void agentPickStep(int dir) {
+    AgentCard cards[AGENT_MAX_SESSIONS];
+    int n = statusChannelAgentCards(cards, AGENT_MAX_SESSIONS);
+    if (n <= 0 || dir == 0) return;
+    int i = (agentPickIndex(cards, n) + dir) % n;
+    if (i < 0) i += n;
+    snprintf(s_agentPick, sizeof(s_agentPick), "%s", cards[i].id);
+}
+
+// The card on screen. Each card carries its *own* state, so a mixed stack reads
+// honestly: the ring is amber for a waiting session and blue for a running one,
+// whatever the aggregate says, and the elapsed time is that session's own — two
+// windows started ten minutes apart must not both claim the same start.
+static void drawAgentCard(uint32_t now) {
+    AgentCard cards[AGENT_MAX_SESSIONS];
+    int n = statusChannelAgentCards(cards, AGENT_MAX_SESSIONS);
+    if (n <= 0) return;
+    int i = agentPickIndex(cards, n);
+    const AgentCard& c = cards[i];
+    uint32_t elapsed = now - c.sinceMs;
+    if (c.waiting) usageDisplayDrawWaiting(elapsed, c.info.note, c.info.repo, i, n);
+    else           usageDisplayDrawThinking(elapsed, c.info.repo, c.info.tool, i, n);
 }
 
 // ---- UI service frame -----------------------------------------------------
@@ -517,12 +625,28 @@ static void uiFrame(uint32_t now) {
         }
     }
 
+    // ---- the agent screens: modal or ambient -------------------------------
+    // Waiting owns the panel until dismissed — something needs an answer, and
+    // that is the whole reason the device sits on the desk. Running only owns it
+    // for a moment (AGENT_HOLD_MS): the animation is a "it started working"
+    // confirmation, not a permanent takeover. With two or three OpenCode windows
+    // that takeover would be most of the workday and the panel would never show
+    // the weather, the meter or the clock it exists for — so after the hold the
+    // screen goes back to being a dashboard and the status bar carries the count
+    // (refreshEnv + statusBar()).
+    int  agents   = statusChannelAgentCount();
+    bool waiting  = statusChannelWaiting();
+    bool thinking = statusChannelThinking();
+    bool modal    = agentModal(now, waiting, thinking, agents);
+
     // A tap on the title bar is a manual refresh, not a page turn — the strip
     // above the divider is the one place a tap means "now, not next" (see
     // forceRefreshVisible()). Swallowing it here keeps the pager's gesture
     // machine from also advancing the page on release. Not while the WiFi setup
-    // screen owns the panel: its keyboard has buttons up there.
-    if (!s_wifi.open && tp.justPressed && tp.y < 33) {
+    // screen owns the panel: its keyboard has buttons up there. Not while an
+    // agent card is up either: those screens have no title bar, and a tap there
+    // means "next card".
+    if (!s_wifi.open && !modal && tp.justPressed && tp.y < 33) {
         pagerSwallowNextTap();
         forceRefreshVisible(now);
     }
@@ -535,6 +659,8 @@ static void uiFrame(uint32_t now) {
     // the normal state, and gating it on `s_wifi.open` meant the screens could
     // only be dumped on a device that had been left without credentials.
     if (frameDumpWifiTick(now)) return;
+    // …and the agent card stack, which needs live sessions and is drawn here.
+    if (frameDumpAgentTick(now)) return;
 #endif
 
     if (s_wifi.open) {
@@ -556,74 +682,76 @@ static void uiFrame(uint32_t now) {
 
     screenIdleUpdate();
 
-    bool thinking = statusChannelThinking();
     if (hwBtnA().wasPressed && !s_swallowKey) {
-        if (thinking) {
+        if (modal) {
+            // Dismiss the screen, not the sessions (the table keeps them, and the
+            // status bar keeps saying so).
             statusChannelClearThinking();
-            thinking = false;
+            s_agentForceOpen = false;
+            modal = false;
+        } else if (agents > 0) {
+            // Nothing on screen but sessions are live: Key1 is the way back to
+            // their cards. Without it a collapsed running screen could only be
+            // seen again by waiting for the next state change — and "what is it
+            // doing right now" would have no answer on the device at all.
+            s_agentForceOpen  = true;
+            s_agentForceSince = statusChannelStateSince();
+            s_agentPick[0]    = '\0';   // open at the owner, the card it always showed
+            modal = true;
         } else {
             pagerAdvance();
             s_forceRender = true;
         }
     }
 
-    // Side keys: each one pushes the content the same way the key itself sits,
-    // so left = content slides left (the page to the right comes in) and right =
-    // content slides right (the page to the left comes in). Always on the
-    // horizontal axis (even on Weather), and the axis is an endless carousel —
-    // the button equivalent of the matching left/right swipe. A press that only
-    // woke the panel is swallowed by s_swallowKey above, exactly like Key1.
-    // Deliberately does not dismiss the thinking animation (Key1 owns that); it
-    // just pages underneath.
+    // Side keys: the same axis as the swipe. While the agent cards own the panel
+    // they step the stack — they used to page *underneath* the animation, which
+    // is an input with no feedback at all. Off the agent screens nothing changes.
+    // Deliberately does not dismiss the cards (Key1 owns that).
+    if (modal) {
+        pagerSetAgentMode(true);
+    } else {
+        pagerSetAgentMode(false);
+    }
+
 #if BOARD_HAS_KEY2
-    if (hwBtnB().wasPressed && !s_swallowKey) {      // IO18 (left) → next page
-        pagerPageStep(+1);
+    if (hwBtnB().wasPressed && !s_swallowKey) {      // IO18 (left) → next
+        if (modal) agentPickStep(+1);
+        else       pagerPageStep(+1);
         s_forceRender = true;
     }
 #endif
 #if BOARD_BTN_THIRD
-    if (hwBtnBoot().wasPressed && !s_swallowKey) {   // BOOT (right) → previous page
-        pagerPageStep(-1);
+    if (hwBtnBoot().wasPressed && !s_swallowKey) {   // BOOT (right) → previous
+        if (modal) agentPickStep(-1);
+        else       pagerPageStep(-1);
         s_forceRender = true;
     }
 #endif
 
-    // Always advance the gesture machine, even while the thinking animation
-    // owns the screen — otherwise scrolling is ignored and looks stuck. The
-    // render below still shows the animation instead of the pager.
+    // Always advance the gesture machine, even while the agent cards own the
+    // screen — it is what turns a flick/tap into a card step there.
     if (pagerUpdate()) s_forceRender = true;
-
-    // Re-read after Key1 may have dismissed it: a manual dismiss must not leave
-    // the waiting animation on screen.
-    bool waiting = statusChannelWaiting();
-
-    bool animated = thinking;
+    if (int step = pagerTakeAgentStep()) {
+        agentPickStep(step);
+        s_forceRender = true;
+    }
 
 #ifdef FRAME_DUMP
     frameDumpTick(now, currentUiData());
 #else
-    if (animated) {
+    if (modal) {
         // Blink animations only change every ~100 ms; a full-frame push takes
         // tens of ms, so cap the cadence instead of re-pushing identical frames.
         if (now - s_lastPush >= ANIM_FRAME_MS) {
-            // The context comes from the last `?agent=` request (empty when the
-            // client sent none), the elapsed time from the state machine — the
-            // device measures the run itself rather than trusting a timestamp
-            // from a host whose clock it cannot check.
-            const AgentInfo& agent = statusChannelAgentInfo();
-            uint32_t elapsed = now - statusChannelThinkingSince();
-            if (waiting) {
-                usageDisplayDrawWaiting(elapsed, agent.note, agent.repo);
-            } else {
-                usageDisplayDrawThinking(elapsed, agent.repo, agent.tool,
-                                         statusChannelAgentCount());
-            }
+            diagMark(DIAG_UI_RENDER, 0xFFFFFFFEu);
+            drawAgentCard(now);
             diagMark(DIAG_UI_PUSH, 0xFFFFFFFEu);
             hwDisplayPush();
             s_lastPush = now;
         }
         // The animation canvas never participates in the frame key, so force a
-        // re-render of the normal page as soon as the animation ends.
+        // re-render of the normal page as soon as the cards go away.
         s_frameKeyValid = false;
     } else {
         // Re-render only when something visible actually changed: a static

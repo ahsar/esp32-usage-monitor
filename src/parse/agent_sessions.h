@@ -12,6 +12,12 @@
 //   else any running   → "running" (the most recently heard from)
 //   else               → idle, with `lastEndedFailed` deciding done vs failed
 //
+// The same ordering is the *card* order the panel shows (agentSessionsOrder):
+// card 0 is exactly the session the single-screen design used to show, so one
+// session looks and behaves as it always did and N sessions become a stack the
+// user can step through. There is one ordering function, so the owner and the
+// first card cannot disagree about who is "the" session.
+//
 // Pure and host-tested: main-loop liveness (the TTL, the chimes, the screen) is
 // the caller's job, which is why `now` is passed in rather than read here.
 //
@@ -44,6 +50,17 @@ struct AgentTable {
   AgentSession s[AGENT_MAX_SESSIONS];
   int      n = 0;
   bool     lastEndedFailed = false;
+  // What the status bar can say about the session that *just* ended. With more
+  // than one session open, a `done` in the middle is otherwise completely
+  // silent: the aggregate is still running, so neither the chime nor the
+  // animation changes, and the card simply disappears. `endedRev` moves on every
+  // completion so a caller can tell "the same repo finished again" from "nothing
+  // happened". Expiry does not touch any of this — a host that went quiet is not
+  // a completion.
+  char     endedRepo[AGENT_REPO_CAP] = {0};
+  uint32_t endedMs  = 0;    // millis() of that completion
+  bool     endedFailed = false;
+  uint32_t endedRev = 0;
   // Bumped when the set of sessions or any session's state changes — not when
   // only its context does. A heartbeat or a new tool name must not re-open an
   // animation the user dismissed with Key1; a new question (a state change) must.
@@ -68,8 +85,15 @@ inline void agentSessionRemove(AgentTable& t, int i) {
 // Apply one authenticated report. Returns true when anything the screen reads
 // changed (state, set of sessions, or the owning context), so the caller can
 // repaint without hashing the table.
+//
+// `enteredWaiting` (optional) is set when *this* report moved that session into
+// waiting — the per-session cue the aggregate machine cannot produce: once the
+// screen is already waiting for one session, a second one asking a question is
+// a state change nobody would hear otherwise.
 inline bool agentSessionsApply(AgentTable& t, const char* id, const char* state,
-                               const AgentInfo& info, uint32_t now) {
+                               const AgentInfo& info, uint32_t now,
+                               bool* enteredWaiting = nullptr) {
+  if (enteredWaiting) *enteredWaiting = false;
   if (!state || !state[0]) return false;
   const char* sid = id ? id : "";
 
@@ -79,6 +103,10 @@ inline bool agentSessionsApply(AgentTable& t, const char* id, const char* state,
     int i = agentSessionFind(t, sid);
     if (i < 0) return false;
     t.lastEndedFailed = !strcmp(state, "failed");
+    snprintf(t.endedRepo, sizeof(t.endedRepo), "%s", t.s[i].info.repo);
+    t.endedMs     = now;
+    t.endedFailed = t.lastEndedFailed;
+    t.endedRev++;
     agentSessionRemove(t, i);
     return true;
   }
@@ -109,6 +137,7 @@ inline bool agentSessionsApply(AgentTable& t, const char* id, const char* state,
   }
 
   if (strcmp(t.s[i].state, state)) {
+    if (!strcmp(state, "waiting") && enteredWaiting) *enteredWaiting = true;
     snprintf(t.s[i].state, sizeof(t.s[i].state), "%s", state);
     anything = true;
   }
@@ -154,20 +183,54 @@ inline const char* agentSessionsStateName(const AgentTable& t) {
   }
 }
 
+// The screen's order, as indices into `t.s`: waiting first (the session blocked
+// longest first), then running (the most recently heard from first). This is the
+// one place that rule lives — `agentSessionsOwner()` is its first entry — so the
+// single-session screen and the card stack can never disagree about card 0.
+// Fills up to `cap` positions and returns how many.
+inline int agentSessionsOrder(const AgentTable& t, int* idx, int cap) {
+  if (!idx || cap <= 0) return 0;
+  if (cap > AGENT_MAX_SESSIONS) cap = AGENT_MAX_SESSIONS;
+  bool used[AGENT_MAX_SESSIONS] = {false};
+  int  m = 0;
+  while (m < cap) {
+    int best = -1;
+    for (int i = 0; i < t.n; i++) {
+      if (used[i]) continue;
+      if (best < 0) { best = i; continue; }
+      const AgentSession& a = t.s[i];
+      const AgentSession& b = t.s[best];
+      bool aw = !strcmp(a.state, "waiting");
+      bool bw = !strcmp(b.state, "waiting");
+      if (aw != bw) {
+        if (aw) best = i;              // anything waiting outranks anything running
+        continue;
+      }
+      if (aw) {
+        if ((int32_t)(a.since - b.since) < 0) best = i;   // blocked longest
+      } else {
+        if ((int32_t)(a.seen - b.seen) > 0) best = i;     // most recently heard
+      }
+    }
+    if (best < 0) break;
+    used[best] = true;
+    idx[m++] = best;
+  }
+  return m;
+}
+
+// Card `pos` in that order, or nullptr when the table is smaller than that.
+inline const AgentSession* agentSessionsAt(const AgentTable& t, int pos) {
+  int idx[AGENT_MAX_SESSIONS];
+  int m = agentSessionsOrder(t, idx, AGENT_MAX_SESSIONS);
+  if (pos < 0 || pos >= m) return nullptr;
+  return &t.s[idx[pos]];
+}
+
 // The session that owns the screen: the one blocked longest when anything is
 // waiting, else the most recently heard from. nullptr when idle.
 inline const AgentSession* agentSessionsOwner(const AgentTable& t) {
-  const AgentSession* best = nullptr;
-  for (int i = 0; i < t.n; i++) {
-    if (strcmp(t.s[i].state, "waiting")) continue;
-    if (!best || (int32_t)(t.s[i].since - best->since) < 0) best = &t.s[i];
-  }
-  if (best) return best;
-  for (int i = 0; i < t.n; i++) {
-    if (strcmp(t.s[i].state, "running")) continue;
-    if (!best || (int32_t)(t.s[i].seen - best->seen) > 0) best = &t.s[i];
-  }
-  return best;
+  return agentSessionsAt(t, 0);
 }
 
 inline const AgentInfo* agentSessionsInfo(const AgentTable& t) {
@@ -175,11 +238,15 @@ inline const AgentInfo* agentSessionsInfo(const AgentTable& t) {
   return o ? &o->info : nullptr;
 }
 
-// How long the *screen's* current state has lasted (the owning session's since).
-inline uint32_t agentSessionsSince(const AgentTable& t, uint32_t now) {
-  const AgentSession* o = agentSessionsOwner(t);
-  return o ? o->since : now;
-}
-
-// Active sessions (running or waiting), for "2 running" on the animation.
+// How many sessions are active (running or waiting) — the card stack's length.
 inline int agentSessionsActive(const AgentTable& t) { return t.n; }
+
+// How many of them are blocked on the user. The status bar says "2 waiting" when
+// the modal screen has been dismissed; the aggregate state alone cannot, because
+// a dismissal puts the machine back to idle without answering anything.
+inline int agentSessionsWaiting(const AgentTable& t) {
+  int w = 0;
+  for (int i = 0; i < t.n; i++)
+    if (!strcmp(t.s[i].state, "waiting")) w++;
+  return w;
+}

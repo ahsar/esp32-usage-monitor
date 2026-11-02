@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **One agent card per OpenCode session.** The panel now shows a stack of cards —
+  one breathing ring per live session, each with its own project, state and
+  elapsed time — instead of a single aggregate screen that hid the second window.
+  The horizontal axis (swipe, side keys, tap) steps the stack, the bottom row of
+  dots says how many sessions there are, and `2/3` in the footer says which one is
+  showing. Card 0 is the session the old screen showed (blocked longest when
+  anything is waiting, else the most recently active), so a single session looks
+  and behaves exactly as before. Ordering lives in one place
+  (`agentSessionsOrder()`), so the owner and the first card cannot disagree.
+- **A status-bar chip, so a working agent stops owning the panel.** `waiting` is
+  still modal — it owns the screen until dismissed — but `running` only holds it
+  for three seconds and then hands it back to the dashboard with `running` /
+  `2 running` in the title bar. With two or three windows open the old behaviour
+  meant the weather, the meter and the clock were never visible again. The chip
+  also carries `needs you` / `2 waiting` (amber) after a Key1 dismissal — it reads
+  the session table, not the state machine — and `esp32 done` for eight seconds
+  after a completion in the middle of a multi-session day, which used to leave no
+  trace at all.
+
+### Changed
+
+- **Key1 with the cards down re-opens them**, instead of only advancing the page.
+- **The side keys and swipes step the agent cards while they are up.** They used
+  to page *underneath* the animation, an input with no visible effect; the page
+  underneath no longer moves at all while a card is showing.
+- **The waiting chime is per session.** A second window asking a question while
+  the first one's question was already on screen used to arrive silently.
+- The waiting card now shows the project above the question, and both cards put
+  the elapsed time on the right of the footer instead of centred.
+
+### Fixed
+
+- **Hiding the agent screen no longer loses the completion chime.** Key1 used to
+  clear the state machine, and a completion only queues its cue while the machine
+  still knows something was running — so a run you dismissed finished in complete
+  silence. The dismissal is now a view flag (`statusChannelDismissed()`), and the
+  machine keeps following the sessions.
+- **Two OpenCode windows no longer share a session token.** The plugin's token was
+  a per-process counter, so both windows called themselves `s1` and the device
+  fused them into one entry: one window's `done` deleted the other's `running`,
+  and two questions overwrote each other's text. It is now a per-process tag plus
+  the counter (`k3fa1`, `k3fa2`, …).
+- **The plugin heartbeats every session, not just the newest one.** With two
+  sessions in one process, the older one silently aged out of the device's table
+  while it was still working. The plugin also sends `done` for each session it
+  knew when the process unloads, so closing a window takes its card down at once
+  instead of 45 minutes later.
+
 ## [0.6.0] - 2026-10-20
 
 Six additions, all built around one question: *is what I am looking at still

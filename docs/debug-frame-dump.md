@@ -19,5 +19,13 @@ because an SSID's length is not ours to choose). They are otherwise unreachable:
 `loop()` returns early while the setup screen is open, so the page walk below it
 never runs. The walk seeds its own state rather than borrowing the device's, so
 it runs whether or not the device is on the air — otherwise these frames could
-only ever be captured from a device left without credentials. Frames 0-6 keep their usual meaning — the main pages and weather
+only ever be captured from a device left without credentials.
+
+The three **agent cards** come next, as frames 20-22 (`frameDumpAgentTick()`): the
+one-session `Thinking...` card, a 2-of-3 card with the dots and the `2/3` footer,
+and a 1-of-2 `Needs you` card with a question. They are drawn from `uiFrame()`'s
+modal branch and need live sessions, so the walk seeds the cards itself — the only
+way to check that layout is right without pushing real events at the device.
+
+Frames 0-6 keep their usual meaning — the main pages and weather
 cards, which need real poll data (offline, the walk uses placeholders after 60 s).

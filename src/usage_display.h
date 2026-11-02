@@ -31,14 +31,22 @@ void uiDrawHealth(const HealthData& h, int ox, int oy);
 void uiDrawPageDots(int activePage);
 void uiDrawCardDots(int activeCard, int count);
 
-// Agent-activity screens. `repo`/`tool`/`note` are what the last `?agent=` ping
-// carried (status_channel.h) and may each be empty — the card draws whatever is
-// there. `running` is how many sessions are active, so two OpenCode windows read
-// as "2 running" instead of looking like one. Strings rather than the AgentInfo
-// struct so the UI layer keeps its distance from the parser headers.
+// The agent card stack's dots, in the page-dot row (the agent screens draw no
+// page dots, so the slot is free): how many sessions are up and which one is
+// showing. Drawn only when there is more than one, so a single session still
+// looks exactly like the original screen.
+void uiDrawAgentDots(int activeCard, int count);
+
+// Agent-activity screens. `repo`/`tool`/`note` are what that session's last
+// `?agent=` ping carried (status_channel.h) and may each be empty — the card
+// draws whatever is there. `pos`/`total` place it in the stack of live sessions
+// (statusChannelAgentCards): one screen per session, steppable with the
+// horizontal axis while it is up. Strings rather than the AgentInfo struct so
+// the UI layer keeps its distance from the parser headers.
 void usageDisplayDrawThinking(uint32_t elapsedMs, const char* repo, const char* tool,
-                              int running);
-void usageDisplayDrawWaiting(uint32_t elapsedMs, const char* note, const char* repo);
+                              int pos, int total);
+void usageDisplayDrawWaiting(uint32_t elapsedMs, const char* note, const char* repo,
+                             int pos, int total);
 
 // Firmware update in flight (ArduinoOTA). The device reboots on success, so
 // this screen is never dismissed by the UI: it is painted from the OTA progress

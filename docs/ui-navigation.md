@@ -19,7 +19,8 @@
   page enters from the right, right = content slides right / previous page
   enters from the left. They are always on the page axis (even on Weather) and,
   like the swipe, wrap at the ends. Unlike Key1 they are not context-sensitive,
-  and they do not dismiss the thinking animation.
+  and they do not dismiss the thinking animation. While an agent card is up they
+  step the card stack instead (see [Agent cards](#agent-cards-thinking--needs-you)).
 - Weather cards reserve the right `WC_R` margin so content never collides with the
   card dots.
 
@@ -31,6 +32,38 @@ dependency so `pager.cpp` can reason about pages without pulling in the display.
 
 Text is rendered with LVGL Montserrat (anti-aliased, all copy in English) — see
 [text-lvgl.md](text-lvgl.md). Text helpers take and return **logical** units.
+
+## Agent cards (Thinking / Needs you)
+
+The PC drives these over the device channel ([pc-bridge.md](pc-bridge.md)); they
+are not part of the carousel and have no page dots of their own.
+
+- **One card per live session.** A card is a breathing ring (`drawBreathingRing()`
+  in `src/ui/cards.cpp`) plus three lines: the state ("Thinking..." blue, "Needs
+  you" amber with a `!`), the project (`repo • tool` when working, the question
+  when blocked), and the footer — that session's own elapsed time on the right,
+  its position in the stack (`2/3`) on the left. Card 0 is the session that owns
+  the screen (blocked longest if anything is waiting, else the most recently
+  active), which is why one session looks exactly like the original screen.
+- **The horizontal axis is the card stack.** Swipe, either side key, or a tap
+  steps to the next card (`pagerSetAgentMode()` in `pager.cpp`): a drag ratchets
+  one card per 34 logical px so it answers while the finger is still down, since
+  there is no slide animation here. Page dots are replaced by a row of session
+  dots at the bottom. The page underneath never moves — dismissing a card lands
+  exactly where the pager was left.
+- **Waiting is modal, working is ambient.** A waiting session owns the panel until
+  Key1 dismisses it (silently: no chime). A running one owns it for three seconds
+  (`AGENT_HOLD_MS`) and then gives it back, because with several windows open
+  "something is always running" would otherwise hide every other page all day.
+- **The status-bar chip** (`s_env.agentNote`, drawn by `statusBar()` in the note
+  slot) is what is left when the cards are down: `running` / `2 running` in the
+  working blue, `needs you` / `2 waiting` in amber (read from the session table,
+  so a Key1 dismissal cannot hide a blocked session), and `esp32 done` /
+  `esp32 failed` for eight seconds after a completion that the aggregate state
+  does not otherwise announce. Key1 with the cards down re-opens them.
+- The screens are redrawn at the animation cadence (`ANIM_FRAME_MS`, 60 ms) and
+  never participate in `uiFrameKey()` — they are either on or off.
+
 
 ## Usage page (and its "re-authorise" state)
 

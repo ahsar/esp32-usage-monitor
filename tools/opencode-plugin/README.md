@@ -44,15 +44,21 @@ still repaints — and each request is fire-and-forget with a short timeout. A
 device that is off, asleep, or on another network can never slow OpenCode down.
 
 **`session` is what makes two windows work.** The plugin maps each OpenCode
-session id to a short token (`s1`, `s2`, …) and sends it on every state,
-`done`/`failed` included, so the device removes the right entry instead of
-clearing "the" agent state. Two windows working at once show `2 running`; a
+session id to a short token and sends it on every state, `done`/`failed`
+included, so the device removes the right entry instead of clearing "the" agent
+state. The token is a per-process tag plus a counter (`k3fa1`, `k3fa2`, …) rather
+than a bare counter, because **two OpenCode windows are two plugin processes and
+would otherwise both call themselves `s1`** — one window's `done` then deleted the
+other's `running`. Two windows working at once show two cards on the device; a
 `waiting` in either one owns the screen. While a session is active the plugin also
-**re-sends its last state every ten minutes** (`heartbeatMs`): the device treats a
-repeat as a no-op on screen, but it keeps the session alive, so a host that
-crashes is forgotten after 45 minutes instead of leaving "Thinking…" up for hours.
-A heartbeat cannot re-open a screen you dismissed with Key1; only a state change
-does.
+**re-sends its last state every ten minutes** (`heartbeatMs`) — one heartbeat per
+session, so neither of two sessions in the same process can age out while it is
+still working. The device treats a repeat as a no-op on screen, but it keeps the
+session alive, so a host that crashes is forgotten after 45 minutes instead of
+leaving a card up for hours. A heartbeat cannot re-open a screen you dismissed
+with Key1; only a state change does. On unload the plugin sends `done` for every
+session it knew, so closing a window takes its card down immediately — the TTL is
+only the backstop for a crash.
 
 **Context (the `repo`/`tool`/`note` fields).** `repo` is the basename of the
 OpenCode server's working directory — the session's project root. `tool` is the
