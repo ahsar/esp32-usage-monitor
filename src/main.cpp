@@ -98,11 +98,13 @@ static const uint32_t WIFI_TRY_MS = 45000;   // connect grace (30 s) + slack
 
 // ---- display power (state-driven render + idle dim) ------------------------
 static bool     s_screenDim = false;
-// Awake brightness: an index into BRIGHT_LUT (see hw/display.h). The factory
+// Awake brightness: an index into BRIGHT_LUT (see hw/display.h). It is the same
+// value hwDisplayInit() boots at (HW_BRIGHT_AWAKE), so "just powered on" and
+// "woken by a tap / the agent state machine" cannot drift apart. The factory
 // default is named because the settings channel can *clear* its override, and a
 // cleared override has to land back here — 0 would mean the dim level, which is
 // what BRIGHT_LUT[0] is.
-static const uint8_t DEFAULT_BRIGHT_LEVEL = 2;   // BRIGHT_LUT[2] = 150/255
+static const uint8_t DEFAULT_BRIGHT_LEVEL = HW_BRIGHT_AWAKE;   // 130/255
 static int      s_brightLevel = DEFAULT_BRIGHT_LEVEL;
 static uint32_t s_lastActivity = 0;
 static bool     s_swallowKey   = false;  // first key only wakes, doesn't act
@@ -954,7 +956,7 @@ void setup() {
     settingsOverlay(st, s_cfg);
     if (st.set & SET_BRIGHTNESS) {
         s_brightLevel = st.brightness;
-        hwDisplayBrightness((uint8_t)s_brightLevel);   // hwDisplayInit() left 150
+        hwDisplayBrightness((uint8_t)s_brightLevel);   // same level hwDisplayInit() booted at
     }
     // Location and timezone come from config, so they have to land before the
     // fetch task starts (the request paths) and before the RTC seeds the system

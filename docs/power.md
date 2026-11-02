@@ -56,6 +56,11 @@ default 40 MHz (`BOARD_DISPLAY_QSPI_HZ`): 80 MHz intermittently wedges the bus
 mid-push on this panel, so higher values need to be proven on hardware first.
 Idle also dims the panel but **never blanks it** (so it stays glanceable):
 
+- The awake level is `BRIGHT_LUT[HW_BRIGHT_AWAKE]` (`src/hw/display.h`, index 2
+  = 130/255). `hwDisplayInit()` and `screenWake()` both take it from there, so
+  the brightness just after power-on and the brightness a touch/key/agent-state
+  wake restores are the same value by construction — they used to agree only
+  because two separate literals happened to be 150.
 - 30 s idle (`IDLE_DIM_MS`) → brightness `BRIGHT_LUT[0]` = 50/255, and it stays
   there until activity (no full screen-off stage).
 - Any touch/key wakes it, and so does the device channel: a session entering

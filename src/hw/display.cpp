@@ -32,7 +32,12 @@ public:
   }
 };
 
-static const uint8_t BRIGHT_LUT[5] = { 50, 100, 150, 200, 255 };
+// Panel brightness, 0..255, indexed by the level main.cpp and the settings
+// channel speak in (`brightness=1..4`). Index 0 is the idle-dim level and is
+// deliberately not settable; index 2 (HW_BRIGHT_AWAKE, in display.h) is the
+// awake level boot and wake share. It is 130, a notch below the 150 it used to
+// be — by request, and only that entry moved.
+static const uint8_t BRIGHT_LUT[5] = { 50, 100, 130, 200, 255 };
 
 #if BOARD_DISPLAY_SH8601_VENDOR_INIT
 // LVGL demo SH8601 init for the 2.16 panel revision.
@@ -106,7 +111,8 @@ bool hwDisplayInit() {
 #endif
 #if BOARD_DISPLAY_SH8601_VENDOR_INIT
   sh8601_vendor_init(s_bus);
-  // The vendor init ends with brightness max (0x51 0xFF) and DISPON.
+  // The vendor init ends with brightness max (0x51 0xFF) and DISPON; the awake
+  // level is set below, once, for every board.
   // Black-fill the whole panel once so the borders aren't whatever junk
   // the controller had at power-up.
   s_gfx->fillScreen(0x0000);
@@ -118,8 +124,11 @@ bool hwDisplayInit() {
   // frame). Black = pixels off = no power draw.
   s_gfx->fillScreen(0x0000);
   delay(20);
-  s_gfx->setBrightness(150);  // default mid-brightness; main may override later
 #endif
+  // The boot level and the wake level are the same value by construction
+  // (HW_BRIGHT_AWAKE): a settings override or a wake only ever moves the panel
+  // between BRIGHT_LUT entries, never to a different literal.
+  s_gfx->setBrightness(BRIGHT_LUT[HW_BRIGHT_AWAKE]);
 
   // Bring up the LVGL text rasteriser now that the framebuffer exists, so every
   // text draw (including the hwInit failure report) goes through one pipeline.

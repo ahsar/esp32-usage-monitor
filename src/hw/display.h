@@ -120,6 +120,13 @@ private:
 
 bool hwDisplayInit();
 void hwDisplayPush();
+
+// Awake panel level, as an index into BRIGHT_LUT (0 is the idle-dim level, so
+// the awake one is never 0). hwDisplayInit() and main.cpp's screenWake() both
+// take the level from here, because "just booted" and "woken by a tap / the
+// agent state machine" have to look identical — they used to agree only
+// because two separate literals happened to both be 150/255.
+constexpr uint8_t HW_BRIGHT_AWAKE = 2;   // BRIGHT_LUT[2]
 void hwDisplayBrightness(uint8_t lvl_0_4);
 ScaledCanvas* hwCanvas();
 
