@@ -65,6 +65,27 @@ static size_t readRequestHead(WiFiClient& client, char* head, size_t cap) {
   return len;
 }
 
+// One line per requester, the mirror of the `ble:` line in ble_status.cpp: which
+// peer, what it asked for, what it got and how long it took. This is the only
+// trace an HTTP request leaves on the console — status_channel.cpp logs what a
+// request *meant* ("state=running", "settings: …"), which is nothing at all for a
+// probe, a settings read, or a request the transport itself turned away (405/414),
+// and those are exactly the ones worth seeing when the panel does not react.
+//
+// `http-in:` rather than `http:`: that prefix is the *outbound* client's
+// (http_client.cpp, and the `tls=…` figures tools/link_probe.py parses), and one
+// grep over a console capture should not mix the two directions.
+//
+// The query is the bytes off the wire, so the one kind that carries a secret
+// (WiFi credentials) is redacted by the same helper the BLE line uses —
+// wifi_cred_parse.h is the single place that decides what a query may be printed.
+static void logRequest(const char* peer, const char* what, const char* status,
+                       uint32_t ms) {
+  char safe[80];
+  Serial.printf("http-in: %s %s -> %s (%lums)\n", peer,
+                wifiQueryForLog(what, safe, sizeof(safe)), status, (unsigned long)ms);
+}
+
 // ---- the HTTP transport ---------------------------------------------------
 
 extern "C" void handleHttpStatus() {
@@ -72,6 +93,13 @@ extern "C" void handleHttpStatus() {
   if (!client) return;
 
   client.setTimeout(50);
+  const uint32_t t0 = millis();
+
+  // The peer is taken up front because every exit below — including the two that
+  // never reach the channel — is now worth a line.
+  IPAddress ip = client.remoteIP();
+  char peer[24];
+  snprintf(peer, sizeof(peer), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
 
   // Read the request head (request line + headers) into a fixed buffer.
   static char req[HTTP_HEAD_MAX];
@@ -79,6 +107,11 @@ extern "C" void handleHttpStatus() {
 
   size_t g;
   if (!httpMemFind(req, reqLen, "GET ", 4, g)) {
+    // A peer that connects and says nothing is not a request (a port scan, a TCP
+    // health check, a client that died mid-handshake) and is also the one thing a
+    // host can produce in bulk, so it stays silent. A real non-GET is a client bug
+    // that would otherwise leave no trace at all.
+    if (reqLen) logRequest(peer, "<not a GET>", "405 Method Not Allowed", millis() - t0);
     respond(client, "405 Method Not Allowed");
     return;
   }
@@ -88,21 +121,24 @@ extern "C" void handleHttpStatus() {
   // channel's own caps (status_channel.h), so a WiFi request — an SSID plus a
   // passphrase with every byte percent-encoded — fits on both transports.
   char query[STATUS_QUERY_MAX] = {0};
-  char ts[STATUS_TS_MAX] = {0}, sig[STATUS_SIG_MAX] = {0}, peer[24] = {0};
+  char ts[STATUS_TS_MAX] = {0}, sig[STATUS_SIG_MAX] = {0};
   bool tooLong = false;
   if (!httpQueryFromHead(req, reqLen, query, sizeof(query), &tooLong)) query[0] = '\0';
   if (tooLong) {
     // Say so instead of answering the health-probe body: a request that was cut
     // to an empty query would come back "200 OK" and quietly do nothing.
+    logRequest(peer, "<query too long>", "414 URI Too Long", millis() - t0);
     respond(client, "414 URI Too Long");
     return;
   }
   httpHeaderValue(req, reqLen, "X-Ts", ts, sizeof(ts));
   httpHeaderValue(req, reqLen, "X-Sig", sig, sizeof(sig));
-  IPAddress ip = client.remoteIP();
-  snprintf(peer, sizeof(peer), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
 
   char body[STATUS_BODY_MAX];
   StatusReq r{query, ts, sig, peer};
-  respond(client, statusChannelHandle(r, body, sizeof(body)), body);
+  const char* status = statusChannelHandle(r, body, sizeof(body));
+  // An empty query is the health probe (`curl http://device/`), the one request
+  // with nothing to print.
+  logRequest(peer, query[0] ? query : "<probe>", status, millis() - t0);
+  respond(client, status, body);
 }

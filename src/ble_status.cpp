@@ -421,8 +421,11 @@ void bleStatusUpdate() {
       const char* status = statusChannelHandle(r, body, bodyCap);
       // Redacted for the one request kind that carries a secret: the shared
       // handler decides what a query means, this line just prints the frame.
+      // Same shape as the HTTP transport's `http-in:` line (status_server.cpp),
+      // peer first, so a capture of either transport reads the same way.
       char safe[64];
-      Serial.printf("ble: %s -> %s\n", wifiQueryForLog(q, safe, sizeof(safe)), status);
+      Serial.printf("ble: %s %s -> %s\n", peer, wifiQueryForLog(q, safe, sizeof(safe)),
+                    status);
       notifyReply(status, body);
     }
   }

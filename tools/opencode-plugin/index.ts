@@ -1,6 +1,8 @@
 import { Plugin } from "@opencode/plugin"
 import { spawn } from "node:child_process"
-import { basename } from "node:path"
+import { appendFileSync, mkdirSync, statSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 /**
@@ -25,6 +27,13 @@ import { fileURLToPath } from "node:url"
  *
  * Every request is fire-and-forget: a device that is off, asleep, or on another
  * network can never slow OpenCode down or surface an error.
+ *
+ * "Fire-and-forget" must not mean "invisible". `tools/monitor-send.sh` appends one
+ * line per send to `~/.cache/esp32-usage-monitor/send.log` (which transport carried
+ * it, what failed before it), and this file appends the decisions the script cannot
+ * see — a send the penalty box swallowed, a script that could not be started, the
+ * ladder this process resolved. Nothing is logged per event otherwise: a state
+ * repeat is a no-op by design, not something to write down.
  *
  * Load it from the global config:
  *
@@ -225,6 +234,35 @@ export default Plugin.define({
     const debug = Boolean(process.env.ESP32_MONITOR_DEBUG)
     const script = String(options.sendScript ?? process.env.ESP32_MONITOR_SEND ?? DEFAULT_SCRIPT)
 
+    // The log the send script appends to, resolved the same way it resolves it
+    // (XDG_CACHE_HOME, then ~/.cache), so the two ends write one file and a
+    // failing send reads as a single story instead of two silent halves.
+    const logFile = String(
+      options.logFile ??
+        process.env.ESP32_MONITOR_LOG ??
+        join(
+          process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
+          "esp32-usage-monitor",
+          "send.log",
+        ),
+    )
+    const LOG_MAX_BYTES = 131072
+    /** One line, best effort, rotated by truncation. A diagnostic must never
+     *  break the host — every failure here is dropped, not raised. */
+    const note = (msg: string) => {
+      try {
+        mkdirSync(dirname(logFile), { recursive: true })
+        try {
+          if (statSync(logFile).size > LOG_MAX_BYTES) writeFileSync(logFile, "")
+        } catch {
+          // no file yet: nothing to rotate
+        }
+        appendFileSync(logFile, `${new Date().toISOString()} plugin ${msg}\n`)
+      } catch {
+        // unwritable cache: drop the line, never the request
+      }
+    }
+
     const urls = resolveUrls(options)
     const env: Record<string, string> = {
       ...(process.env as Record<string, string>),
@@ -262,7 +300,13 @@ export default Plugin.define({
 
     const deliver = (query: string) =>
       new Promise<void>((resolve) => {
-        if (Date.now() < deadUntil) return resolve()
+        // The one silent drop the plugin has of its own: worth a line, because
+        // from the outside "the device did not react" looks the same whether the
+        // message was skipped here or never reached the LAN.
+        if (Date.now() < deadUntil) {
+          note(`skip (penalty ${deadUntil - Date.now()}ms left) ${query}`)
+          return resolve()
+        }
 
         const child = spawn(script, [query], { env, stdio: ["ignore", "ignore", "pipe"] })
 
@@ -288,12 +332,14 @@ export default Plugin.define({
             // A usage/spawn error (bad path, missing python, …) — do not
             // penalise, it will not fix itself, but do not hide it either.
             console.error(`[esp32-monitor] ${query} → send script exited ${code} (${script})`)
+            note(`script exited ${code} (${script}) ${query}`)
           }
           resolve()
         }
 
         child.on("error", (err) => {
           console.error(`[esp32-monitor] cannot run ${script}: ${String(err)}`)
+          note(`cannot run ${script}: ${String(err)}`)
           done(null)
         })
         child.on("close", done)
@@ -313,6 +359,12 @@ export default Plugin.define({
         `[esp32-monitor] ladder: ${urls.join(" → ")}${ble ? "" : " (ble off)"} via ${script} (auth ${key ? "on" : "off"})`,
       )
     }
+    // The same line in the file, unconditionally: a session's log then starts
+    // with the ladder it actually resolved, which is what a later "sent http
+    // http://192.168.20.31 → 200" line is relative to.
+    note(
+      `ladder: ${urls.join(" → ")}${ble ? "" : " (ble off)"} via ${script} (auth ${key ? "on" : "off"})`,
+    )
 
     // A heartbeat while a session is active. The device treats a repeat of the
     // same state as a no-op on screen, but it refreshes that session's liveness,

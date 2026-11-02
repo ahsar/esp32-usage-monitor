@@ -253,7 +253,9 @@ Read the relevant one before changing that area:
   whether the I2S DMA was starved); the before/after check for the audio path
 - `tools/opencode-plugin/` — OpenCode V2 plugin that drives the status endpoint
 - `tools/monitor-send.sh` — the transport ladder as one command (HTTP last-good →
-  learned/BLE IP → configured URLs → BLE one-shot); what the plugin spawns
+  learned/BLE IP → configured URLs → BLE one-shot); what the plugin spawns, and it
+  appends one line per send to `~/.cache/esp32-usage-monitor/send.log` (always on —
+  the host half of the `http-in:` console line, docs/pc-bridge.md)
 - `tools/status-ping.sh` — signed status ping, for testing the device by hand
 - `tools/status-notice.sh` — push/clear a Notice-page line (`--kind`, `--ttl`, `--left`)
 - `tools/status-settings.sh` — read/change chime, its volume, brightness and the location over the

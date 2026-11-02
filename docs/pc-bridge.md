@@ -17,6 +17,52 @@ channel is also served over BLE for hosts the LAN cannot reach — see
 The same channel also carries the settings channel and the WiFi credentials
 request — see below.
 
+## Where a request shows up
+
+Two logs, and a send that "did nothing" is traced in the order the request
+travels: the host first, then the device.
+
+**On the device's console** (`pio device monitor`, or a capture with
+`tools/serial_capture.py`) every accepted HTTP request is one line, whatever its
+outcome — including the ones the transport turns away itself, which are exactly
+the ones that used to leave no trace at all:
+
+```
+http-in: 192.168.20.5 agent=1&state=running&repo=esp32-usage-monitor -> 200 OK (3ms)
+http-in: 192.168.20.5 <probe> -> 200 OK (0ms)                  # curl http://device/
+http-in: 192.168.20.5 state=running -> 401 Unauthorized (2ms)  # wrong status_key
+http-in: 192.168.20.5 <query too long> -> 414 URI Too Long (1ms)
+```
+
+`http-in:` and not `http:` on purpose: `http: <host> -> <status> ip=… tls=…` is
+the *outbound* client (docs/threading-fetch.md) and the figures
+`tools/link_probe.py` parses; one grep over a capture should not mix directions.
+A WiFi credentials query is printed redacted — `wifi_ssid=<credentials,
+passphrase redacted>`, from `wifiQueryForLog()` in `src/parse/wifi_cred_parse.h` —
+because neither the console nor the host log has any business holding a
+passphrase. The BLE transport prints the same shape, `ble: <bda> <query> ->
+<status>`. A peer that connects and then sends nothing stays silent: that is a
+port scan or a TCP health check, and it is the one thing a host can produce in
+bulk.
+
+**On the host**, `~/.cache/esp32-usage-monitor/send.log` (honours `XDG_CACHE_HOME`,
+`ESP32_MONITOR_LOG` overrides it) gets one line per `tools/monitor-send.sh`
+invocation — the rung that carried it and everything that failed before it — and
+this is **always on**, not gated on `ESP32_MONITOR_DEBUG`. A fire-and-forget
+sender that fails quietly is indistinguishable from one that never ran, and the
+plugin's stderr is invisible from a TUI; the debug flag only adds the per-rung
+narration on top. The plugin contributes what the script cannot see: a send
+swallowed by its penalty box, a script that would not start, and the ladder the
+session resolved.
+
+```
+2026-10-30T21:44:16+0800 sent http http://192.168.20.31 -> 200 (tried http://usage-monitor.local -> no answer) :: agent=1&state=running&repo=esp32-usage-monitor
+2026-10-30T21:44:20+0800 FAILED no transport (http://usage-monitor.local -> no answer, ble -> no device found) :: state=done
+```
+
+Both files are rotated by truncation at ~128 KB: they are diagnostics, not an
+archive.
+
 **Agent context.** `?agent=` is a *separate request kind*, not more fields on
 `?state=`, and that is a security decision rather than a taxonomy one: a state
 ping keeps the original value-only signature (the device finds `state=running`

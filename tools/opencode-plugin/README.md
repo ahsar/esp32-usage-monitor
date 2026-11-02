@@ -209,7 +209,10 @@ omitted, in which case `url` is used if set, then the `ESP32_MONITOR_URLS`
 `http://usage-monitor.local`. The bridge is appended unless `"ble": false`.
 `heartbeatMs` (default 600000) is how often an active session re-sends its state
 so a crashed host is forgotten; set it to 0 to disable the heartbeat (the device
-then drops the screen 45 minutes after the last real event).
+then drops the screen 45 minutes after the last real event). `sendTimeoutMs` and
+`penaltyMs` are the per-send budget and the quiet period after a failed one, and
+`logFile` overrides where the send log goes (default
+`~/.cache/esp32-usage-monitor/send.log`, same as the script's).
 
 ### 4. Restart the OpenCode service
 
@@ -222,10 +225,26 @@ opencode service restart
 
 ## Debugging
 
+**Every send is logged to a file, always** — `~/.cache/esp32-usage-monitor/send.log`
+(`XDG_CACHE_HOME` honoured, `ESP32_MONITOR_LOG` overrides the path). One line per
+message, from `tools/monitor-send.sh`, plus the plugin's own lines for the
+decisions the script cannot see (a send the penalty box swallowed, a script that
+would not start, the ladder this session resolved):
+
+```
+2026-10-30T21:44:16+0800 plugin ladder: http://usage-monitor.local → http://172.16.29.91 via …/monitor-send.sh (auth off)
+2026-10-30T21:44:19+0800 sent http http://172.16.29.91 -> 200 (tried http://usage-monitor.local -> no answer) :: agent=1&state=running&repo=esp32-usage-monitor
+2026-10-30T21:44:20+0800 plugin skip (penalty 28900ms left) state=done
+```
+
+That is the first thing to read when the panel does not change: it separates "never
+sent" from "sent and answered" without touching OpenCode's own output. The file is
+rotated by truncation at ~128 KB. On the device side, each accepted request is one
+`http-in: …` line on the console (or `ble: …` over BLE) — see docs/pc-bridge.md.
+
 Set `ESP32_MONITOR_DEBUG=1` **before the service starts** (the service, not the
-TUI, reads it) to log every state transition and every failure. Without it the plugin
-is silent apart from real errors. The line printed at startup shows the ladder it
-will run:
+TUI, reads it) to also get every state transition and failure on stderr. The line
+printed at startup shows the ladder it will run:
 
 ```
 [esp32-monitor] ladder: http://usage-monitor.local → http://172.16.29.91 via …/monitor-send.sh (auth off)

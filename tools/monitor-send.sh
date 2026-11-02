@@ -39,6 +39,14 @@
 #
 # Exit: 0 = the device was reached (any HTTP status: 401/403 is an auth answer,
 # not a transport failure), 1 = nothing reached it, 2 = usage error.
+#
+# Every invocation also appends one line to
+# ${XDG_CACHE_HOME:-~/.cache}/esp32-usage-monitor/send.log — the winning transport
+# and what was tried before it, or "FAILED no transport". That file is always on:
+# a fire-and-forget sender that fails quietly is indistinguishable from one that
+# never ran, and the plugin's stderr is invisible from a TUI. ESP32_MONITOR_DEBUG
+# only adds the per-rung narration on top of it. WiFi credentials are redacted in
+# the log exactly as they are on the device's console.
 
 set -uo pipefail
 
@@ -48,6 +56,33 @@ cache="$cache_dir/last-url"
 ble_log="$cache_dir/ble-last.log"
 
 debug() { [ -n "${ESP32_MONITOR_DEBUG:-}" ] && printf '[monitor-send] %s\n' "$*" >&2 || true; }
+
+# A persistent one-liner per invocation, always on — not gated on
+# ESP32_MONITOR_DEBUG. The whole point of the ladder is to fail quietly, and the
+# plugin's stderr is invisible from a TUI, so without this a send that never
+# arrived is indistinguishable from one that was never made. Rotated by
+# truncation rather than appended forever: this is a diagnostic, not an archive.
+log_file="$cache_dir/send.log"
+LOG_MAX_BYTES=131072
+log() {
+  local size
+  mkdir -p "$cache_dir" 2>/dev/null || true
+  if [ -f "$log_file" ]; then
+    size="$(wc -c <"$log_file" | tr -d ' ')"
+    if [ "${size:-0}" -gt "$LOG_MAX_BYTES" ]; then : >"$log_file"; fi
+  fi
+  printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >>"$log_file" 2>/dev/null || true
+}
+
+# The one query that carries a secret. Mirrors wifiQueryForLog() in
+# src/parse/wifi_cred_parse.h: neither the serial console nor this file has any
+# business holding a passphrase.
+log_query() {
+  case "$1" in
+    wifi_*) printf 'wifi_ssid=<credentials, passphrase redacted>' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
 
 # ---- the query ------------------------------------------------------------
 
@@ -133,6 +168,9 @@ else
 fi
 
 http_timeout="${ESP32_MONITOR_HTTP_TIMEOUT_S:-2}"
+# What the log line shows for this request: the query, minus a passphrase.
+shown="$(log_query "$query")"
+notes=""
 for u in ${urls[@]+"${urls[@]}"}; do
   # --max-time bounds the whole operation, name resolution included, which is
   # what keeps a blocked mDNS from stalling the ladder.
@@ -140,9 +178,11 @@ for u in ${urls[@]+"${urls[@]}"}; do
             ${hdr[@]+"${hdr[@]}"} "$u/?$query" 2>/dev/null)" || code=""
   if [ -n "$code" ] && [ "$code" != "000" ]; then
     debug "http $u → $code"
+    log "sent http $u → $code${notes:+ (tried ${notes})} :: $shown"
     last_good="$u"; save_cache
     exit 0
   fi
+  notes="${notes:+$notes, }$u → no answer"
   debug "http $u → no answer"
 done
 
@@ -160,10 +200,13 @@ if [ "${ESP32_MONITOR_BLE:-1}" != "0" ]; then
     else
       debug "ble → ok"
     fi
+    log "sent ble${notes:+ (tried ${notes})} :: $shown"
     exit 0
   fi
   debug "ble → $(tail -n 1 "$ble_log" 2>/dev/null || echo failed)"
+  notes="${notes:+$notes, }ble → $(tail -n 1 "$ble_log" 2>/dev/null || echo failed)"
 fi
 
 debug "no transport reached the device"
+log "FAILED no transport${notes:+ ($notes)} :: $shown"
 exit 1
