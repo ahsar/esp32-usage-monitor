@@ -134,6 +134,13 @@ static bool (*s_wifiCb)(const WifiCred&) = nullptr;
 static uint32_t s_lastRejectLog = 0;
 
 void statusChannelSetWakeCallback(void (*cb)()) { s_wakeCb = cb; }
+
+// The one place the UI actor is told "look at this". Idempotent on the UI side
+// (screenWake() only restores the awake level and resets the idle timer), so an
+// event that also moved the aggregate may call it twice without harm.
+static void wakePanel() {
+  if (s_wakeCb) s_wakeCb();
+}
 void statusChannelSetSettings(const DeviceSettings& s) { s_settings = s; }
 void statusChannelSetSettingsCallback(bool (*cb)(const DeviceSettings&, uint16_t)) {
   s_settingsCb = cb;
@@ -160,12 +167,14 @@ static void syncAgent(uint32_t now, bool allowCue) {
   const char* ev = st ? st : (s_agents.lastEndedFailed ? "failed" : "done");
 
   bool changed = statusMachineApply(s_machine, ev, now, allowCue);
-  if (changed && allowCue && s_wakeCb) s_wakeCb();
+  if (changed && allowCue) wakePanel();
 }
 
 bool     statusChannelThinking()      { return statusMachineThinking(s_machine); }
 bool     statusChannelWaiting()       { return statusMachineWaiting(s_machine); }
 uint32_t statusChannelStateSince()    { return statusMachineSince(s_machine); }
+
+uint32_t statusChannelAgentStartSince() { return agentSessionsLastStart(s_agents); }
 int      statusChannelAgentCount()    { return agentSessionsActive(s_agents); }
 int      statusChannelAgentWaitingCount() { return agentSessionsWaiting(s_agents); }
 
@@ -315,8 +324,19 @@ static const char* channelAgent(const StatusReq& r, char* body, size_t cap) {
   // has the text that goes with it. A repeat of the same state is a no-op there
   // (no chime, no wake), which is what makes the plugin's heartbeat free.
   bool enteredWaiting = false;
-  agentSessionsApply(s_agents, req.session, req.state, req.info, millis(), &enteredWaiting);
+  bool enteredRunning = false;
+  const uint32_t endedRev = s_agents.endedRev;
+  agentSessionsApply(s_agents, req.session, req.state, req.info, millis(),
+                     &enteredWaiting, &enteredRunning);
+  const bool endedNow = s_agents.endedRev != endedRev;
   syncAgent(millis(), true);
+
+  // Wake on the *session's* own edges, not only the aggregate's: a second window
+  // starting while the first is still working, and a completion (which leaves no
+  // state at all), both used to be invisible on a dimmed panel — the aggregate
+  // never changes, so syncAgent's transition wake never fires. These are exactly
+  // the moments the device sits on the desk for.
+  if (enteredRunning || enteredWaiting || endedNow) wakePanel();
 
   // The cue belongs to the *session*, not to the aggregate: once one question is
   // on screen, a second window asking one used to arrive in complete silence.
@@ -485,8 +505,14 @@ const char* statusChannelHandle(const StatusReq& r, char* body, size_t cap) {
   if (si >= 0) info = s_agents.s[si].info;
   else         agentInfoClear(info);
   bool enteredWaiting = false;
-  agentSessionsApply(s_agents, "", st, info, millis(), &enteredWaiting);
+  bool enteredRunning = false;
+  const uint32_t endedRev = s_agents.endedRev;
+  agentSessionsApply(s_agents, "", st, info, millis(), &enteredWaiting, &enteredRunning);
+  const bool endedNow = s_agents.endedRev != endedRev;
   syncAgent(millis(), true);
+  // Same per-session edges as ?agent= (this is the single empty-id session the
+  // older plugin drives): a start while it is already running, and a completion.
+  if (enteredRunning || enteredWaiting || endedNow) wakePanel();
   if (enteredWaiting && s_machine.pending == STATUS_EV_NONE)
     s_machine.pending = STATUS_EV_WAITING;
   Serial.printf("state=%s\n", st);

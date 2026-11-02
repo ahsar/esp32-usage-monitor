@@ -1649,6 +1649,83 @@ void test_agent_sessions_waiting_cue(void) {
   TEST_ASSERT_EQUAL_INT(2, agentSessionsWaiting(t));
 }
 
+// The per-session *start* edge: a second window beginning while the first is
+// still working leaves the aggregate at "running", so nothing about the machine
+// changes — but the panel still has to light up and show that session's "it
+// started" card. A heartbeat (same state) is not a start.
+void test_agent_sessions_running_cue(void) {
+  AgentTable t;
+  AgentInfo a, b, c;
+  agentInfoClear(a); strcpy(a.repo, "alpha");
+  agentInfoClear(b); strcpy(b.repo, "beta");
+  agentInfoClear(c); strcpy(c.repo, "gamma");
+
+  bool entered = true;
+  TEST_ASSERT_TRUE(agentSessionsApply(t, "s1", "running", a, 1000, nullptr, &entered));
+  TEST_ASSERT_TRUE(entered);
+
+  // A heartbeat, and a heartbeat carrying a new tool, are not starts.
+  TEST_ASSERT_FALSE(agentSessionsApply(t, "s1", "running", a, 2000, nullptr, &entered));
+  TEST_ASSERT_FALSE(entered);
+  AgentInfo a2 = a;
+  strcpy(a2.tool, "bash");
+  agentSessionsApply(t, "s1", "running", a2, 2500, nullptr, &entered);
+  TEST_ASSERT_FALSE(entered);
+
+  // The second session starting is the edge the aggregate cannot see.
+  TEST_ASSERT_EQUAL_STRING("running", agentSessionsStateName(t));
+  TEST_ASSERT_TRUE(agentSessionsApply(t, "s2", "running", b, 3000, nullptr, &entered));
+  TEST_ASSERT_TRUE(entered);
+  TEST_ASSERT_EQUAL_STRING("running", agentSessionsStateName(t));
+
+  // Blocked, answered, resumed: that is a start again.
+  agentSessionsApply(t, "s2", "waiting", b, 4000);
+  agentSessionsApply(t, "s2", "running", b, 5000, nullptr, &entered);
+  TEST_ASSERT_TRUE(entered);
+
+  // A brand-new session that is already waiting is a *waiting* edge, not a start.
+  agentSessionsApply(t, "s3", "waiting", c, 6000, nullptr, &entered);
+  TEST_ASSERT_FALSE(entered);
+
+  // Completions never set it.
+  agentSessionsApply(t, "s1", "done", AgentInfo{}, 7000, nullptr, &entered);
+  TEST_ASSERT_FALSE(entered);
+}
+
+// The clock main.cpp re-arms the running hold on: the newest state change among
+// the live sessions, so a second start is not hidden behind the first one's
+// long-expired timer.
+void test_agent_sessions_last_start(void) {
+  AgentTable t;
+  AgentInfo a;
+  agentInfoClear(a);
+  TEST_ASSERT_EQUAL_UINT32(0, agentSessionsLastStart(t));
+
+  agentSessionsApply(t, "s1", "running", a, 1000);
+  TEST_ASSERT_EQUAL_UINT32(1000, agentSessionsLastStart(t));
+
+  // A heartbeat does not move it…
+  agentSessionsApply(t, "s1", "running", a, 5000);
+  TEST_ASSERT_EQUAL_UINT32(1000, agentSessionsLastStart(t));
+
+  // …a second session's start does.
+  agentSessionsApply(t, "s2", "running", a, 6000);
+  TEST_ASSERT_EQUAL_UINT32(6000, agentSessionsLastStart(t));
+
+  // A completion drops that session; what is left keeps its own clock.
+  agentSessionsApply(t, "s2", "done", AgentInfo{}, 7000);
+  TEST_ASSERT_EQUAL_UINT32(1000, agentSessionsLastStart(t));
+
+  // millis() wrap: a start just after the rollover is still the newer one.
+  AgentTable w;
+  agentSessionsApply(w, "a", "running", a, 0xFFFFFF00u);
+  agentSessionsApply(w, "b", "running", a, 0x00000100u);
+  TEST_ASSERT_EQUAL_UINT32(0x00000100u, agentSessionsLastStart(w));
+
+  agentSessionsClear(t);
+  TEST_ASSERT_EQUAL_UINT32(0, agentSessionsLastStart(t));
+}
+
 // A completion in the middle of a multi-session day is otherwise completely
 // silent: the aggregate never leaves running, so neither the chime nor the screen
 // changes. The table records what ended, for the status bar's "esp32 done".
@@ -1932,6 +2009,8 @@ int main(int, char**) {
   RUN_TEST(test_agent_sessions_capacity);
   RUN_TEST(test_agent_sessions_order);
   RUN_TEST(test_agent_sessions_waiting_cue);
+  RUN_TEST(test_agent_sessions_running_cue);
+  RUN_TEST(test_agent_sessions_last_start);
   RUN_TEST(test_agent_sessions_ended);
   RUN_TEST(test_agent_sessions_expire_is_not_ended);
   RUN_TEST(test_forecast_parse);

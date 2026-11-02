@@ -55,12 +55,18 @@ are not part of the carousel and have no page dots of their own.
   Key1 dismisses it (silently: no chime). A running one owns it for three seconds
   (`AGENT_HOLD_MS`) and then gives it back, because with several windows open
   "something is always running" would otherwise hide every other page all day.
+  The hold is armed by the *newest session start* (`agentSessionsLastStart()`,
+  taken together with the aggregate clock), so a second window beginning while the
+  first is still working lights the panel and animates for three seconds too,
+  instead of inheriting the first one's expired timer. A heartbeat moves nothing.
 - **The status-bar chip** (`s_env.agentNote`, drawn by `statusBar()` in the note
   slot) is what is left when the cards are down: `running` / `2 running` in the
   working blue, `needs you` / `2 waiting` in amber (read from the session table,
   so a Key1 dismissal cannot hide a blocked session), and `esp32 done` /
   `esp32 failed` for eight seconds after a completion that the aggregate state
-  does not otherwise announce. Key1 with the cards down re-opens them.
+  does not otherwise announce. A completion wakes the panel as well (there is no
+  card left to draw by the time the session is removed), so on a dimmed dashboard
+  the chip is the whole message. Key1 with the cards down re-opens them.
 - The screens are redrawn at the animation cadence (`ANIM_FRAME_MS`, 60 ms) and
   never participate in `uiFrameKey()` — they are either on or off.
 

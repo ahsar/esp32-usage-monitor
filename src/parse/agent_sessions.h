@@ -90,10 +90,17 @@ inline void agentSessionRemove(AgentTable& t, int i) {
 // waiting — the per-session cue the aggregate machine cannot produce: once the
 // screen is already waiting for one session, a second one asking a question is
 // a state change nobody would hear otherwise.
+//
+// `enteredRunning` (optional) is the same edge for a start: a second window that
+// begins while the first is still working leaves the aggregate at "running", so
+// without this the panel never lights up for it and its "it started" hold never
+// gets a clock of its own. A heartbeat (same state) is not a start.
 inline bool agentSessionsApply(AgentTable& t, const char* id, const char* state,
                                const AgentInfo& info, uint32_t now,
-                               bool* enteredWaiting = nullptr) {
+                               bool* enteredWaiting = nullptr,
+                               bool* enteredRunning = nullptr) {
   if (enteredWaiting) *enteredWaiting = false;
+  if (enteredRunning) *enteredRunning = false;
   if (!state || !state[0]) return false;
   const char* sid = id ? id : "";
 
@@ -138,6 +145,7 @@ inline bool agentSessionsApply(AgentTable& t, const char* id, const char* state,
 
   if (strcmp(t.s[i].state, state)) {
     if (!strcmp(state, "waiting") && enteredWaiting) *enteredWaiting = true;
+    if (!strcmp(state, "running") && enteredRunning) *enteredRunning = true;
     snprintf(t.s[i].state, sizeof(t.s[i].state), "%s", state);
     anything = true;
   }
@@ -249,4 +257,21 @@ inline int agentSessionsWaiting(const AgentTable& t) {
   for (int i = 0; i < t.n; i++)
     if (!strcmp(t.s[i].state, "waiting")) w++;
   return w;
+}
+
+// The millis() of the newest state change among the live sessions, 0 when the
+// table is empty (wrap-safe comparison). This is the "one of them just started"
+// clock the running hold is re-armed on: the aggregate `since` only moves when
+// the *set* of states changes, so a second window starting while the first is
+// still running would otherwise inherit an expired clock and never animate.
+inline uint32_t agentSessionsLastStart(const AgentTable& t) {
+  uint32_t best = 0;
+  bool have = false;
+  for (int i = 0; i < t.n; i++) {
+    if (!have || (int32_t)(t.s[i].since - best) > 0) {
+      best = t.s[i].since;
+      have = true;
+    }
+  }
+  return best;
 }

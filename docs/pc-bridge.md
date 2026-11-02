@@ -8,9 +8,9 @@ channel is also served over BLE for hosts the LAN cannot reach — see
 
 | Request | State | Device |
 |---|---|---|
-| `?state=running` | agent working | "Thinking…" card, wakes the panel, then hands it back with a `running` chip |
-| `?state=waiting` | permission/question | "Needs you" card + attention beep; stays up until dismissed |
-| `?state=done` / `?state=failed` | finished / errored | rising two-beep / low beep (+ `esp32 done` in the chip if others keep running) |
+| `?state=running` | agent working | "Thinking…" card, wakes the panel (on every session start, not only the first of the day), then hands it back with a `running` chip |
+| `?state=waiting` | permission/question | "Needs you" card + attention beep; wakes the panel and stays up until dismissed |
+| `?state=done` / `?state=failed` | finished / errored | rising two-beep / low beep; wakes the panel and flashes `esp32 done` / `esp32 failed` in the chip for eight seconds |
 | `?agent=1&state=…&repo=…&tool=…&note=…&session=…` | the above, plus what it is doing | the same card, with the repo/tool/elapsed and, when waiting, what it is waiting for |
 | `?notice=1&kind=…&text=…&ttl=…[&left=…]` | a pushed one-liner | the Notice page, until the TTL runs out |
 
@@ -127,9 +127,20 @@ chip is read from the *session table*, not the state machine, so after a Key1
 dismissal it says `needs you` / `2 waiting` in amber instead of going quiet about a
 blocked session. Key1 while the cards are down re-opens them (the count is not the
 whole story — "what is it doing right now" has to be answerable without waiting for
-the next event). A completion in the middle of a multi-session day — no aggregate
-transition, so no chime and no screen change — flashes `esp32 done` in the same
-slot for eight seconds (`AGENT_ENDED_MS`).
+the next event).
+
+**Every session's own edges wake the panel.** The aggregate state only moves when
+the *set* of states changes, so a second window starting while the first is still
+working (or finishing in the middle of a multi-session day) used to be invisible on
+a dimmed panel. The device channel therefore wakes on the per-session edges too
+(`enteredRunning` / `enteredWaiting`, and a completion — detected by `endedRev`),
+and the three-second hold is armed from `agentSessionsLastStart()` rather than the
+aggregate clock, so a new window gets its own "it started" card instead of
+inheriting an hours-old timer. A heartbeat (same state, new tool name) still changes
+nothing: no wake, no chime, no re-opened screen. A completion has no card of its
+own (the session is removed on `done`), so it wakes to the dashboard and flashes
+`esp32 done` / `esp32 failed` in the status-bar slot for eight seconds
+(`AGENT_ENDED_MS`).
 
 **A session that goes silent is forgotten.** Nothing sends `done` when a host
 crashes or a laptop sleeps, so a session not heard from for 45 minutes

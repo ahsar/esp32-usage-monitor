@@ -545,7 +545,16 @@ static bool agentModal(uint32_t now, bool waiting, bool thinking, int agents) {
     // neither must the running hold (that one has already been seen).
     if (statusChannelDismissed()) return false;
     if (waiting) return true;
-    return thinking && (now - statusChannelStateSince()) < AGENT_HOLD_MS;
+    // The hold is armed by the *newest* session start, not only by the aggregate
+    // transition: with a second window opening while the first is still working,
+    // the aggregate never leaves running, so the aggregate clock is hours old and
+    // its "it started" card would never appear. statusChannelAgentStartSince() is
+    // that newer clock; mapping it in here is what makes the panel light up and
+    // animate for every session, not just the first one of the day.
+    uint32_t since = statusChannelStateSince();
+    uint32_t start = statusChannelAgentStartSince();
+    if ((int32_t)(start - since) > 0) since = start;
+    return thinking && (now - since) < AGENT_HOLD_MS;
 }
 
 // Position of the pinned card in `cards`, falling back to the owner when that

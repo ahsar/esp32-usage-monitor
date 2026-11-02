@@ -225,7 +225,12 @@ linked deep dive before changing the area.
   the status bar's chip (`s_env.agentNote`) carrying the count. That split is the
   point: with several windows, a permanently occupied panel is a panel that shows
   nothing, and the chip also keeps "needs you" honest after a Key1 dismissal (it
-  reads the *table*, not the state machine). The horizontal axis (swipe, side keys,
+  reads the *table*, not the state machine). The hold is armed from the **newest
+  session start** (`agentSessionsLastStart()`), and every session's own edges —
+  entering running/waiting and completing (`endedRev`) — wake the panel, because
+  the aggregate state cannot see a second window starting or a completion in the
+  middle of a multi-session day. A heartbeat must stay silent: no wake, no chime,
+  no re-opened screen. The horizontal axis (swipe, side keys,
   tap) steps cards while they are up — never pages underneath, which was input
   with no feedback. The selection is pinned by session token, not by index, or a
   session entering waiting would swap the card under the reader's eyes. Keep the

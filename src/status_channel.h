@@ -95,7 +95,10 @@ const char* statusChannelHandle(const StatusReq& req, char* body, size_t bodyCap
 void statusChannelSetKey(const char* key);
 bool statusChannelAuthEnabled();
 
-// Called on the transition into running/waiting (e.g. to wake the screen).
+// Called when the panel should be looked at: a session entering running or
+// waiting (including a second window starting while another already runs), and a
+// session completing (done/failed, which leaves no state of its own). Not on a
+// heartbeat, not on a session going silent.
 void statusChannelSetWakeCallback(void (*cb)());
 
 // Seed the settings channel with what boot loaded from /settings.json, so
@@ -157,6 +160,11 @@ bool     statusChannelWaiting();
 // "it just started working" clock: unlike a card's own `sinceMs`, it does not
 // move when one session hands the screen over to another.
 uint32_t statusChannelStateSince();
+// The newest state change among the live sessions, or 0 when none. main.cpp's
+// running hold takes the later of this and statusChannelStateSince(), so a
+// second window starting while the first is still running re-arms the 3 s
+// "it started" card — the aggregate clock would not move at all.
+uint32_t statusChannelAgentStartSince();
 // How many sessions are active — the card stack's length.
 int      statusChannelAgentCount();
 // How many of them are waiting on the user. Read from the table rather than the

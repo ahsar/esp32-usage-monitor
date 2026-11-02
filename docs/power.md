@@ -58,8 +58,11 @@ Idle also dims the panel but **never blanks it** (so it stays glanceable):
 
 - 30 s idle (`IDLE_DIM_MS`) → brightness `BRIGHT_LUT[0]` = 50/255, and it stays
   there until activity (no full screen-off stage).
-- Any touch/key (and `state=running` webhooks) wakes it; the waking **tap**
-  is swallowed so it doesn't also page — a wake **drag** still scrolls (the swallow
+- Any touch/key wakes it, and so does the device channel: a session entering
+  `running` or `waiting` (including a second window starting while another is
+  already working) and a session completing (`done`/`failed`) restore the awake
+  level. A heartbeat and a session going silent do not. The waking **tap** is
+  swallowed so it doesn't also page — a wake **drag** still scrolls (the swallow
   is dropped as soon as the gesture locks an axis, `pager.cpp`).
 - Pager/key/wake/data events set `s_forceRender`, so a swipe/tap never freezes on
   a mid-transition frame.
