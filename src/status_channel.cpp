@@ -170,6 +170,19 @@ static void syncAgent(uint32_t now, bool allowCue) {
   if (changed && allowCue) wakePanel();
 }
 
+// The cues that belong to the *session*, not to the aggregate: with more than one
+// window, the aggregate cannot see a second start, a second question, or a
+// completion that leaves the others running. Both agent paths run this after
+// syncAgent() (the aggregate's own cue is already queued by then), and the ranked
+// single slot (status_machine.h) decides which one survives a burst.
+static void queueSessionCues(bool enteredWaiting, bool enteredRunning, bool endedNow) {
+  if (enteredWaiting) statusMachineQueue(s_machine, STATUS_EV_WAITING);
+  if (enteredRunning) statusMachineQueue(s_machine, STATUS_EV_START);
+  if (endedNow)
+    statusMachineQueue(s_machine, s_agents.endedFailed ? STATUS_EV_SESSION_FAILED
+                                                      : STATUS_EV_SESSION_DONE);
+}
+
 bool     statusChannelThinking()      { return statusMachineThinking(s_machine); }
 bool     statusChannelWaiting()       { return statusMachineWaiting(s_machine); }
 uint32_t statusChannelStateSince()    { return statusMachineSince(s_machine); }
@@ -338,12 +351,10 @@ static const char* channelAgent(const StatusReq& r, char* body, size_t cap) {
   // the moments the device sits on the desk for.
   if (enteredRunning || enteredWaiting || endedNow) wakePanel();
 
-  // The cue belongs to the *session*, not to the aggregate: once one question is
-  // on screen, a second window asking one used to arrive in complete silence.
-  // `pending` is a single slot, so two questions in one burst still ring once —
-  // which is what a chime for "something needs you" should do anyway.
-  if (enteredWaiting && s_machine.pending == STATUS_EV_NONE)
-    s_machine.pending = STATUS_EV_WAITING;
+  // Cues that belong to the *session*, not to the aggregate: with more than one
+  // window, the aggregate cannot see a second start, a second question, or a
+  // completion that leaves the others running.
+  queueSessionCues(enteredWaiting, enteredRunning, endedNow);
 
   // Not a secret (unlike the WiFi query), but bounded: repo/tool are short by
   // construction and the note is the interesting part when diagnosing a plugin
@@ -513,8 +524,7 @@ const char* statusChannelHandle(const StatusReq& r, char* body, size_t cap) {
   // Same per-session edges as ?agent= (this is the single empty-id session the
   // older plugin drives): a start while it is already running, and a completion.
   if (enteredRunning || enteredWaiting || endedNow) wakePanel();
-  if (enteredWaiting && s_machine.pending == STATUS_EV_NONE)
-    s_machine.pending = STATUS_EV_WAITING;
+  queueSessionCues(enteredWaiting, enteredRunning, endedNow);
   Serial.printf("state=%s\n", st);
 
   setBody(body, cap, "OK");

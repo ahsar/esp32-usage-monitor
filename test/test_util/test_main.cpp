@@ -277,6 +277,28 @@ void test_settings_query_volume(void) {
   TEST_ASSERT_EQUAL_HEX16(SET_NONE, s.set);
 }
 
+void test_settings_query_chime_edges(void) {
+  DeviceSettings s;
+  uint16_t changed = SET_NONE;
+
+  // Its own key and its own bit: `chime_edges=1` must not be read as `chime`.
+  TEST_ASSERT_TRUE(settingsQuery("chime_edges=1", s, changed));
+  TEST_ASSERT_EQUAL_HEX16(SET_CHIME_EDGES, changed);
+  TEST_ASSERT_EQUAL_INT(1, s.chime_edges);
+  TEST_ASSERT_EQUAL_INT(0, s.set & SET_CHIME);
+  TEST_ASSERT_EQUAL_INT(0, s.chime);
+
+  char err[96];
+  TEST_ASSERT_FALSE(settingsQuery("chime_edges=2", s, changed, err, sizeof(err)));
+  TEST_ASSERT_FALSE(settingsQuery("chime_edges=maybe", s, changed, err, sizeof(err)));
+
+  // Empty value clears the override, like every other field.
+  TEST_ASSERT_TRUE(settingsQuery("chime_edges=0", s, changed));
+  TEST_ASSERT_TRUE(settingsFromQuery("chime_edges=", s, changed, nullptr, 0));
+  TEST_ASSERT_EQUAL_HEX16(SET_CHIME_EDGES, changed);
+  TEST_ASSERT_EQUAL_HEX16(SET_NONE, s.set);
+}
+
 void test_settings_query_location_group(void) {
   DeviceSettings s;
   uint16_t changed = SET_NONE;
@@ -388,14 +410,15 @@ void test_settings_query_all_fields_at_once(void) {
   char err[96];
   char q[256];
   snprintf(q, sizeof(q),
-           "chime=1&brightness=4&volume=5&place=%s&lat=-89.9999&lon=-179.9999"
+           "chime=1&chime_edges=1&brightness=4&volume=5&place=%s&lat=-89.9999&lon=-179.9999"
            "&tz_offset_min=-960&waqi_station=%s&air_label=%s",
            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
            "@1234567890123456789012",
            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
   TEST_ASSERT_TRUE(settingsQuery(q, s, changed, err, sizeof(err)));
-  TEST_ASSERT_EQUAL_HEX16(SET_CHIME | SET_BRIGHTNESS | SET_VOLUME | SET_PLACE | SET_COORDS |
-                          SET_TZ | SET_STATION | SET_AIR_LABEL, changed);
+  TEST_ASSERT_EQUAL_HEX16(SET_CHIME | SET_CHIME_EDGES | SET_BRIGHTNESS | SET_VOLUME |
+                          SET_PLACE | SET_COORDS | SET_TZ | SET_STATION | SET_AIR_LABEL,
+                          changed);
   TEST_ASSERT_EQUAL_INT(47, (int)strlen(s.place));
 }
 
@@ -403,19 +426,21 @@ void test_settings_json_round_trip(void) {
   DeviceSettings s, back;
   uint16_t changed = SET_NONE;
   TEST_ASSERT_TRUE(settingsQuery(
-      "chime=0&brightness=4&volume=2&place=Shanghai&lat=31.2304&lon=121.4737"
+      "chime=0&chime_edges=1&brightness=4&volume=2&place=Shanghai&lat=31.2304&lon=121.4737"
       "&tz_offset_min=480&waqi_station=@1437&air_label=Shanghai%20US", s, changed));
 
   char json[512];
   TEST_ASSERT_TRUE(settingsToJson(s, json, sizeof(json)));
   TEST_ASSERT_TRUE(strstr(json, "\"place\":\"Shanghai\"") != nullptr);
   TEST_ASSERT_TRUE(strstr(json, "\"chime\":0") != nullptr);
+  TEST_ASSERT_TRUE(strstr(json, "\"chime_edges\":1") != nullptr);
 
   settingsClear(back);
   uint16_t changedBack = SET_NONE;
   TEST_ASSERT_TRUE(settingsFromJson(json, back, changedBack));
   TEST_ASSERT_EQUAL_HEX16(s.set, back.set);
   TEST_ASSERT_EQUAL_INT(s.chime, back.chime);
+  TEST_ASSERT_EQUAL_INT(s.chime_edges, back.chime_edges);
   TEST_ASSERT_EQUAL_INT(s.brightness, back.brightness);
   TEST_ASSERT_EQUAL_INT(s.volume, back.volume);
   TEST_ASSERT_EQUAL_STRING(s.place, back.place);
@@ -475,9 +500,11 @@ void test_settings_describe(void) {
   TEST_ASSERT_EQUAL_STRING("no overrides (everything follows config.json)\n", out);
 
   uint16_t changed = SET_NONE;
-  TEST_ASSERT_TRUE(settingsQuery("chime=0&volume=2&place=Shanghai&tz_offset_min=480", s, changed));
+  TEST_ASSERT_TRUE(settingsQuery(
+      "chime=0&chime_edges=1&volume=2&place=Shanghai&tz_offset_min=480", s, changed));
   settingsDescribe(s, out, sizeof(out));
   TEST_ASSERT_TRUE(strstr(out, "chime          = off") != nullptr);
+  TEST_ASSERT_TRUE(strstr(out, "chime_edges    = on") != nullptr);
   TEST_ASSERT_TRUE(strstr(out, "volume         = 2") != nullptr);
   TEST_ASSERT_TRUE(strstr(out, "place          = Shanghai") != nullptr);
   TEST_ASSERT_TRUE(strstr(out, "tz_offset_min  = 480") != nullptr);
@@ -1246,16 +1273,21 @@ void test_ble_frame_parse(void) {
 void test_status_machine_transitions(void) {
   StatusMachine m;
 
-  // A start wakes the panel and seeds the animation clock.
+  // A start wakes the panel and seeds the animation clock. It also queues the
+  // start cue unconditionally: whether that is *played* is `chime_edges`, which
+  // main.cpp owns (a disabled cue must still be consumed here).
   TEST_ASSERT_TRUE(statusMachineApply(m, "running", 100));
   TEST_ASSERT_EQUAL_INT(STATUS_RUNNING, m.state);
   TEST_ASSERT_EQUAL_UINT32(100, m.since);
-  TEST_ASSERT_EQUAL_INT(STATUS_EV_NONE, m.pending);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_START, m.pending);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_START, statusMachineTakeEvent(m));
   TEST_ASSERT_TRUE(statusMachineThinking(m));
 
-  // A duplicate is not a transition: no wake, and the clock is not restarted.
+  // A duplicate is not a transition: no wake, no cue, and the clock is not
+  // restarted (this is what makes the plugin's heartbeat free).
   TEST_ASSERT_FALSE(statusMachineApply(m, "running", 200));
   TEST_ASSERT_EQUAL_UINT32(100, m.since);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_NONE, m.pending);
 
   // Permission asked → needs-you animation, one waiting cue.
   TEST_ASSERT_TRUE(statusMachineApply(m, "waiting", 300));
@@ -1265,6 +1297,12 @@ void test_status_machine_transitions(void) {
   // Still waiting: no second cue, no wake.
   TEST_ASSERT_FALSE(statusMachineApply(m, "waiting", 400));
   TEST_ASSERT_EQUAL_INT(STATUS_EV_WAITING, m.pending);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_WAITING, statusMachineTakeEvent(m));
+
+  // Answered and resumed: waiting → running is a transition, so it queues a
+  // start cue of its own.
+  TEST_ASSERT_TRUE(statusMachineApply(m, "running", 450));
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_START, statusMachineTakeEvent(m));
 
   // A completion from an active state queues exactly one event and goes idle.
   TEST_ASSERT_FALSE(statusMachineApply(m, "done", 500));
@@ -1280,8 +1318,10 @@ void test_status_machine_transitions(void) {
   TEST_ASSERT_FALSE(statusMachineApply(m, "done", 600));
   TEST_ASSERT_EQUAL_INT(STATUS_EV_NONE, m.pending);
 
-  // Failure after a real start is a failure cue, not a success one.
+  // Failure after a real start is a failure cue, not a success one — and it
+  // outranks the start cue the same report queued.
   TEST_ASSERT_TRUE(statusMachineApply(m, "running", 700));
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_START, m.pending);
   TEST_ASSERT_FALSE(statusMachineApply(m, "failed", 800));
   TEST_ASSERT_EQUAL_INT(STATUS_EV_FAILED, m.pending);
   TEST_ASSERT_EQUAL_INT(STATUS_EV_FAILED, statusMachineTakeEvent(m));
@@ -1289,13 +1329,61 @@ void test_status_machine_transitions(void) {
   // The expiry path applies a transition without queueing a cue: a session that
   // went quiet is not a completion, and it must not ring.
   TEST_ASSERT_TRUE(statusMachineApply(m, "running", 900));
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_START, statusMachineTakeEvent(m));
   TEST_ASSERT_FALSE(statusMachineApply(m, "done", 950, /*allowCue=*/false));
   TEST_ASSERT_EQUAL_INT(STATUS_IDLE, m.state);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_NONE, m.pending);
+
+  // The same applies to a start the expiry path re-derives: status_channel.cpp
+  // re-applies the aggregate with allowCue=false, so a zombie cannot beep.
+  TEST_ASSERT_TRUE(statusMachineApply(m, "running", 960, /*allowCue=*/false));
   TEST_ASSERT_EQUAL_INT(STATUS_EV_NONE, m.pending);
 
   // Unknown/absent state names are no-ops.
   TEST_ASSERT_FALSE(statusMachineApply(m, "nonsense", 1000));
   TEST_ASSERT_FALSE(statusMachineApply(m, nullptr, 1000));
+}
+
+// The single `pending` slot is consumed once per loop() iteration, but a burst can
+// contain several edges; the ranked queue decides which one survives.
+void test_status_machine_queue_rank(void) {
+  StatusMachine m;
+
+  // A start never masks a question.
+  statusMachineQueue(m, STATUS_EV_WAITING);
+  statusMachineQueue(m, STATUS_EV_START);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_WAITING, m.pending);
+
+  // The last session finishing is not downgraded to "one of them ended": both
+  // arrive in the same request (aggregate leaves active, and that session ended).
+  statusMachineQueue(m, STATUS_EV_DONE);
+  statusMachineQueue(m, STATUS_EV_SESSION_DONE);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_DONE, m.pending);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_DONE, statusMachineTakeEvent(m));
+
+  // Failure outranks a completion.
+  statusMachineQueue(m, STATUS_EV_DONE);
+  statusMachineQueue(m, STATUS_EV_FAILED);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_FAILED, statusMachineTakeEvent(m));
+
+  // A mid-run completion outranks a start, and carries the failure flag with it.
+  statusMachineQueue(m, STATUS_EV_START);
+  statusMachineQueue(m, STATUS_EV_SESSION_DONE);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_SESSION_DONE, statusMachineTakeEvent(m));
+  statusMachineQueue(m, STATUS_EV_START);
+  statusMachineQueue(m, STATUS_EV_SESSION_FAILED);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_SESSION_FAILED, statusMachineTakeEvent(m));
+
+  // A question outranks a mid-run completion: the blocked session is the live
+  // one, the finished one is already recorded in the table.
+  statusMachineQueue(m, STATUS_EV_SESSION_DONE);
+  statusMachineQueue(m, STATUS_EV_WAITING);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_WAITING, statusMachineTakeEvent(m));
+
+  // Queuing nothing is a no-op, not a clear.
+  statusMachineQueue(m, STATUS_EV_WAITING);
+  statusMachineQueue(m, STATUS_EV_NONE);
+  TEST_ASSERT_EQUAL_INT(STATUS_EV_WAITING, m.pending);
 }
 
 // ---- config_limits (the shared config.json / settings range table) ---------
@@ -1921,6 +2009,7 @@ int main(int, char**) {
   RUN_TEST(test_settings_query_single);
   RUN_TEST(test_settings_query_multi_and_encoding);
   RUN_TEST(test_settings_query_volume);
+  RUN_TEST(test_settings_query_chime_edges);
   RUN_TEST(test_settings_query_location_group);
   RUN_TEST(test_settings_query_empty_value_clears);
   RUN_TEST(test_settings_query_rejects_unknown_key);
@@ -1991,6 +2080,7 @@ int main(int, char**) {
   RUN_TEST(test_http_header_value);
   RUN_TEST(test_ble_frame_parse);
   RUN_TEST(test_status_machine_transitions);
+  RUN_TEST(test_status_machine_queue_rank);
   RUN_TEST(test_config_limits);
   RUN_TEST(test_settings_json_rejects_non_numeric_location);
   RUN_TEST(test_usage_pace_even);

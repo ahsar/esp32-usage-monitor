@@ -186,6 +186,7 @@ the build today.
 | `poll_air_s` | `3600` | Air-quality poll period |
 | `poll_moon_s` | `43200` | Moon poll period |
 | `chime` | `true` | Play a chime when the agent finishes or needs you |
+| `chime_edges` | `false` | Also ring on every other session edge (a start, and a completion that leaves another window running) |
 | `ble_status` | `true` | Also serve the status/settings channel over BLE, as a fallback for a host the LAN cannot reach |
 
 Numeric values are validated: a non-numeric or out-of-range `lat`/`lon`/`tz_offset_min`
@@ -385,6 +386,7 @@ tools/status-settings.sh place=              # clear it: back to config.json
 | Key | Value |
 |---|---|
 | `chime` | `0` / `1` |
+| `chime_edges` | `0` / `1` — also ring on every other session edge: a start, and a completion that leaves another window running (default `0`: working is the ambient state) |
 | `volume` | `0`–`5` chime loudness (the default is `3`; `chime=0` is off, not `volume=0`) |
 | `brightness` | `1`–`4` (the awake panel level; `0` is the idle-dim level) |
 | `place` | city for wttr.in and the status bar |

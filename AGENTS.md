@@ -236,7 +236,13 @@ linked deep dive before changing the area.
   session entering waiting would swap the card under the reader's eyes. Keep the
   per-session waiting chime (`enteredWaiting` out-parameter): the aggregate
   transition only rings for the first question, and the second one used to arrive
-  in silence.
+  in silence. **Every other session edge is opt-in** (`chime_edges`, default off):
+  a start and a mid-run completion queue `STATUS_EV_START` /
+  `STATUS_EV_SESSION_(DONE|FAILED)`, and `main.cpp` is the only place that decides
+  whether they play — the state machine stays free of config. Keep that split: the
+  `pending` slot is single, so `statusMachineQueue()`'s ranking (fail > done >
+  waiting > session edges > start) is what stops a cue that will be dropped from
+  masking one that would have played.
 - **`src/diag.*` is temporary but load-bearing** — it is what makes a wedged
   fetch or a frozen UI diagnosable over USB CDC. Don't delete it while the
   watchdog still relies on its breadcrumbs.

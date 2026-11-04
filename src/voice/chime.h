@@ -24,6 +24,14 @@ enum ChimeKind : uint8_t {
   CHIME_DONE = 0,   // agent finished  → rising two-note
   CHIME_FAILED,     // agent errored   → one long low note
   CHIME_WAITING,    // needs you       → two soft taps
+  // A session started. Only played when `chime_edges` is on: working is the
+  // ambient state, so by default it is silent (docs/pc-bridge.md). One short mid
+  // note, above the failure cue and below the two "needs you" taps, so "it
+  // started" is not mistaken for either. The pitch is deliberately inside the
+  // range this speaker reproduces (chime.cpp says why 520 Hz was inaudible).
+  CHIME_START,
+  // Not a cue: how many patterns chime.cpp builds. Keep it last.
+  CHIME_KINDS,
 };
 
 // Build the PCM for every cue and start the playback task. Call once from

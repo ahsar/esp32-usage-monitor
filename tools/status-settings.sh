@@ -29,8 +29,8 @@ usage: tools/status-settings.sh [key=value ...]
   (no arguments)   read the current overrides
   key=value ...    set them; an empty value clears one
 
-  keys: chime=0|1            brightness=1..4       volume=0..5
-        place=CITY           lat=LAT lon=LON
+  keys: chime=0|1            chime_edges=0|1       volume=0..5
+        brightness=1..4      place=CITY            lat=LAT lon=LON
         tz_offset_min=MIN    waqi_station=@ID
         air_label=LABEL
 EOF

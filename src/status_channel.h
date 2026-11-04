@@ -186,7 +186,10 @@ void     statusChannelClearThinking();
 // completion while it is not idle).
 bool     statusChannelDismissed();
 
-// One-shot completion events, consumed by loop() to fire the right chime.
+// One-shot events, consumed by loop() to fire the right chime. There are two
+// groups: the aggregate edges (a completion, and a question) which always ring,
+// and the per-session ones (a start, a completion that leaves another window
+// running) which only play when `chime_edges` is on — main.cpp owns that decision.
 // statusChannelClearThinking() never produces one, and neither does a session
 // that merely aged out (that is not a failure).
 StatusEvent statusChannelTakeEvent();

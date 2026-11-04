@@ -27,6 +27,7 @@ enum SettingsField : uint16_t {
   SET_STATION    = 1u << 5,
   SET_AIR_LABEL  = 1u << 6,
   SET_VOLUME     = 1u << 7,
+  SET_CHIME_EDGES = 1u << 8,
 };
 
 // Field limits. Brightness is 1..4: 0 is the idle-dim level (BRIGHT_LUT[0]), so
@@ -51,6 +52,7 @@ constexpr size_t SETTINGS_AIRLABEL_CAP = 32;
 struct DeviceSettings {
   uint16_t set = SET_NONE;     // which fields below are overridden
   int   chime = 0;             // 0/1
+  int   chime_edges = 0;       // 0/1: ring on every session edge too
   int   brightness = 0;        // BRIGHT_LUT index, 1..4
   int   volume = 0;            // chime loudness index, 0..5
   char  place[SETTINGS_PLACE_CAP] = {0};
@@ -68,6 +70,7 @@ inline bool settingsBrightnessOk(int v) {
   return v >= SETTINGS_BRIGHTNESS_MIN && v <= SETTINGS_BRIGHTNESS_MAX;
 }
 inline bool settingsChimeOk(int v) { return v == 0 || v == 1; }
+inline bool settingsChimeEdgesOk(int v) { return v == 0 || v == 1; }
 inline bool settingsVolumeOk(int v) {
   return v >= SETTINGS_VOLUME_MIN && v <= SETTINGS_VOLUME_MAX;
 }
@@ -182,6 +185,14 @@ inline bool settingsFromQuery(const char* query, DeviceSettings& s, uint16_t& ch
         next.chime = b; next.set |= SET_CHIME;
       }
       touched |= SET_CHIME;
+    } else if (!strcmp(key, "chime_edges")) {
+      if (!v[0]) { next.set &= (uint16_t)~SET_CHIME_EDGES; next.chime_edges = 0; }
+      else {
+        int b = settingsParseBool(v);
+        if (b < 0) return fail("chime_edges must be 0/1 (or true/false)");
+        next.chime_edges = b; next.set |= SET_CHIME_EDGES;
+      }
+      touched |= SET_CHIME_EDGES;
     } else if (!strcmp(key, "brightness")) {
       if (!v[0]) { next.set &= (uint16_t)~SET_BRIGHTNESS; next.brightness = 0; }
       else {
@@ -268,6 +279,7 @@ inline bool settingsToJson(const DeviceSettings& s, char* out, size_t cap) {
   JsonDocument doc;
   JsonObject o = doc.to<JsonObject>();   // without this an empty set serializes as "null"
   if (s.set & SET_CHIME)      o["chime"]          = s.chime;
+  if (s.set & SET_CHIME_EDGES) o["chime_edges"]   = s.chime_edges;
   if (s.set & SET_BRIGHTNESS) o["brightness"]     = s.brightness;
   if (s.set & SET_VOLUME)     o["volume"]         = s.volume;
   if (s.set & SET_PLACE)      o["place"]          = s.place;
@@ -304,6 +316,13 @@ inline bool settingsFromJson(const char* json, DeviceSettings& s, uint16_t& chan
       else if (v.is<const char*>()) b = settingsParseBool(v.as<const char*>());
       if (b < 0) return false;
       next.chime = b; next.set |= SET_CHIME; touched |= SET_CHIME;
+    } else if (!strcmp(k, "chime_edges")) {
+      int b = -1;
+      if (v.is<bool>())          b = v.as<bool>() ? 1 : 0;
+      else if (v.is<int>())      b = (v.as<int>() != 0) ? 1 : 0;
+      else if (v.is<const char*>()) b = settingsParseBool(v.as<const char*>());
+      if (b < 0) return false;
+      next.chime_edges = b; next.set |= SET_CHIME_EDGES; touched |= SET_CHIME_EDGES;
     } else if (!strcmp(k, "brightness")) {
       int n = v.as<int>();
       if (!v.is<int>() || !settingsBrightnessOk(n)) return false;
@@ -379,6 +398,10 @@ inline void settingsDescribe(const DeviceSettings& s, char* out, size_t cap) {
   char line[96];
   if (s.set & SET_CHIME) {
     snprintf(line, sizeof(line), "  chime          = %s\n", s.chime ? "on" : "off");
+    n = settingsAppend(out, cap, n, line);
+  }
+  if (s.set & SET_CHIME_EDGES) {
+    snprintf(line, sizeof(line), "  chime_edges    = %s\n", s.chime_edges ? "on" : "off");
     n = settingsAppend(out, cap, n, line);
   }
   if (s.set & SET_BRIGHTNESS) {

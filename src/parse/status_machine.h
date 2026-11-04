@@ -20,11 +20,20 @@ enum StatusState : uint8_t {
 // screen (Key1) never produces one: `statusChannelClearThinking()` only sets the
 // dismissed flag, so dismissing a screen stays silent while the machine keeps
 // following the sessions.
+//
+// The last three are the "every session edge" cues and are only *played* when
+// `chime_edges` is on (main.cpp): working is the ambient state, so a start is
+// silent by default, and so is a completion that leaves another session running.
+// The machine still queues them — the policy belongs to the consumer, not here —
+// which keeps this file free of config.
 enum StatusEvent : uint8_t {
   STATUS_EV_NONE = 0,
   STATUS_EV_DONE,
   STATUS_EV_FAILED,
   STATUS_EV_WAITING,
+  STATUS_EV_START,           // a session started (idle→running, waiting→running)
+  STATUS_EV_SESSION_DONE,    // one session ended while others still run
+  STATUS_EV_SESSION_FAILED,  // …and it failed
 };
 
 struct StatusMachine {
@@ -33,12 +42,44 @@ struct StatusMachine {
   StatusEvent pending = STATUS_EV_NONE;  // not yet consumed by loop()
 };
 
+// Higher wins. `pending` is a single slot consumed once per loop() iteration, but
+// one iteration can see several edges (the last session finishing also queues a
+// session-done, a completion and a start can land in the same request burst), so
+// the slot keeps the most actionable event instead of the last write.
+//
+// Above the session edges sit the two facts the user must not miss (a question,
+// and the aggregate leaving active), and above those the failure. START is lowest
+// on purpose: it is the one event the consumer may drop (`chime_edges` off), and a
+// cue about to be discarded must never mask one that would have been played.
+inline int statusEventRank(StatusEvent ev) {
+  switch (ev) {
+    case STATUS_EV_FAILED:         return 5;
+    case STATUS_EV_DONE:           return 4;
+    case STATUS_EV_WAITING:        return 3;
+    case STATUS_EV_SESSION_FAILED: return 2;
+    case STATUS_EV_SESSION_DONE:   return 1;
+    case STATUS_EV_START:          return 0;
+    default:                       return -1;
+  }
+}
+
+inline void statusMachineQueue(StatusMachine& m, StatusEvent ev) {
+  if (ev == STATUS_EV_NONE) return;
+  if (statusEventRank(ev) >= statusEventRank(m.pending)) m.pending = ev;
+}
+
 // Apply one *authenticated* state ping. Returns true when the state changed, so
 // the caller can wake the panel.
 //
-//   running       → active; a duplicate running is not a transition
+//   running       → active, queueing the start cue; a duplicate running is not a
+//                   transition (and a heartbeat must stay silent)
 //   waiting       → active, and queues the needs-you chime on the way in
 //   done/failed   → idle, queuing a completion event only if it was active
+//
+// The start cue is queued unconditionally; whether it is *played* is
+// `chime_edges`, decided in main.cpp. A session that starts while another one is
+// already running never reaches this function with a different aggregate (see
+// agent_sessions.h), which is why status_channel.cpp queues that edge itself.
 //
 // Matches the behaviour the transport had when these were its own statics,
 // including the deliberate quiet case: a done/failed with no active session is
@@ -55,13 +96,14 @@ inline bool statusMachineApply(StatusMachine& m, const char* state, uint32_t now
 
   if (!strcmp(state, "running")) {
     if (m.state == STATUS_RUNNING) return false;
+    if (allowCue) statusMachineQueue(m, STATUS_EV_START);
     m.state = STATUS_RUNNING;
     m.since = now;
     return true;
   }
 
   if (!strcmp(state, "waiting")) {
-    if (allowCue && m.state != STATUS_WAITING) m.pending = STATUS_EV_WAITING;
+    if (allowCue && m.state != STATUS_WAITING) statusMachineQueue(m, STATUS_EV_WAITING);
     if (m.state == STATUS_WAITING) return false;
     m.state = STATUS_WAITING;
     m.since = now;
@@ -70,7 +112,7 @@ inline bool statusMachineApply(StatusMachine& m, const char* state, uint32_t now
 
   // done / failed
   if (allowCue && m.state != STATUS_IDLE) {
-    m.pending = strcmp(state, "failed") ? STATUS_EV_DONE : STATUS_EV_FAILED;
+    statusMachineQueue(m, strcmp(state, "failed") ? STATUS_EV_DONE : STATUS_EV_FAILED);
   }
   m.state = STATUS_IDLE;
   return false;

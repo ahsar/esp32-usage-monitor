@@ -42,6 +42,11 @@ struct AppConfig {
 
   // Feature toggles.
   bool chime;          // play a chime when the agent finishes / needs you
+  // Ring on *every* session edge as well: a start, and a completion that leaves
+  // another window running. Off by default ("working" is the ambient state, so a
+  // beep per window start is noise), and settable live over the settings channel
+  // (`?chime_edges=1`), so turning it on needs no `uploadfs`.
+  bool chime_edges;
   // How loud that chime is: an index into chime.cpp's amplitude table, 0..5.
   // 3 is the default; the table's top is still softer than the flat beeps the
   // percussive tones replaced. Settable live over the settings channel.
@@ -82,6 +87,7 @@ inline void configDefaults(AppConfig& cfg) {  memset(&cfg, 0, sizeof(cfg));
   cfg.poll_air_s        = DEFAULT_POLL_AIR_S;
   cfg.poll_moon_s       = DEFAULT_POLL_MOON_S;
   cfg.chime             = true;
+  cfg.chime_edges       = false;
   cfg.chime_volume      = DEFAULT_CHIME_VOLUME;
   cfg.ble_status        = (bool)DEFAULT_BLE_STATUS;
 }
@@ -176,6 +182,7 @@ inline bool loadConfig(AppConfig& cfg) {
   cfg.poll_moon_s = (uint16_t)n;
 
   cfg.chime             = doc["chime"]             | cfg.chime;
+  cfg.chime_edges       = doc["chime_edges"]       | cfg.chime_edges;
   cfg.chime_volume      = doc["chime_volume"]      | cfg.chime_volume;
   cfg.ble_status        = doc["ble_status"]        | cfg.ble_status;
   return true;

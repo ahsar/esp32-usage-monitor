@@ -1139,10 +1139,32 @@ void loop() {
         // to be ambiguous in daily use.
         if (s_usageCueWarn) { s_usageCueWarn = false; chimePlay(CHIME_WAITING); }
         if (s_usageCueFull) { s_usageCueFull = false; chimePlay(CHIME_FAILED); }
-        switch (statusChannelTakeEvent()) {
+        // Every session edge, when `chime_edges` is on: a start, and a completion
+        // that leaves another window running. Off by default — "working" is the
+        // ambient state (AGENTS.md), and a panel that beeps each time a window
+        // starts is a panel you end up muting. The aggregate's done/failed and the
+        // needs-you taps stay unconditional: those are what the device is for.
+        const bool edges = s_cfg.chime_edges;
+        const StatusEvent ev = statusChannelTakeEvent();
+        // One line per cue: "no sound" has two very different causes (the event
+        // never queued, or the pattern being inaudible) and the console is the
+        // only place that can tell them apart — `i2s_audio: PA on` right after
+        // this line means it was played.
+        if (ev != STATUS_EV_NONE)
+            Serial.printf("chime: event=%u edges=%d\n", (unsigned)ev, (int)edges);
+        switch (ev) {
             case STATUS_EV_DONE:    chimePlay(CHIME_DONE);    break;
             case STATUS_EV_FAILED:  chimePlay(CHIME_FAILED);  break;
             case STATUS_EV_WAITING: chimePlay(CHIME_WAITING); break;
+            case STATUS_EV_START:
+                if (edges) chimePlay(CHIME_START);
+                break;
+            case STATUS_EV_SESSION_DONE:
+                if (edges) chimePlay(CHIME_DONE);
+                break;
+            case STATUS_EV_SESSION_FAILED:
+                if (edges) chimePlay(CHIME_FAILED);
+                break;
             default: break;
         }
     } else {

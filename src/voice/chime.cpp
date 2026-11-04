@@ -18,8 +18,8 @@ static const size_t   CHUNK = 256;     // 16 ms per I2S write
 // looking at the panel. They are packed into one allocation at their *actual*
 // lengths and PAT_MAX is the room each one gets while it is being built, so a
 // mis-edited pattern can never run into the next one. The allocation itself is
-// the worst case, 3 × PAT_MAX ≈ 66 KB — in PSRAM, not the internal heap the
-// pollers and mbedTLS share.
+// the worst case, CHIME_KINDS × PAT_MAX ≈ 88 KB — in PSRAM, not the internal heap
+// the pollers and mbedTLS share.
 static const size_t PAT_MAX = 11200;   // 700 ms — the longest pattern
 
 // Which volume level those patterns are streamed at: a per-sample gain applied
@@ -63,11 +63,11 @@ static volatile int8_t s_req   = -1;
 static volatile bool   s_busy  = false;
 static volatile bool   s_abort = false;
 
-// The three patterns, packed into one buffer at boot; a cue is then just
-// "point at the right slice".
+// The patterns, packed into one buffer at boot; a cue is then just "point at the
+// right slice".
 struct Pattern { size_t off, len; };
-static int16_t* s_buf    = nullptr;
-static Pattern  s_pat[3] = {{0, 0}, {0, 0}, {0, 0}};
+static int16_t* s_buf = nullptr;
+static Pattern  s_pat[CHIME_KINDS] = {};
 static int16_t  s_chunk[CHUNK];   // gain-scaled output block, task-local
 
 // Build cursor: only valid inside chimeInit(), where addNote()/addSilence()
@@ -152,6 +152,15 @@ static size_t buildPattern(ChimeKind kind) {
       s_at = addSilence(s_at, 110.0f);
       s_at = addNote(s_at,  880.0f, 120.0f, 1.0f);
       break;
+    case CHIME_START:                         // one short "starting" note
+      // 740 Hz, not the 520 Hz this started as: on this module's speaker
+      // everything below ~600 Hz is far weaker than the 660/880/990 Hz the other
+      // cues use, and a *single* 130 ms low note at the same peak came out as
+      // silence (the failure cue is 330 Hz but 360 ms, which is why it still
+      // carries). Same peak as every other cue, so it stays a background tick
+      // rather than an alarm.
+      s_at = addNote(s_at,  740.0f, 180.0f, 1.0f);
+      break;
   }
   s_at = addSilence(s_at, TAIL_MS);
   return s_at - start;
@@ -207,7 +216,7 @@ static void chimeTaskFn(void*) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     const int8_t kind = s_req;
     s_req = -1;
-    if (kind < 0 || kind > CHIME_WAITING || !s_pat[kind].len) continue;
+    if (kind < 0 || kind >= CHIME_KINDS || !s_pat[kind].len) continue;
     s_busy = true;
     playPattern((ChimeKind)kind);
     s_busy = false;
@@ -215,14 +224,14 @@ static void chimeTaskFn(void*) {
 }
 
 bool chimeInit() {
-  // The worst case: the three patterns, each at PAT_MAX. A malloc() this size
-  // goes to PSRAM (CONFIG_SPIRAM_USE_MALLOC), not to the internal heap.
-  s_buf = (int16_t*)malloc(3 * PAT_MAX * sizeof(int16_t));
+  // The worst case: every pattern at PAT_MAX. A malloc() this size goes to PSRAM
+  // (CONFIG_SPIRAM_USE_MALLOC), not to the internal heap.
+  s_buf = (int16_t*)malloc(CHIME_KINDS * PAT_MAX * sizeof(int16_t));
   if (!s_buf) {
     Serial.println("chime: synth buffer alloc failed");
     return false;
   }
-  for (uint8_t k = 0; k < 3; k++) {
+  for (uint8_t k = 0; k < CHIME_KINDS; k++) {
     s_lim = s_at + PAT_MAX;            // addNote()/addSilence() clip at this
     s_pat[k].off = s_at;
     s_pat[k].len = buildPattern((ChimeKind)k);
@@ -246,10 +255,12 @@ void chimeSetVolume(uint8_t level) {
 
 void chimePlay(ChimeKind kind) {
   // One chime at a time: arming a second one while the first is still playing
-  // would overlap them in the DMA and sound like a glitch. The status server
-  // only fires on real transitions, so dropping a rare overlap is the safe call.
+  // would overlap them in the DMA and sound like a glitch. With `chime_edges` on
+  // (every session edge rings) two edges inside one ~300–700 ms cue can therefore
+  // collapse into one sound — that is the audio path's ceiling, not a bug in the
+  // queueing: a faster pattern cannot make two notes fit in one slot.
   if (!s_task || s_busy) return;
-  if (kind > CHIME_WAITING || !s_pat[kind].len) return;
+  if (kind >= CHIME_KINDS || !s_pat[kind].len) return;
   s_req = (int8_t)kind;
   xTaskNotifyGive(s_task);
 }

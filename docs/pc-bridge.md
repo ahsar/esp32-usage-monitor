@@ -8,7 +8,7 @@ channel is also served over BLE for hosts the LAN cannot reach — see
 
 | Request | State | Device |
 |---|---|---|
-| `?state=running` | agent working | "Thinking…" card, wakes the panel (on every session start, not only the first of the day), then hands it back with a `running` chip |
+| `?state=running` | agent working | "Thinking…" card, wakes the panel (on every session start, not only the first of the day), then hands it back with a `running` chip. Silent unless `?chime_edges=1` |
 | `?state=waiting` | permission/question | "Needs you" card + attention beep; wakes the panel and stays up until dismissed |
 | `?state=done` / `?state=failed` | finished / errored | rising two-beep / low beep; wakes the panel and flashes `esp32 done` / `esp32 failed` in the chip for eight seconds |
 | `?agent=1&state=…&repo=…&tool=…&note=…&session=…` | the above, plus what it is doing | the same card, with the repo/tool/elapsed and, when waiting, what it is waiting for |
@@ -90,7 +90,20 @@ keeps the completion chime for a run you dismissed (the machine still knows
 something was running when the `done` arrives). The *waiting* cue is per session
 rather than per transition (`enteredWaiting` in `agent_sessions.h`): with one
 question already on screen, a second window asking one would otherwise arrive in
-complete silence. Do **not** rely on V1 event names (`session.idle`,
+complete silence.
+
+**Every other session edge is opt-in.** `chime_edges=1` adds the start cue (a
+short mid note) and rings for a completion that leaves another window running —
+the two edges the aggregate state cannot see, so by default they are silent:
+working is the ambient state, and a panel that beeps each time a window starts is
+a panel you mute. Each session edge queues its own `StatusEvent`; the single
+`pending` slot is consumed once per `loop()`, so a burst (a completion plus a
+start in the same iteration) collapses onto the most actionable one
+(`statusEventRank()`). The audio path is single-owner and drops a cue while
+another is playing (`chime.cpp`), so two edges inside one ~300–700 ms chime still
+produce one sound — that ceiling is in the DMA, not in the queueing.
+
+Do **not** rely on V1 event names (`session.idle`,
 `session.status`, `permission.updated`) — V2 does not emit them.
 `tools/status-ping.sh` drives the same endpoint by hand, so the firmware path can
 be tested without OpenCode. The device advertises `usage-monitor.local` over
@@ -181,17 +194,19 @@ heavier follow-up if that matters. **With an empty
 is a local stand-in for the endpoint that reimplements the check, so the plugin
 can be exercised without hardware.
 
-**Chimes.** Synthesised at boot (`src/voice/chime.*`) into a ≤700 ms PCM buffer
-and streamed on a small FreeRTOS task of their own. Not from `loop()`: one
+**Chimes.** Synthesised at boot (`src/voice/chime.*`) into four ≤700 ms PCM
+patterns and streamed on a small FreeRTOS task of their own. Not from `loop()`: one
 256-sample chunk is 16 ms of audio and a loop() iteration is at least that long,
 so a loop-driven writer starves the I2S DMA and the note comes out as a ~58 Hz
 rasp of dropouts (`tools/chime_analyse.py` is the measurement). There is no raw
 file, so activating a chime never requires an `uploadfs` (which would erase the
-device's rotated tokens). The three cues are struck notes (fast attack,
-exponential decay, a touch of 2nd/3rd harmonic) — a rising 660→990 Hz pair on
-success, one long low 330 Hz note on failure and two soft 880 Hz taps when you
-are needed. Their loudness is the `?volume=` setting (0..5, default 3), applied
-on the next cue.
+device's rotated tokens). The cues are struck notes (fast attack, exponential
+decay, a touch of 2nd/3rd harmonic) — a rising 660→990 Hz pair on success, one
+long low 330 Hz note on failure, two soft 880 Hz taps when you are needed, and one
+short 740 Hz note for a start (`chime_edges` only: it sits between the taps and
+the failure note so "it started" is not mistaken for either — and above ~600 Hz on
+purpose, because this speaker renders a single short low note as silence). Their
+loudness is the `?volume=` setting (0..5, default 3), applied on the next cue.
 
 ## Settings over the same endpoint
 
@@ -203,6 +218,7 @@ running `uploadfs`, which **erases the device's rotated OAuth token** (see
 | Request | Meaning |
 |---|---|
 | `?chime=0` / `?chime=1` | chime on completion / needs-you |
+| `?chime_edges=0` / `?chime_edges=1` | also ring on every other session edge (a start, and a completion that leaves another window running). Default 0; see "Every other session edge is opt-in" |
 | `?volume=0..5` | chime loudness (0 is the quietest step, not silence; default 3) |
 | `?brightness=1..4` | awake panel level (index into `BRIGHT_LUT`; 0 is the dim level, so it is not settable) |
 | `?place=CITY` | wttr.in query and status-bar title |
