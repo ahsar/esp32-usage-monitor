@@ -248,6 +248,30 @@ pio run -e esp32-usage-monitor -t uploadfs
 pio run -e esp32-usage-monitor -t upload -t uploadfs
 ```
 
+### Black panel right after a USB upload
+
+A `-t upload` that leaves the screen completely black **is not a crash**: the panel
+was never initialised because the chip is parked in the ROM **download mode**,
+waiting to be flashed again. `pio run -t upload` ends with esptool's
+`--after hard_reset`, and on this board that USB-JTAG control-line reset does not
+always take — the same board quirk that makes "opening the serial port" a no-op
+(`tools/serial_capture.py`). The tell is that nothing is running at all: the USB
+port still enumerates but prints nothing, BLE is not advertising, and
+`usage-monitor.local` / the last known IP do not answer.
+
+Do **not** reflash. Press the board's RESET key, or reset into run mode from the
+PC:
+
+```bash
+tools/serial_capture.py /dev/cu.usbmodem1101 20 --reset-run
+```
+
+`--reset-run` pulls EN low with IO0 high (a reset that boots the app) and prints
+the boot log, which is also the quickest way to confirm the firmware is healthy:
+`hwInit OK`, `chime: pattern …`, `diag: ip=…`. `--jtag-reset` is the opposite —
+it parks the chip in download mode on purpose, so it is the one flag *not* to use
+here.
+
 ### Wireless update (OTA)
 
 The partition table has two 3 MB app slots (see [Hardware](#hardware)), so

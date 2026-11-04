@@ -25,6 +25,15 @@ automatic rollback. The endpoint is password-only (`ota_password`, ≥ 12 chars 
 empty/short disables it); `tools/ota.sh [ip]` reads the secret from
 `data/config.json`, retries, and `--gen-password` rotates it.
 
+**A black panel right after a USB upload is not a crash and must not be
+"fixed" with another flash.** esptool's post-upload `--after hard_reset` does not
+always take on this board, so the chip is left parked in ROM download mode: the
+USB port still enumerates but is silent, BLE does not advertise, nothing answers,
+and the panel was never initialised. Reset into run mode with
+`tools/serial_capture.py <port> 20 --reset-run` (or the RESET key) and read the
+boot log from there; `--jtag-reset` is the flag that *causes* this state. README
+has the same note under "Black panel right after a USB upload".
+
 Custom platform (not the default Espressif one): `platform` URL in
 `platformio.ini`. Lib versions are pinned exactly so CI and local builds resolve
 the same code; bump deliberately.
